@@ -2,7 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use abi_stable::library::{RootModule, lib_header_from_path};
-use haproxy_spoa_hub_plugin_api::{PluginBox, PluginMod_Ref};
+use abi_stable::std_types::{RHashMap, RString};
+use haproxy_spoa_hub_plugin_api::{PluginBox, PluginContext, PluginMod_Ref};
 
 use crate::config::PluginConfig;
 
@@ -57,11 +58,24 @@ pub fn load_plugin(
         reason: e.to_string(),
     })?;
 
-    // Initialize the plugin
-    instance.init().into_result().map_err(|e| LoadError::Init {
-        name: config.name.clone(),
-        reason: e.to_string(),
-    })?;
+    // Build plugin context from config
+    let mut params = RHashMap::new();
+    for (k, v) in &config.params {
+        params.insert(RString::from(k.as_str()), RString::from(v.as_str()));
+    }
+    let context = PluginContext {
+        name: RString::from(config.name.as_str()),
+        config: params,
+    };
+
+    // Initialize the plugin with its context
+    instance
+        .init(&context)
+        .into_result()
+        .map_err(|e| LoadError::Init {
+            name: config.name.clone(),
+            reason: e.to_string(),
+        })?;
 
     let version = instance.version().to_string();
     let timeout_ms = config.timeout_ms.unwrap_or(default_timeout_ms);
@@ -130,11 +144,31 @@ mod tests {
             messages: vec!["test".into()],
             depends_on: vec![],
             timeout_ms: Some(500),
+            params: Default::default(),
         };
         let loaded = load_plugin(&plugin_dir, &config, 100).unwrap();
         assert_eq!(loaded.name, "noop");
         assert!(!loaded.version.is_empty());
         assert_eq!(loaded.timeout, std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_load_plugin_with_params() {
+        let plugin_dir = workspace_target_dir();
+        let mut params = std::collections::HashMap::new();
+        params.insert("db_path".to_string(), "/data/test.mmdb".to_string());
+        params.insert("locale".to_string(), "de".to_string());
+        let config = PluginConfig {
+            name: "noop".into(),
+            library: "libnoop_plugin.so".into(),
+            messages: vec!["test".into()],
+            depends_on: vec![],
+            timeout_ms: None,
+            params,
+        };
+        // Plugin loads and init succeeds even with params (noop ignores them)
+        let loaded = load_plugin(&plugin_dir, &config, 100).unwrap();
+        assert_eq!(loaded.name, "noop");
     }
 
     #[test]
@@ -146,6 +180,7 @@ mod tests {
             messages: vec!["test".into()],
             depends_on: vec![],
             timeout_ms: None,
+            params: Default::default(),
         };
         let loaded = load_plugin(&plugin_dir, &config, 200).unwrap();
         assert_eq!(loaded.timeout, std::time::Duration::from_millis(200));
@@ -160,6 +195,7 @@ mod tests {
             messages: vec![],
             depends_on: vec![],
             timeout_ms: None,
+            params: Default::default(),
         };
         let err = load_plugin(dir.path(), &config, 100).unwrap_err();
         assert!(matches!(err, LoadError::Load { .. }));
@@ -179,6 +215,7 @@ mod tests {
             messages: vec![],
             depends_on: vec![],
             timeout_ms: None,
+            params: Default::default(),
         };
         let err = load_plugin(dir.path(), &config, 100).unwrap_err();
         assert!(matches!(err, LoadError::Load { .. }));
@@ -196,6 +233,7 @@ mod tests {
             messages: vec![],
             depends_on: vec![],
             timeout_ms: None,
+            params: Default::default(),
         }];
         let loaded = load_all_plugins(dir.path(), &configs, 100);
         assert!(loaded.is_empty());

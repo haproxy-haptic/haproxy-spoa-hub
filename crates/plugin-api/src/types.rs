@@ -3,6 +3,33 @@ use abi_stable::{
     std_types::{RHashMap, RString, RVec},
 };
 
+/// Configuration and metadata passed to a plugin during initialization.
+///
+/// The hub constructs this from the plugin's `[[plugins]]` config entry
+/// and passes it to `init()`. Use this to receive file paths, thresholds,
+/// credentials, and other per-plugin settings.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// fn init(&mut self, context: &PluginContext)
+///     -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+/// {
+///     let db_path = context.config.get(&"db_path".into())
+///         .ok_or("missing db_path config")?;
+///     self.db = open_database(db_path.as_str())?;
+///     Ok(())
+/// }
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, StableAbi)]
+pub struct PluginContext {
+    /// Plugin name as declared in the hub configuration.
+    pub name: RString,
+    /// Free-form key-value parameters from the `[plugins.params]` TOML table.
+    pub config: RHashMap<RString, RString>,
+}
+
 /// A typed value from an SPOE message argument or plugin output.
 ///
 /// Maps directly to the SPOP typed-data encoding. The hub converts

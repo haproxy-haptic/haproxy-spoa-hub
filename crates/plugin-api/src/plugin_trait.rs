@@ -17,7 +17,7 @@ use abi_stable::{
     std_types::{RBox, RBoxError, RResult, RStr},
 };
 
-use crate::types::{ProcessingResult, SpoeMessage};
+use crate::types::{PluginContext, ProcessingResult, SpoeMessage};
 
 /// FFI-safe plugin trait object type.
 pub type PluginBox = SpoePlugin_TO<'static, RBox<()>>;
@@ -43,11 +43,12 @@ pub type PluginBox = SpoePlugin_TO<'static, RBox<()>>;
 pub trait SpoePlugin: Send + Sync + core::fmt::Debug {
     /// Initialize the plugin. Called once after loading.
     ///
-    /// Use this to set up any resources the plugin needs (database
-    /// connections, lookup tables, etc.). Return `RErr` to abort
-    /// plugin registration — the hub will log the error and skip
-    /// this plugin.
-    fn init(&mut self) -> RResult<(), RBoxError>;
+    /// The `context` provides the plugin name and any configuration
+    /// parameters from the `[plugins.params]` TOML table. Use this
+    /// to set up resources (database connections, lookup tables, etc.).
+    /// Return `RErr` to abort plugin registration — the hub will log
+    /// the error and skip this plugin.
+    fn init(&mut self, context: &PluginContext) -> RResult<(), RBoxError>;
 
     /// Process an SPOE message and return transaction variables.
     ///
@@ -69,12 +70,16 @@ pub trait SpoePlugin: Send + Sync + core::fmt::Debug {
 
     /// Semantic version string (e.g., `"0.1.0"`). Logged at plugin
     /// load time.
+    fn version(&self) -> RStr<'_>;
+
+    /// Called during hub shutdown. Use this to clean up resources
+    /// (close file handles, flush buffers, disconnect from databases).
     ///
     /// This is the last field in the current ABI version. Methods
     /// added in future minor versions will appear below this line
     /// with default implementations.
     #[sabi(last_prefix_field)]
-    fn version(&self) -> RStr<'_>;
+    fn shutdown(&self);
 }
 
 /// Root module exported by every plugin shared library.

@@ -38,6 +38,9 @@ pub struct PluginConfig {
     #[serde(default)]
     pub depends_on: Vec<String>,
     pub timeout_ms: Option<u64>,
+    /// Free-form key-value parameters passed to the plugin's `init()`.
+    #[serde(default)]
+    pub params: HashMap<String, String>,
 }
 
 fn default_timeout() -> u64 {
@@ -261,6 +264,53 @@ mod tests {
         let (_f, path) = write_config(cfg);
         let err = HubConfig::load(&path).unwrap_err();
         assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_plugin_params_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("libgeoip.so"), b"fake").unwrap();
+
+        let cfg = format!(
+            "plugin_dir = \"{}\"\n\
+             [[listeners]]\n\
+             type = \"unix\"\n\
+             address = \"/tmp/test.sock\"\n\
+             [[plugins]]\n\
+             name = \"geoip\"\n\
+             library = \"libgeoip.so\"\n\
+             messages = [\"check\"]\n\
+             [plugins.params]\n\
+             db_path = \"/data/GeoLite2.mmdb\"\n\
+             locale = \"en\"\n",
+            dir.path().display()
+        );
+        let (_f, path) = write_config(&cfg);
+        let config = HubConfig::load(&path).unwrap();
+        let plugin = &config.plugins[0];
+        assert_eq!(plugin.params.get("db_path").unwrap(), "/data/GeoLite2.mmdb");
+        assert_eq!(plugin.params.get("locale").unwrap(), "en");
+    }
+
+    #[test]
+    fn test_plugin_params_default_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
+
+        let cfg = format!(
+            "plugin_dir = \"{}\"\n\
+             [[listeners]]\n\
+             type = \"unix\"\n\
+             address = \"/tmp/test.sock\"\n\
+             [[plugins]]\n\
+             name = \"noop\"\n\
+             library = \"libnoop.so\"\n\
+             messages = [\"check\"]\n",
+            dir.path().display()
+        );
+        let (_f, path) = write_config(&cfg);
+        let config = HubConfig::load(&path).unwrap();
+        assert!(config.plugins[0].params.is_empty());
     }
 
     #[test]

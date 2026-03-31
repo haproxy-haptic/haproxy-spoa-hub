@@ -41,6 +41,7 @@ fn load_two_delay_plugins() -> haproxy_spoa_hub::registry::SharedRegistry {
         messages: vec!["check-parallel".to_string()],
         depends_on: vec![],
         timeout_ms: Some(2000),
+        params: Default::default(),
     };
     let config_b = haproxy_spoa_hub::config::PluginConfig {
         name: "delay-b".to_string(),
@@ -48,6 +49,7 @@ fn load_two_delay_plugins() -> haproxy_spoa_hub::registry::SharedRegistry {
         messages: vec!["check-parallel".to_string()],
         depends_on: vec![],
         timeout_ms: Some(2000),
+        params: Default::default(),
     };
 
     let a = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_a, 2000).unwrap();
@@ -125,6 +127,7 @@ async fn test_plugin_timeout_returns_partial_results() {
         messages: vec!["check-timeout".to_string()],
         depends_on: vec![],
         timeout_ms: Some(2000),
+        params: Default::default(),
     };
     // slow plugin: will use 500ms delay from args, but only gets 50ms timeout
     let config_slow = haproxy_spoa_hub::config::PluginConfig {
@@ -133,6 +136,7 @@ async fn test_plugin_timeout_returns_partial_results() {
         messages: vec!["check-timeout".to_string()],
         depends_on: vec![],
         timeout_ms: Some(50), // 50ms timeout — will expire
+        params: Default::default(),
     };
 
     let fast = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_fast, 2000).unwrap();
