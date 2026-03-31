@@ -1,0 +1,23 @@
+services:
+  hub:
+    build:
+      context: ../..
+      dockerfile: tests/integration/Dockerfile.hub
+    command: ["--config", "/config/config.toml"]
+    volumes:
+      - ./hub-config:/config:z
+      - spoe-sock:/var/run/spoe
+
+  haproxy:
+    image: haproxytech/haproxy-debian:3.0
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro,z
+      - ./haproxy/spoe-hub.conf:/etc/haproxy/spoe-hub.conf:ro,z
+      - spoe-sock:/var/run/spoe
+    ports:
+      - "${HAPROXY_PORT:-8080}:8080"
+    depends_on:
+      - hub
+
+volumes:
+  spoe-sock:

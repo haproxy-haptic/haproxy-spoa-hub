@@ -1,0 +1,18 @@
+FROM rust:1.85-bookworm AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock rustfmt.toml ./
+COPY crates/ crates/
+COPY plugins/ plugins/
+RUN cargo build --release --workspace
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/haproxy-spoa-hub /usr/local/bin/
+RUN mkdir -p /etc/haproxy-spoa-hub/plugins
+COPY --from=builder /build/target/release/libnoop_plugin.so /etc/haproxy-spoa-hub/plugins/
+COPY --from=builder /build/target/release/libecho_plugin.so /etc/haproxy-spoa-hub/plugins/
+COPY --from=builder /build/target/release/libdelay_plugin.so /etc/haproxy-spoa-hub/plugins/
+ENTRYPOINT ["haproxy-spoa-hub"]
+CMD ["--config", "/etc/haproxy-spoa-hub/config.toml"]

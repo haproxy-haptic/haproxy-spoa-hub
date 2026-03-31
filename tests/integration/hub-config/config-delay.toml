@@ -1,0 +1,13 @@
+plugin_dir = "/etc/haproxy-spoa-hub/plugins"
+default_timeout_ms = 2000
+log_level = "debug"
+
+[[listeners]]
+type = "unix"
+address = "/var/run/spoe/hub.sock"
+
+[[plugins]]
+name = "delay"
+library = "libdelay_plugin.so"
+messages = ["check-request"]
+timeout_ms = 2000

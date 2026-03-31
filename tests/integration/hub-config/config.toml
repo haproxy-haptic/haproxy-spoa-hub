@@ -1,0 +1,17 @@
+plugin_dir = "/etc/haproxy-spoa-hub/plugins"
+default_timeout_ms = 500
+log_level = "debug"
+
+[[listeners]]
+type = "unix"
+address = "/var/run/spoe/hub.sock"
+
+[[plugins]]
+name = "noop"
+library = "libnoop_plugin.so"
+messages = ["check-request"]
+
+[[plugins]]
+name = "echo"
+library = "libecho_plugin.so"
+messages = ["check-request"]

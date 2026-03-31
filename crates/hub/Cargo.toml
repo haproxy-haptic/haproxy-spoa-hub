@@ -1,0 +1,51 @@
+[package]
+name = "haproxy-spoa-hub"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "A dynamic plugin hub for HAProxy SPOE agents"
+
+[lib]
+name = "haproxy_spoa_hub"
+path = "src/lib.rs"
+
+[[bin]]
+name = "haproxy-spoa-hub"
+path = "src/main.rs"
+
+[dependencies]
+haproxy-spoa-hub-plugin-api = { path = "../plugin-api" }
+abi_stable = "0.11"
+spop = "0.11"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+metrics-tracing-context = "0.18"
+metrics-util = "0.19"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+arc-swap = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+anyhow = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "dispatch_bench"
+harness = false
+
+[[bench]]
+name = "conversion_bench"
+harness = false
+
+[lints]
+workspace = true
