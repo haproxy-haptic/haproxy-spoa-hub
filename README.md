@@ -24,7 +24,7 @@ HAProxy's [Stream Processing Offload Engine (SPOE)](https://www.haproxy.com/docu
 
 ### Prerequisites
 
-- Rust toolchain (stable, >= 1.85)
+- Rust toolchain (stable, >= 1.86)
 - HAProxy >= 2.0 with SPOE support
 
 ### Build
@@ -325,7 +325,7 @@ All metrics carry a `service="haproxy-spoa-hub"` global label.
 
 ### Prerequisites
 
-- Rust >= 1.85 (edition 2024)
+- Rust >= 1.86 (edition 2024)
 - Docker and Docker Compose (for integration tests)
 
 ### Commands

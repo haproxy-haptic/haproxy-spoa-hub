@@ -14,7 +14,7 @@ workflow:
 
 variables:
   # renovate: datasource=docker depName=rust
-  RUST_VERSION: "1.85"
+  RUST_VERSION: "1.94"
   # renovate: datasource=docker depName=docker
   DOCKER_VERSION: "29"
   # renovate: datasource=github-releases depName=EmbarkStudios/cargo-deny

@@ -16,7 +16,7 @@ exposes Prometheus metrics via a built-in HTTP endpoint.
 
 ## Technical Context
 
-**Language/Version**: Rust (stable, >= 1.85, edition 2024)
+**Language/Version**: Rust (stable, >= 1.86, edition 2024)
 **Primary Dependencies**: spop 0.11, abi_stable 0.11, tokio 1, tracing 0.1, metrics 0.24
 **Storage**: N/A (stateless message processing)
 **Testing**: cargo test (unit), integration tests with mock SPOP client

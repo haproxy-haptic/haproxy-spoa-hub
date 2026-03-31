@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust toolchain (stable, >= 1.85)
+- Rust toolchain (stable, >= 1.86)
 - HAProxy >= 2.0 (with SPOE support)
 
 ## Build the Hub
