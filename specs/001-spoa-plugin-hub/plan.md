@@ -61,7 +61,7 @@ exposes Prometheus metrics via a built-in HTTP endpoint.
 - Actionable error messages: Config validation at startup with field
   path and suggestion. **Planned in FR-015 implementation.**
 - Structured logging: tracing + tracing-subscriber with JSON to
-  stderr. Consistent fields: `plugin`, `message`, `latency_ms`,
+  stderr. Consistent fields: `plugin`, `message`, `latency_us`,
   `level`, `timestamp`. **PASS**
 - Startup validation: All config checked before listener bind. **PASS**
 - Changelog: CHANGELOG.md maintained per release. **Planned.**

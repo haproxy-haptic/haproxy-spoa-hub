@@ -109,7 +109,7 @@ Expected log output:
 ```json
 {"timestamp":"...","level":"INFO","message":"plugin loaded","plugin":"noop","version":"0.1.0"}
 {"timestamp":"...","level":"INFO","message":"listening","transport":"unix","address":"/var/run/haproxy-spoa-hub.sock"}
-{"timestamp":"...","level":"DEBUG","message":"message dispatched","message_name":"check-request","plugins":["noop"],"latency_ms":0.05}
+{"timestamp":"...","level":"DEBUG","message":"message processed","message_name":"check-request","latency_us":50}
 ```
 
 ## Write Your Own Plugin

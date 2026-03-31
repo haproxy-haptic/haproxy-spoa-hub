@@ -155,7 +155,7 @@ where
                         }
                     } else {
                         tracing::debug!(
-                            message = %msg.name,
+                            message_name = %msg.name,
                             "no plugins registered for message"
                         );
                     }
@@ -163,8 +163,8 @@ where
                     let elapsed = start.elapsed();
                     crate::metrics::record_message_processed(&msg.name, elapsed);
                     tracing::debug!(
-                        message = %msg.name,
-                        latency_ms = %elapsed.as_secs_f64() * 1000.0,
+                        message_name = %msg.name,
+                        latency_us = elapsed.as_micros(),
                         "message processed"
                     );
                 }
