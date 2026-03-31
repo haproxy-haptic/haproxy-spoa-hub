@@ -122,7 +122,7 @@ crates/
         ├── types.rs           # SpoeMessage, SpoeValue, ProcessingResult, etc.
         └── plugin_trait.rs    # #[sabi_trait] SpoePlugin + PluginMod
 
-plugins/
+examples/
 └── noop/
     ├── Cargo.toml             # cdylib: example no-op plugin
     └── src/

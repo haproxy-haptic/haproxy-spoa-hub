@@ -3,9 +3,9 @@ resolver = "2"
 members = [
     "crates/hub",
     "crates/plugin-api",
-    "plugins/noop",
-    "plugins/delay",
-    "plugins/echo",
+    "examples/noop",
+    "examples/delay",
+    "examples/echo",
 ]
 
 [workspace.package]

@@ -126,7 +126,7 @@ Cargo.toml              (workspace root)
 crates/
   hub/                  (binary: haproxy-spoa-hub)
   plugin-api/           (library: haproxy-spoa-hub-plugin-api, published to crates.io)
-plugins/
+examples/
   noop/                 (cdylib: example no-op plugin for testing)
 ```
 

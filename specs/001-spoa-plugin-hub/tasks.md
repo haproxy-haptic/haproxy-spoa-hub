@@ -17,10 +17,10 @@
 
 **Purpose**: Project initialization and workspace structure
 
-- [x] T001 Create workspace root Cargo.toml with members: crates/hub, crates/plugin-api, plugins/noop
+- [x] T001 Create workspace root Cargo.toml with members: crates/hub, crates/plugin-api, examples/noop
 - [x] T002 Create hub crate Cargo.toml at crates/hub/Cargo.toml with dependencies: spop 0.11, tokio 1, tokio-util 0.7, futures 0.3, abi_stable 0.11, tracing 0.1, tracing-subscriber 0.3, metrics 0.24, metrics-exporter-prometheus 0.18, metrics-tracing-context 0.18, toml 0.8, serde 1, clap 4
 - [x] T003 [P] Create plugin-api crate Cargo.toml at crates/plugin-api/Cargo.toml with dependencies: abi_stable 0.11
-- [x] T004 [P] Create noop plugin crate Cargo.toml at plugins/noop/Cargo.toml with crate-type=["cdylib"] and dependency on plugin-api
+- [x] T004 [P] Create noop plugin crate Cargo.toml at examples/noop/Cargo.toml with crate-type=["cdylib"] and dependency on plugin-api
 - [x] T005 [P] Configure clippy (clippy::pedantic) and rustfmt in workspace root (rustfmt.toml, .cargo/config.toml)
 
 ---
@@ -34,7 +34,7 @@
 - [x] T006 Define FFI-safe types (SpoeValue, SpoeMessage, ProcessingResult, TxnVariable, VarScope) with #[derive(StableAbi)] in crates/plugin-api/src/types.rs
 - [x] T007 Define #[sabi_trait] SpoePlugin trait (init, process, name, version) and PluginMod root module struct with #[sabi(kind(Prefix))] in crates/plugin-api/src/plugin_trait.rs
 - [x] T008 Implement define_plugin! macro that wraps process() in catch_unwind and generates #[export_root_module] boilerplate in crates/plugin-api/src/lib.rs
-- [x] T009 Implement noop plugin using define_plugin! that sets one transaction variable in plugins/noop/src/lib.rs
+- [x] T009 Implement noop plugin using define_plugin! that sets one transaction variable in examples/noop/src/lib.rs
 - [x] T010 [P] Define HubConfig, ListenerConfig, PluginConfig structs with serde Deserialize in crates/hub/src/config.rs
 - [x] T011 [P] Set up structured JSON logging with tracing + tracing-subscriber (env-filter, JSON to stderr) in crates/hub/src/main.rs
 - [x] T012 [P] Set up Prometheus metrics with metrics-exporter-prometheus (configurable HTTP endpoint, define counters/histograms/gauges) in crates/hub/src/metrics.rs
@@ -84,7 +84,7 @@
 
 - [x] T024 [P] [US2] Unit tests for ExecutionPlan builder: independent plugins → single parallel group, dependent plugins → ordered groups, cyclic dependency → error in crates/hub/src/registry.rs
 - [x] T025 [P] [US2] Unit tests for parallel dispatch: timeout returns partial results, failed plugin doesn't block others, dependency data flow merges variables in crates/hub/src/dispatch.rs
-- [x] T026 [P] [US2] Integration test: two parallel plugins with timing assertion, one failing plugin with partial results, dependency chain in tests/integration/test_parallel.rs (create plugins/delay/ test plugin that sleeps configurable duration)
+- [x] T026 [P] [US2] Integration test: two parallel plugins with timing assertion, one failing plugin with partial results, dependency chain in tests/integration/test_parallel.rs (create examples/delay/ test plugin that sleeps configurable duration)
 
 ### Implementation for User Story 2
 
@@ -93,7 +93,7 @@
 - [x] T029 [US2] Implement per-plugin timeout using tokio::time::timeout; on timeout, return partial results from completed plugins and log timeout in crates/hub/src/dispatch.rs
 - [x] T030 [US2] Implement dependency data flow: merge upstream plugin's namespace-prefixed output variables into downstream plugin's SpoeMessage.args in crates/hub/src/dispatch.rs
 - [x] T031 [US2] Implement plugin error isolation: catch RErr from plugin.process(), log error with plugin name, continue collecting results from other plugins in crates/hub/src/dispatch.rs
-- [x] T032 [US2] Create delay test plugin (configurable sleep + variable set) for parallel execution testing in plugins/delay/src/lib.rs and plugins/delay/Cargo.toml
+- [x] T032 [US2] Create delay test plugin (configurable sleep + variable set) for parallel execution testing in examples/delay/src/lib.rs and examples/delay/Cargo.toml
 
 **Checkpoint**: Two independent plugins run in parallel (~5ms not ~10ms). Failed plugin returns partial results. Dependent plugin receives upstream output.
 
@@ -135,7 +135,7 @@
 
 - [x] T040 [US4] Add comprehensive rustdoc with examples to all public types (SpoeValue, SpoeMessage, ProcessingResult, TxnVariable, VarScope) in crates/plugin-api/src/types.rs
 - [x] T041 [US4] Add comprehensive rustdoc with examples to SpoePlugin trait and define_plugin! macro in crates/plugin-api/src/plugin_trait.rs and crates/plugin-api/src/lib.rs
-- [x] T042 [US4] Create echo example plugin that exercises all SpoeValue variants and returns them as variables in plugins/echo/src/lib.rs and plugins/echo/Cargo.toml
+- [x] T042 [US4] Create echo example plugin that exercises all SpoeValue variants and returns them as variables in examples/echo/src/lib.rs and examples/echo/Cargo.toml
 - [x] T043 [US4] Verify plugin-api crate compiles standalone (simulate crates.io publish with cargo package --allow-dirty) in crates/plugin-api/
 
 **Checkpoint**: Echo plugin compiles using only plugin-api dependency. Hub loads it without recompilation. Rustdoc builds cleanly with `cargo doc --no-deps`.
@@ -250,7 +250,7 @@ Task: "Integration test for parallel execution in tests/integration/test_paralle
 
 # After tests fail, launch parallel implementations:
 Task: "ExecutionPlan builder in crates/hub/src/registry.rs"
-Task: "Create delay test plugin in plugins/delay/"
+Task: "Create delay test plugin in examples/delay/"
 # Then sequentially:
 Task: "Parallel dispatch in crates/hub/src/dispatch.rs"
 Task: "Per-plugin timeout in crates/hub/src/dispatch.rs"

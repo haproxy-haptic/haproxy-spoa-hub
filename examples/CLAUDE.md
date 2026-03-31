@@ -1,4 +1,4 @@
-# plugins/
+# examples/
 
 Example and test plugins. Each is a standalone Rust crate that compiles to
 a shared library (`.so`).

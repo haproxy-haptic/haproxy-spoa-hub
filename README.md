@@ -360,7 +360,7 @@ crates/
       lib.rs                Re-exports, define_plugin! macro
       types.rs              SpoeMessage, SpoeValue, ProcessingResult
       plugin_trait.rs       #[sabi_trait] SpoePlugin + PluginMod
-plugins/
+examples/
   noop/                     Example: sets one variable
   delay/                    Test: configurable sleep
   echo/                     Test: echoes all args back

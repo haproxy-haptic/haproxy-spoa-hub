@@ -9,9 +9,9 @@ in parallel), and returns aggregated variables to HAProxy.
 ```
 crates/hub/          Binary + library: the hub daemon
 crates/plugin-api/   Library: published plugin API crate (haproxy-spoa-hub-plugin-api)
-plugins/noop/        Example plugin: sets one variable
-plugins/delay/       Test plugin: configurable sleep
-plugins/echo/        Test plugin: echoes all args back
+examples/noop/       Example plugin: sets one variable
+examples/delay/      Test plugin: configurable sleep
+examples/echo/       Test plugin: echoes all args back
 tests/integration/   Docker-based integration tests (HAProxy + hub)
 ```
 
