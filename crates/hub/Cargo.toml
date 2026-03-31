@@ -26,7 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 metrics-tracing-context = "0.18"
-metrics-util = "0.19"
+metrics-util = "0.20"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
