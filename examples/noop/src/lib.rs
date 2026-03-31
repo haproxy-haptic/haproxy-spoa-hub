@@ -15,7 +15,10 @@ define_plugin!(NoopPlugin, {
         NoopPlugin
     }
 
-    fn init(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn init(
+        &mut self,
+        _context: &PluginContext,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
     }
 

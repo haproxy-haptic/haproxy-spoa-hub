@@ -95,6 +95,14 @@ impl PluginRegistry {
     pub fn get_plugin(&self, name: &str) -> Option<&PluginEntry> {
         self.plugins.get(name)
     }
+
+    /// Call `shutdown()` on all loaded plugins.
+    pub fn shutdown_all(&self) {
+        for (name, entry) in &self.plugins {
+            tracing::info!(plugin = %name, "shutting down plugin");
+            entry.instance.shutdown();
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

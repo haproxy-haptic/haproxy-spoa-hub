@@ -398,6 +398,7 @@ mod tests {
             messages: vec!["test-msg".into()],
             depends_on: vec![],
             timeout_ms: Some(1000),
+            params: Default::default(),
         };
         crate::plugin_loader::load_plugin(&dir, &config, 100).unwrap()
     }

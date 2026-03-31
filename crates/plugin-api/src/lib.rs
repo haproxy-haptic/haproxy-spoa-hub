@@ -6,7 +6,7 @@ pub mod types;
 
 pub use abi_stable;
 pub use plugin_trait::{PluginBox, PluginMod, PluginMod_Ref, SpoePlugin, SpoePlugin_TO};
-pub use types::{ProcessingResult, SpoeMessage, SpoeValue, TxnVariable, VarScope};
+pub use types::{PluginContext, ProcessingResult, SpoeMessage, SpoeValue, TxnVariable, VarScope};
 
 /// Define a plugin with automatic panic safety and module export.
 ///
@@ -27,7 +27,9 @@ pub use types::{ProcessingResult, SpoeMessage, SpoeValue, TxnVariable, VarScope}
 ///         MyPlugin
 ///     }
 ///
-///     fn init(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///     fn init(&mut self, _context: &PluginContext)
+///         -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+///     {
 ///         Ok(())
 ///     }
 ///
@@ -54,7 +56,7 @@ macro_rules! define_plugin {
     ($plugin_ty:ty, {
         fn new() -> Self $new_body:block
 
-        fn init(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body:block
+        fn init(&mut self, $ctx_param:ident : &PluginContext $(,)?) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body:block
 
         fn name(&self) -> &str $name_body:block
 
@@ -73,7 +75,10 @@ macro_rules! define_plugin {
 
             impl $plugin_ty {
                 pub fn __new() -> Self $new_body
-                pub fn __init(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body
+                pub fn __init(
+                    &mut self,
+                    $ctx_param: &$crate::PluginContext,
+                ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body
                 pub fn __name(&self) -> &str $name_body
                 pub fn __version(&self) -> &str $version_body
                 pub fn __process(
@@ -83,8 +88,11 @@ macro_rules! define_plugin {
             }
 
             impl $crate::SpoePlugin for $plugin_ty {
-                fn init(&mut self) -> RResult<(), RBoxError> {
-                    match self.__init() {
+                fn init(
+                    &mut self,
+                    context: &$crate::PluginContext,
+                ) -> RResult<(), RBoxError> {
+                    match self.__init(context) {
                         Ok(()) => RResult::ROk(()),
                         Err(e) => RResult::RErr(RBoxError::from_box(e)),
                     }
@@ -116,6 +124,8 @@ macro_rules! define_plugin {
                 fn version(&self) -> RStr<'_> {
                     self.__version().into()
                 }
+
+                fn shutdown(&self) {}
             }
 
             #[$crate::abi_stable::export_root_module]

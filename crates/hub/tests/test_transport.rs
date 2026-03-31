@@ -25,6 +25,7 @@ fn build_noop_registry() -> haproxy_spoa_hub::registry::SharedRegistry {
         messages: vec!["check-request".to_string()],
         depends_on: vec![],
         timeout_ms: Some(1000),
+        params: Default::default(),
     };
 
     let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&plugin_dir, &config, 100)

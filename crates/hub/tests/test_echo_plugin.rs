@@ -35,6 +35,7 @@ async fn test_echo_plugin_returns_all_types() {
         messages: vec!["check-types".to_string()],
         depends_on: vec![],
         timeout_ms: Some(1000),
+        params: Default::default(),
     };
 
     let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&plugin_dir, &config, 100)

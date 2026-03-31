@@ -116,7 +116,8 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("received SIGHUP, reloading configuration");
                 match reload_plugins(&config_path, default_timeout) {
                     Ok(new_registry) => {
-                        reload_registry.store(Arc::new(new_registry));
+                        let old_registry = reload_registry.swap(Arc::new(new_registry));
+                        old_registry.shutdown_all();
                         tracing::info!("configuration reloaded successfully");
                     }
                     Err(e) => {
@@ -127,10 +128,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Start listeners (returns after shutdown + drain)
-    listener::start_listeners(&hub_config.listeners, registry, shutdown).await?;
+    // Start listeners (returns after shutdown + drain, or on bind failure)
+    let result =
+        listener::start_listeners(&hub_config.listeners, Arc::clone(&registry), shutdown).await;
 
+    // Always shutdown plugins, whether we're exiting cleanly or due to error
+    registry.load().shutdown_all();
+
+    if let Err(e) = &result {
+        tracing::error!(error = %e, "listener failed");
+    }
     tracing::info!("shutdown complete");
+    result?;
     Ok(())
 }
 

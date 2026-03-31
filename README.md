@@ -162,6 +162,7 @@ depends_on = ["ja3"]  # runs after ja3, receives ja3.hash in message args
 | `messages` | array | yes | — | SPOE message names this plugin handles |
 | `depends_on` | array | no | `[]` | Plugin names that must complete before this one |
 | `timeout_ms` | integer | no | `default_timeout_ms` | Per-plugin timeout override |
+| `params` | table | no | `{}` | Free-form key-value parameters passed to `init()` |
 
 !!! note
     Top-level keys (`plugin_dir`, `default_timeout_ms`, etc.) must appear **before** any `[[listeners]]` or `[[plugins]]` table arrays in the TOML file.
@@ -203,8 +204,9 @@ define_plugin!(MyPlugin, {
         MyPlugin
     }
 
-    fn init(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Set up resources (database connections, lookup tables, etc.)
+    fn init(&mut self, context: &PluginContext) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Access per-plugin configuration from [plugins.params]
+        // e.g.: let db_path = context.config.get(&"db_path".into());
         Ok(())
     }
 
@@ -261,7 +263,33 @@ Variable scopes control lifetime in HAProxy: `Process`, `Session`, `Transaction`
 
 You set variables with plain names (e.g., `"country_code"`). The hub automatically prefixes them with your plugin name. A plugin named `"geoip"` setting `"country_code"` produces the HAProxy variable `geoip.country_code`.
 
-### 5. Plugin dependencies
+### 5. Plugin configuration
+
+Plugins receive per-plugin parameters via the `[plugins.params]` TOML table:
+
+```toml
+[[plugins]]
+name = "geoip"
+library = "libgeoip_lookup.so"
+messages = ["check-request"]
+
+[plugins.params]
+db_path = "/data/GeoLite2-City.mmdb"
+locale = "en"
+```
+
+These are passed to `init()` as a `PluginContext` with a string key-value map:
+
+```rust
+fn init(&mut self, context: &PluginContext) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let db_path = context.config.get(&"db_path".into())
+        .ok_or("missing required config: db_path")?;
+    self.db = MaxMindDB::open(db_path.as_str())?;
+    Ok(())
+}
+```
+
+### 6. Plugin dependencies
 
 If your plugin needs output from another plugin, declare it in the hub config:
 
@@ -276,7 +304,7 @@ timeout_ms = 80
 
 Your plugin receives the upstream plugin's output variables as additional entries in `message.args`, keyed by their prefixed names (e.g., `"ja3.hash"`).
 
-### 6. Build and deploy
+### 7. Build and deploy
 
 ```bash
 cargo build --release

@@ -1,7 +1,7 @@
 use abi_stable::std_types::{RBoxError, RResult, RStr};
 
 use haproxy_spoa_hub_plugin_api::{
-    PluginPanicError, ProcessingResult, SpoeMessage, SpoePlugin, SpoePlugin_TO,
+    PluginContext, PluginPanicError, ProcessingResult, SpoeMessage, SpoePlugin, SpoePlugin_TO,
 };
 
 /// A plugin whose `process()` always panics.
@@ -9,15 +9,11 @@ use haproxy_spoa_hub_plugin_api::{
 struct PanickingPlugin;
 
 impl SpoePlugin for PanickingPlugin {
-    fn init(&mut self) -> RResult<(), RBoxError> {
+    fn init(&mut self, _context: &PluginContext) -> RResult<(), RBoxError> {
         RResult::ROk(())
     }
 
     fn process(&self, _message: &SpoeMessage) -> RResult<ProcessingResult, RBoxError> {
-        // Simulate a bug: instead of returning, we wrap in catch_unwind
-        // to test the macro's safety net. Since we can't use the macro
-        // in an integration test (it generates an export_root_module),
-        // we replicate the catch_unwind wrapper directly.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             panic!("intentional panic in process()")
         }));
@@ -35,6 +31,8 @@ impl SpoePlugin for PanickingPlugin {
     fn version(&self) -> RStr<'_> {
         "0.0.1".into()
     }
+
+    fn shutdown(&self) {}
 }
 
 #[test]
@@ -69,7 +67,7 @@ fn test_panicking_plugin_returns_rerr() {
 struct ErrorPlugin;
 
 impl SpoePlugin for ErrorPlugin {
-    fn init(&mut self) -> RResult<(), RBoxError> {
+    fn init(&mut self, _context: &PluginContext) -> RResult<(), RBoxError> {
         RResult::ROk(())
     }
 
@@ -89,6 +87,8 @@ impl SpoePlugin for ErrorPlugin {
     fn version(&self) -> RStr<'_> {
         "0.0.1".into()
     }
+
+    fn shutdown(&self) {}
 }
 
 #[test]
