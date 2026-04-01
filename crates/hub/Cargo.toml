@@ -27,7 +27,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 metrics-tracing-context = "0.18"
 metrics-util = "0.20"
-toml = "0.8"
+toml = "1.0"
 serde = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
