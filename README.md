@@ -145,6 +145,8 @@ depends_on = ["ja3"]  # runs after ja3, receives ja3.hash in message args
 | `default_timeout_ms` | integer | no | 100 | Default per-plugin execution timeout |
 | `log_level` | string | no | `"info"` | Log level (`RUST_LOG` syntax) |
 | `metrics_addr` | string | no | disabled | Prometheus endpoint bind address (e.g., `"0.0.0.0:9090"`) |
+| `worker_threads` | integer | no | num CPUs | Tokio runtime worker threads |
+| `max_connections` | integer | no | unlimited | Maximum concurrent SPOP connections |
 
 ### `[[listeners]]`
 

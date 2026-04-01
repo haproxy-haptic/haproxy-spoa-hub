@@ -13,6 +13,10 @@ pub struct HubConfig {
     pub metrics_addr: Option<SocketAddr>,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Tokio worker threads. Defaults to the number of CPU cores.
+    pub worker_threads: Option<usize>,
+    /// Maximum concurrent SPOP connections. Defaults to unlimited.
+    pub max_connections: Option<usize>,
     pub plugins: Vec<PluginConfig>,
 }
 

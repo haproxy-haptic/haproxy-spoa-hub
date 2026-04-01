@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::net::{TcpListener, UnixListener};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{ListenerConfig, ListenerType};
@@ -11,22 +12,29 @@ use crate::registry::SharedRegistry;
 static ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Start all configured listeners, accepting connections concurrently.
-/// Returns the cancellation token that can be used to trigger graceful shutdown.
 pub async fn start_listeners(
     configs: &[ListenerConfig],
     registry: SharedRegistry,
     shutdown: CancellationToken,
+    max_connections: Option<usize>,
 ) -> anyhow::Result<()> {
+    // Shared semaphore across all listeners to enforce the global connection limit
+    let conn_semaphore = max_connections.map(|n| {
+        tracing::info!(max_connections = n, "connection limit enabled");
+        Arc::new(Semaphore::new(n))
+    });
+
     let mut handles = Vec::new();
 
     for config in configs {
         let registry = Arc::clone(&registry);
         let shutdown = shutdown.clone();
+        let semaphore = conn_semaphore.clone();
         match config.listener_type {
             ListenerType::Unix => {
                 let path = config.address.clone();
                 handles.push(tokio::spawn(async move {
-                    if let Err(e) = run_unix_listener(&path, registry, shutdown).await {
+                    if let Err(e) = run_unix_listener(&path, registry, shutdown, semaphore).await {
                         tracing::error!(error = %e, path = %path, "Unix listener failed");
                     }
                 }));
@@ -34,7 +42,7 @@ pub async fn start_listeners(
             ListenerType::Tcp => {
                 let addr = config.address.clone();
                 handles.push(tokio::spawn(async move {
-                    if let Err(e) = run_tcp_listener(&addr, registry, shutdown).await {
+                    if let Err(e) = run_tcp_listener(&addr, registry, shutdown, semaphore).await {
                         tracing::error!(error = %e, addr = %addr, "TCP listener failed");
                     }
                 }));
@@ -73,6 +81,7 @@ async fn run_unix_listener(
     path: &str,
     registry: SharedRegistry,
     shutdown: CancellationToken,
+    semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     // Clean up stale socket file
     if std::path::Path::new(path).exists() {
@@ -92,30 +101,35 @@ async fn run_unix_listener(
 
     loop {
         tokio::select! {
-                    result = listener.accept() => {
-                        match result {
-                            Ok((stream, _addr)) => {
-                                let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
-                                #[allow(clippy::cast_precision_loss)]
-        crate::metrics::update_active_connections(count as f64);
-                                let registry = Arc::clone(&registry);
-                                tokio::spawn(async move {
-                                    handle_connection(stream, registry).await;
-                                    let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
-                                    #[allow(clippy::cast_precision_loss)]
-        crate::metrics::update_active_connections(count as f64);
-                                });
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "failed to accept Unix connection");
-                            }
-                        }
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, _addr)) => {
+                        let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
+                        #[allow(clippy::cast_precision_loss)]
+                        crate::metrics::update_active_connections(count as f64);
+                        let registry = Arc::clone(&registry);
+                        let permit = semaphore.as_ref().map(Arc::clone);
+                        tokio::spawn(async move {
+                            let _permit = match permit {
+                                Some(s) => Some(s.acquire_owned().await.expect("semaphore closed")),
+                                None => None,
+                            };
+                            handle_connection(stream, registry).await;
+                            let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
+                            #[allow(clippy::cast_precision_loss)]
+                            crate::metrics::update_active_connections(count as f64);
+                        });
                     }
-                    () = shutdown.cancelled() => {
-                        tracing::info!(transport = "unix", "listener shutting down");
-                        break;
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to accept Unix connection");
                     }
                 }
+            }
+            () = shutdown.cancelled() => {
+                tracing::info!(transport = "unix", "listener shutting down");
+                break;
+            }
+        }
     }
     Ok(())
 }
@@ -124,37 +138,43 @@ async fn run_tcp_listener(
     addr: &str,
     registry: SharedRegistry,
     shutdown: CancellationToken,
+    semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(transport = "tcp", address = %addr, "listening");
 
     loop {
         tokio::select! {
-                    result = listener.accept() => {
-                        match result {
-                            Ok((stream, peer_addr)) => {
-                                let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
-                                #[allow(clippy::cast_precision_loss)]
-        crate::metrics::update_active_connections(count as f64);
-                                tracing::debug!(%peer_addr, "TCP connection accepted");
-                                let registry = Arc::clone(&registry);
-                                tokio::spawn(async move {
-                                    handle_connection(stream, registry).await;
-                                    let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
-                                    #[allow(clippy::cast_precision_loss)]
-        crate::metrics::update_active_connections(count as f64);
-                                });
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "failed to accept TCP connection");
-                            }
+        result = listener.accept() => {
+            match result {
+                Ok((stream, peer_addr)) => {
+                    let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
+                    #[allow(clippy::cast_precision_loss)]
+                    crate::metrics::update_active_connections(count as f64);
+                    tracing::debug!(%peer_addr, "TCP connection accepted");
+                    let registry = Arc::clone(&registry);
+                    let permit = semaphore.as_ref().map(Arc::clone);
+                    tokio::spawn(async move {
+                        let _permit = match permit {
+                            Some(s) => Some(s.acquire_owned().await.expect("semaphore closed")),
+                            None => None,
+                        };
+                        handle_connection(stream, registry).await;
+                        let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
+                        #[allow(clippy::cast_precision_loss)]
+                        crate::metrics::update_active_connections(count as f64);
+                    });
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to accept TCP connection");
                         }
                     }
-                    () = shutdown.cancelled() => {
-                        tracing::info!(transport = "tcp", "listener shutting down");
-                        break;
-                    }
                 }
+                () = shutdown.cancelled() => {
+                    tracing::info!(transport = "tcp", "listener shutting down");
+                    break;
+                }
+            }
     }
 
     Ok(())

@@ -60,6 +60,8 @@ timeout_ms = 80
 | default_timeout_ms | integer | no | 100 | Default per-plugin timeout |
 | metrics_addr | string | no | disabled | Prometheus endpoint bind address |
 | log_level | string | no | "info" | Log level (RUST_LOG syntax) |
+| worker_threads | integer | no | num CPUs | Tokio runtime worker threads |
+| max_connections | integer | no | unlimited | Maximum concurrent SPOP connections |
 | plugins | array of table | yes | — | Plugin configurations |
 
 ### [[listeners]]

@@ -97,7 +97,7 @@ Concrete rules:
   request-processing path; regressions fail CI.
 - Concurrency primitives MUST be chosen to avoid lock contention
   under parallel agent execution.
-- Resource limits (goroutines, threads, file descriptors) MUST be
+- Resource limits (threads, tasks, file descriptors) MUST be
   configurable and documented with sensible defaults.
 
 **Rationale**: HAProxy is chosen for its performance. An offload
