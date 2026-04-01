@@ -191,54 +191,71 @@ abi_stable = "0.11"
 
 ### 2. Implement the plugin
 
+Define your plugin as a struct with regular methods, then register it with `define_plugin!`:
+
 ```rust
-#![allow(non_camel_case_types, non_local_definitions, clippy::unnecessary_wraps, clippy::wildcard_imports)]
+#![allow(non_camel_case_types, non_local_definitions, clippy::unnecessary_wraps)]
 
 use haproxy_spoa_hub_plugin_api::*;
 
 #[derive(Debug)]
-struct MyPlugin;
+struct MyPlugin {
+    log: LogFn,
+}
 
-define_plugin!(MyPlugin, {
+impl MyPlugin {
     fn new() -> Self {
-        MyPlugin
+        // Provide a no-op log until init() sets the real callback
+        extern "C" fn noop(
+            _: LogLevel,
+            _: &abi_stable::std_types::RStr<'_>,
+            _: &abi_stable::std_types::RStr<'_>,
+        ) {}
+        MyPlugin { log: noop }
     }
 
-    fn init(&mut self, context: &PluginContext) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn init(
+        &mut self,
+        context: &PluginContext,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Store callbacks for use in process()
+        self.log = context.log;
         // Access per-plugin configuration from [plugins.params]
         // e.g.: let db_path = context.config.get(&"db_path".into());
+        (self.log)(LogLevel::Info, &"my-plugin".into(), &"initialized".into());
         Ok(())
     }
 
-    fn name(&self) -> &str {
-        "my-plugin"
-    }
-
-    fn version(&self) -> &str {
-        env!("CARGO_PKG_VERSION")
-    }
+    fn name(&self) -> &str { "my-plugin" }
+    fn version(&self) -> &str { env!("CARGO_PKG_VERSION") }
 
     fn process(
         &self,
         message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
-        // Access pre-parsed message arguments
         let src = message.args.get(&"src".into());
 
         Ok(ProcessingResult {
-            variables: vec![
-                TxnVariable {
-                    scope: VarScope::Session,
-                    name: "result".into(),
-                    value: SpoeValue::String("processed".into()),
-                },
-            ].into(),
+            variables: vec![TxnVariable {
+                scope: VarScope::Session,
+                name: "result".into(),
+                value: SpoeValue::String("processed".into()),
+            }]
+            .into(),
         })
     }
-});
+}
+
+define_plugin!(MyPlugin);
 ```
 
-The `define_plugin!` macro handles FFI boilerplate and wraps `process()` in `catch_unwind` so a panic in your plugin doesn't crash the hub.
+`define_plugin!` generates the FFI trait impl and wraps `process()` in `catch_unwind` so a panic doesn't crash the hub. Errors returned as `Box<dyn Error>` are classified as permanent by default. To signal a transient error (e.g., upstream timeout), return a `PluginError` directly:
+
+```rust
+return Err(Box::new(PluginError::transient("upstream timed out")));
+```
+
+The hub logs transient errors at WARN and permanent errors at ERROR, and includes the error kind in the `spoa_plugin_errors_total` metric label.
 
 ### 3. Available types
 
@@ -313,6 +330,40 @@ cp target/release/libmy_spoa_plugin.so /opt/spoa-plugins/
 
 Add a `[[plugins]]` entry to the hub config and either restart the hub or send SIGHUP to reload.
 
+### 8. Plugin logging
+
+Plugins can emit structured logs through the hub's logging infrastructure via the `LogFn` callback in `PluginContext`. Store it during `init()`:
+
+```rust
+(self.log)(LogLevel::Info, &"my-plugin".into(), &"request processed".into());
+```
+
+Log lines appear in the hub's JSON output with the plugin name as context. Available levels: `Trace`, `Debug`, `Info`, `Warn`, `Error`.
+
+### 9. Plugin metrics
+
+Plugins can emit Prometheus metrics via callbacks in `PluginContext`:
+
+```rust
+// Increment a counter
+(self.counter)(&"myplugin_requests_total".into(), [].as_slice().into(), 1);
+
+// Record a histogram observation
+(self.histogram)(&"myplugin_latency_seconds".into(), [].as_slice().into(), 0.042);
+
+// Set a gauge
+(self.gauge)(&"myplugin_cache_size".into(), [].as_slice().into(), 1024.0);
+```
+
+Metrics appear on the hub's `/metrics` Prometheus endpoint automatically. Use labels for dimensions:
+
+```rust
+use haproxy_spoa_hub_plugin_api::abi_stable::std_types::Tuple2;
+
+let labels = [Tuple2("status".into(), "hit".into())];
+(self.counter)(&"myplugin_cache_total".into(), labels.as_slice().into(), 1);
+```
+
 ## Observability
 
 ### Structured Logging
@@ -344,7 +395,7 @@ metrics_addr = "0.0.0.0:9090"
 | `spoa_messages_total` | counter | `message` | Total SPOP messages processed |
 | `spoa_message_duration_seconds` | histogram | `message` | Per-message processing latency |
 | `spoa_active_connections` | gauge | — | Current active SPOP connections |
-| `spoa_plugin_errors_total` | counter | `plugin` | Plugin processing errors |
+| `spoa_plugin_errors_total` | counter | `plugin`, `kind` | Plugin processing errors (`kind`: `transient` or `permanent`) |
 | `spoa_plugin_timeouts_total` | counter | `plugin` | Plugin timeout events |
 
 All metrics carry a `service="haproxy-spoa-hub"` global label.
