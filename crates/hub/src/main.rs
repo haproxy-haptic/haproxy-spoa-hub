@@ -39,16 +39,31 @@ fn init_logging(log_level: &str) {
         .init();
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Load and validate configuration
     let hub_config = config::HubConfig::load(&cli.config)?;
 
+    // Build tokio runtime with configurable worker threads
+    let mut rt_builder = tokio::runtime::Builder::new_multi_thread();
+    rt_builder.enable_all();
+    if let Some(threads) = hub_config.worker_threads {
+        rt_builder.worker_threads(threads);
+    }
+    let rt = rt_builder.build()?;
+
+    rt.block_on(async_main(cli, hub_config))
+}
+
+async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<()> {
     // Initialize logging
     init_logging(&hub_config.log_level);
     tracing::info!(config = %cli.config.display(), "configuration loaded");
+
+    if let Some(threads) = hub_config.worker_threads {
+        tracing::info!(worker_threads = threads, "custom worker thread count");
+    }
 
     // --check mode: validate and exit
     if cli.check {
@@ -129,8 +144,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Start listeners (returns after shutdown + drain, or on bind failure)
-    let result =
-        listener::start_listeners(&hub_config.listeners, Arc::clone(&registry), shutdown).await;
+    let result = listener::start_listeners(
+        &hub_config.listeners,
+        Arc::clone(&registry),
+        shutdown,
+        hub_config.max_connections,
+    )
+    .await;
 
     // Always shutdown plugins, whether we're exiting cleanly or due to error
     registry.load().shutdown_all();

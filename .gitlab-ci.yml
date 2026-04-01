@@ -156,6 +156,13 @@ bench:
     # Build debug plugins first (benchmarks load .so from target/debug/)
     - cargo build --workspace
     - cargo bench -p haproxy-spoa-hub 2>&1 | tee bench-output.txt
+    # Fail if criterion detected a regression
+    - |
+      if grep -q "regressed" bench-output.txt; then
+        echo "Benchmark regression detected:"
+        grep "regressed" bench-output.txt
+        exit 1
+      fi
   artifacts:
     paths:
       - bench-output.txt
