@@ -108,9 +108,7 @@ impl HubConfig {
                     self.plugin_dir.display()
                 )));
             }
-        }
 
-        for plugin in &self.plugins {
             for dep in &plugin.depends_on {
                 if !names.contains(dep) {
                     return Err(ConfigError::Validation(format!(
@@ -119,12 +117,7 @@ impl HubConfig {
                     )));
                 }
             }
-        }
 
-        // Check for circular dependencies via topological sort
-        self.check_circular_dependencies()?;
-
-        for plugin in &self.plugins {
             if let Some(timeout) = plugin.timeout_ms {
                 if timeout == 0 {
                     return Err(ConfigError::Validation(format!(
@@ -134,6 +127,9 @@ impl HubConfig {
                 }
             }
         }
+
+        // Check for circular dependencies via topological sort
+        self.check_circular_dependencies()?;
 
         if self.default_timeout_ms == 0 {
             return Err(ConfigError::Validation(
@@ -145,37 +141,42 @@ impl HubConfig {
     }
 
     fn check_circular_dependencies(&self) -> Result<(), ConfigError> {
-        let name_to_deps: HashMap<String, Vec<String>> = self
+        let name_to_deps: HashMap<&str, Vec<&str>> = self
             .plugins
             .iter()
-            .map(|p| (p.name.clone(), p.depends_on.clone()))
+            .map(|p| {
+                (
+                    p.name.as_str(),
+                    p.depends_on.iter().map(String::as_str).collect(),
+                )
+            })
             .collect();
 
         let mut visited = HashSet::new();
         let mut in_stack = HashSet::new();
 
         for plugin in &self.plugins {
-            if !visited.contains(&plugin.name) {
+            if !visited.contains(plugin.name.as_str()) {
                 Self::dfs_cycle_check(&plugin.name, &name_to_deps, &mut visited, &mut in_stack)?;
             }
         }
         Ok(())
     }
 
-    fn dfs_cycle_check(
-        node: &str,
-        deps: &HashMap<String, Vec<String>>,
-        visited: &mut HashSet<String>,
-        in_stack: &mut HashSet<String>,
+    fn dfs_cycle_check<'a>(
+        node: &'a str,
+        deps: &HashMap<&'a str, Vec<&'a str>>,
+        visited: &mut HashSet<&'a str>,
+        in_stack: &mut HashSet<&'a str>,
     ) -> Result<(), ConfigError> {
-        visited.insert(node.to_string());
-        in_stack.insert(node.to_string());
+        visited.insert(node);
+        in_stack.insert(node);
 
         if let Some(node_deps) = deps.get(node) {
-            for dep in node_deps {
-                if !visited.contains(dep.as_str()) {
+            for &dep in node_deps {
+                if !visited.contains(dep) {
                     Self::dfs_cycle_check(dep, deps, visited, in_stack)?;
-                } else if in_stack.contains(dep.as_str()) {
+                } else if in_stack.contains(dep) {
                     return Err(ConfigError::Validation(format!(
                         "circular dependency detected involving plugin '{node}' and '{dep}'"
                     )));

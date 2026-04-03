@@ -330,11 +330,12 @@ fn handle_plugin_result(
 
 /// Build a message with extra args merged in (for dependency data flow).
 fn build_message(original: &SpoeMessage, extra_args: Option<&ArgMap>) -> SpoeMessage {
+    let Some(extras) = extra_args else {
+        return original.clone();
+    };
     let mut msg = original.clone();
-    if let Some(extras) = extra_args {
-        for pair in extras {
-            msg.args.insert(pair.0.clone(), pair.1.clone());
-        }
+    for pair in extras {
+        msg.args.insert(pair.0.clone(), pair.1.clone());
     }
     msg
 }

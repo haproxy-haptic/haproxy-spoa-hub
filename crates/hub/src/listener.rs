@@ -30,24 +30,21 @@ pub async fn start_listeners(
         let registry = Arc::clone(&registry);
         let shutdown = shutdown.clone();
         let semaphore = conn_semaphore.clone();
-        match config.listener_type {
-            ListenerType::Unix => {
-                let path = config.address.clone();
-                handles.push(tokio::spawn(async move {
-                    if let Err(e) = run_unix_listener(&path, registry, shutdown, semaphore).await {
-                        tracing::error!(error = %e, path = %path, "Unix listener failed");
-                    }
-                }));
+        let address = config.address.clone();
+        let listener_type = config.listener_type;
+        handles.push(tokio::spawn(async move {
+            let result = match listener_type {
+                ListenerType::Unix => {
+                    run_unix_listener(&address, registry, shutdown, semaphore).await
+                }
+                ListenerType::Tcp => {
+                    run_tcp_listener(&address, registry, shutdown, semaphore).await
+                }
+            };
+            if let Err(e) = result {
+                tracing::error!(error = %e, address = %address, "listener failed");
             }
-            ListenerType::Tcp => {
-                let addr = config.address.clone();
-                handles.push(tokio::spawn(async move {
-                    if let Err(e) = run_tcp_listener(&addr, registry, shutdown, semaphore).await {
-                        tracing::error!(error = %e, addr = %addr, "TCP listener failed");
-                    }
-                }));
-            }
-        }
+        }));
     }
 
     // Wait for all listeners (they stop on shutdown signal)

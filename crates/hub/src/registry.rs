@@ -130,11 +130,11 @@ fn build_execution_plan(
     let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
 
     for name in plugin_names {
-        in_degree.entry(name.as_str()).or_insert(0);
+        let degree = in_degree.entry(name.as_str()).or_insert(0);
         if let Some(deps) = depends_on.get(name) {
             for dep in deps {
                 if name_set.contains(dep.as_str()) {
-                    *in_degree.entry(name.as_str()).or_insert(0) += 1;
+                    *degree += 1;
                     dependents
                         .entry(dep.as_str())
                         .or_default()
