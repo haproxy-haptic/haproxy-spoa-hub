@@ -136,13 +136,16 @@ async fn handle_notify_frame(
         let start = std::time::Instant::now();
 
         // Convert spop message args to our SpoeMessage type
-        let mut args = abi_stable::std_types::RHashMap::new();
-        for (key, value) in &msg.args {
-            args.insert(
-                abi_stable::std_types::RString::from(key.as_str()),
-                dispatch::typed_data_to_spoe_value(value),
-            );
-        }
+        let args = msg
+            .args
+            .iter()
+            .map(|(key, value)| {
+                (
+                    abi_stable::std_types::RString::from(key.as_str()),
+                    dispatch::typed_data_to_spoe_value(value),
+                )
+            })
+            .collect();
 
         let spoe_msg = haproxy_spoa_hub_plugin_api::SpoeMessage {
             name: msg.name.as_str().into(),

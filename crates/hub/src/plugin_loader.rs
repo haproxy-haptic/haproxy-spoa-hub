@@ -187,7 +187,7 @@ pub fn load_all_plugins(
     configs: &[PluginConfig],
     default_timeout_ms: u64,
 ) -> Vec<LoadedPlugin> {
-    let mut loaded = Vec::new();
+    let mut loaded = Vec::with_capacity(configs.len());
 
     for config in configs {
         match load_plugin(plugin_dir, config, default_timeout_ms) {
