@@ -74,6 +74,15 @@ pub fn spoe_value_to_typed_data(val: &SpoeValue) -> TypedData {
 /// Hub control args use the `hub.` prefix and are consumed by the hub
 /// dispatch layer. Plugins never see them.
 fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, SpoeMessage) {
+    let has_hub_args = message
+        .args
+        .iter()
+        .any(|Tuple2(key, _)| key.starts_with(HUB_ARG_PREFIX));
+
+    if !has_hub_args {
+        return (HashSet::new(), message.clone());
+    }
+
     let mut skip_set = HashSet::new();
     let mut cleaned_args = RHashMap::new();
 
@@ -259,7 +268,7 @@ async fn call_single_plugin(
     let entry = registry.get_plugin(plugin_name)?;
     let instance = Arc::clone(&entry.instance);
     let timeout = entry.timeout;
-    let name = plugin_name.to_string();
+    let name = plugin_name.to_owned();
 
     let msg = build_message(message, extra_args);
 

@@ -88,7 +88,7 @@ where
                 tracing::debug!("HAProxy disconnected");
                 let disconnect = AgentDisconnect {
                     status_code: 0,
-                    message: "clean shutdown".to_string(),
+                    message: String::from("clean shutdown"),
                 };
                 let _ = framed.send(Box::new(disconnect)).await;
                 break;

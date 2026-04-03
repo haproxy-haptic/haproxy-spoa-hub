@@ -37,21 +37,21 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
 
 pub fn record_message_processed(message: &str, duration: std::time::Duration) {
     let message = message.to_owned();
-    counter!("spoa_messages_total", "message" => message.clone()).increment(1);
-    histogram!("spoa_message_duration_seconds", "message" => message)
+    histogram!("spoa_message_duration_seconds", "message" => message.clone())
         .record(duration.as_secs_f64());
+    counter!("spoa_messages_total", "message" => message).increment(1);
 }
 
 pub fn record_plugin_error(plugin: &str) {
-    counter!("spoa_plugin_errors_total", "plugin" => plugin.to_string()).increment(1);
+    counter!("spoa_plugin_errors_total", "plugin" => plugin.to_owned()).increment(1);
 }
 
 pub fn record_plugin_timeout(plugin: &str) {
-    counter!("spoa_plugin_timeouts_total", "plugin" => plugin.to_string()).increment(1);
+    counter!("spoa_plugin_timeouts_total", "plugin" => plugin.to_owned()).increment(1);
 }
 
 pub fn record_plugin_skip(plugin: &str) {
-    counter!("spoa_plugin_skips_total", "plugin" => plugin.to_string()).increment(1);
+    counter!("spoa_plugin_skips_total", "plugin" => plugin.to_owned()).increment(1);
 }
 
 pub fn update_active_connections(count: f64) {
