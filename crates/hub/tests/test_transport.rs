@@ -8,20 +8,9 @@ use common::spop_client::SpopClient;
 use spop::types::TypedData;
 use tokio::net::{TcpListener, TcpStream};
 
-fn noop_config() -> haproxy_spoa_hub::config::PluginConfig {
-    haproxy_spoa_hub::config::PluginConfig {
-        name: "noop".to_string(),
-        library: "libnoop_plugin.so".to_string(),
-        messages: vec!["check-request".to_string()],
-        depends_on: vec![],
-        timeout_ms: Some(1000),
-        params: toml::Table::default(),
-    }
-}
-
 #[tokio::test]
 async fn test_dual_transport_identical_responses() {
-    let registry = common::build_registry(vec![noop_config()]);
+    let registry = common::build_registry(&[common::noop_config()]);
 
     // --- Unix listener ---
     let socket_path = common::unique_sock("transport");
@@ -99,7 +88,7 @@ async fn test_dual_transport_identical_responses() {
 
 #[tokio::test]
 async fn test_tcp_notify_with_args() {
-    let registry = common::build_registry(vec![noop_config()]);
+    let registry = common::build_registry(&[common::noop_config()]);
 
     let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let tcp_addr = tcp_listener.local_addr().unwrap();
@@ -132,7 +121,7 @@ async fn test_tcp_notify_with_args() {
 
 #[tokio::test]
 async fn test_unix_notify_with_args() {
-    let registry = common::build_registry(vec![noop_config()]);
+    let registry = common::build_registry(&[common::noop_config()]);
 
     let socket_path = common::unique_sock("unix-args");
     let _ = std::fs::remove_file(&socket_path);
@@ -150,7 +139,5 @@ async fn test_unix_notify_with_args() {
     let var = ack.find_var("noop.result");
     assert!(var.is_some(), "expected noop.result in Unix ACK");
 
-    client.disconnect().await.ok();
-    let _ = tokio::time::timeout(Duration::from_secs(1), server).await;
-    let _ = std::fs::remove_file(&socket_path);
+    common::cleanup(client, server, &socket_path).await;
 }

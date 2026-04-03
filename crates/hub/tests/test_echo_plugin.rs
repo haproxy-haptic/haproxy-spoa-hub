@@ -1,7 +1,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use spop::types::TypedData;
 
@@ -19,7 +18,7 @@ async fn test_echo_plugin_returns_all_types() {
         params: toml::Table::default(),
     };
 
-    let registry = common::build_registry(vec![config]);
+    let registry = common::build_registry(&[config]);
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
     let mut args = HashMap::new();
@@ -48,7 +47,5 @@ async fn test_echo_plugin_returns_all_types() {
     );
     assert!(ack.find_var("echo.bool_val").is_some(), "missing bool_val");
 
-    client.disconnect().await.ok();
-    let _ = tokio::time::timeout(Duration::from_secs(1), server).await;
-    let _ = std::fs::remove_file(&socket_path);
+    common::cleanup(client, server, &socket_path).await;
 }

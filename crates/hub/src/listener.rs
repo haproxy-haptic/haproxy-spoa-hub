@@ -106,6 +106,8 @@ async fn run_unix_listener(
     shutdown: CancellationToken,
     semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
     // Clean up stale socket file
     if std::path::Path::new(path).exists() {
         std::fs::remove_file(path)?;
@@ -114,11 +116,7 @@ async fn run_unix_listener(
     let listener = UnixListener::bind(path)?;
 
     // Set socket permissions to 0o660 (owner + group read/write)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
-    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
 
     tracing::info!(transport = "unix", address = %path, "listening");
 

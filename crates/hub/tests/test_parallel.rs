@@ -25,7 +25,7 @@ async fn test_parallel_plugins_execute_concurrently() {
     let socket_path = common::unique_sock("parallel");
     let _ = std::fs::remove_file(&socket_path);
 
-    let registry = common::build_registry(vec![
+    let registry = common::build_registry(&[
         delay_config("delay-a", "check-parallel", 2000),
         delay_config("delay-b", "check-parallel", 2000),
     ]);
@@ -59,9 +59,7 @@ async fn test_parallel_plugins_execute_concurrently() {
         "expected parallel execution (<200ms), took {elapsed:?}",
     );
 
-    client.disconnect().await.ok();
-    let _ = tokio::time::timeout(Duration::from_secs(1), server).await;
-    let _ = std::fs::remove_file(&socket_path);
+    common::cleanup(client, server, &socket_path).await;
 }
 
 #[tokio::test]
@@ -71,7 +69,7 @@ async fn test_plugin_timeout_returns_partial_results() {
 
     // fast plugin: 2000ms timeout (will complete)
     // slow plugin: 50ms timeout (will expire with 500ms delay)
-    let registry = common::build_registry(vec![
+    let registry = common::build_registry(&[
         delay_config("fast", "check-timeout", 2000),
         delay_config("slow", "check-timeout", 50),
     ]);
@@ -97,7 +95,5 @@ async fn test_plugin_timeout_returns_partial_results() {
         ack.actions
     );
 
-    client.disconnect().await.ok();
-    let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
-    let _ = std::fs::remove_file(&socket_path);
+    common::cleanup(client, server, &socket_path).await;
 }
