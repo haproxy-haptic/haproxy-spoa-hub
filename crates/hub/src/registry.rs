@@ -37,6 +37,7 @@ pub struct PluginEntry {
 pub struct PluginRegistry {
     plugins: HashMap<String, PluginEntry>,
     message_plans: HashMap<String, ExecutionPlan>,
+    depends_on: HashMap<String, Vec<String>>,
 }
 
 impl PluginRegistry {
@@ -81,6 +82,7 @@ impl PluginRegistry {
         Ok(Self {
             plugins,
             message_plans,
+            depends_on: depends_on_map,
         })
     }
 
@@ -94,6 +96,18 @@ impl PluginRegistry {
     #[must_use]
     pub fn get_plugin(&self, name: &str) -> Option<&PluginEntry> {
         self.plugins.get(name)
+    }
+
+    /// Get the declared dependencies for a plugin.
+    #[must_use]
+    pub fn dependencies_of(&self, name: &str) -> &[String] {
+        self.depends_on.get(name).map_or(&[], Vec::as_slice)
+    }
+
+    /// Get all plugin dependency declarations.
+    #[must_use]
+    pub fn all_dependencies(&self) -> &HashMap<String, Vec<String>> {
+        &self.depends_on
     }
 
     /// Call `shutdown()` on all loaded plugins.

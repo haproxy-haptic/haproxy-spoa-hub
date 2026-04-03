@@ -388,7 +388,28 @@ timeout_ms = 80
 
 Your plugin receives the upstream plugin's output variables as additional entries in `message.args`, keyed by their prefixed names (e.g., `"ja3.hash"`).
 
-### 8. Build and deploy
+### 8. Skipping plugins per-request
+
+The hub supports `hub.`-prefixed control args in SPOE messages. These are consumed by the hub and never passed to plugins. The first control arg is `hub.skip_plugins`: a comma-separated list of plugin names to skip for the current request.
+
+Configure HAProxy to set it conditionally using ACLs:
+
+```
+spoe-message check-request
+    args src=src method=method path=path hub.skip_plugins=var(txn.skip_plugins)
+    event on-frontend-http-request
+```
+
+```haproxy
+acl allowlisted src -f /etc/haproxy/allowlist.txt
+http-request set-var(txn.skip_plugins) str("rate-limiter") if allowlisted
+```
+
+Skipped plugins incur zero processing overhead (no thread pool scheduling, no FFI call). If a skipped plugin has dependents (declared via `depends_on`), those dependents are automatically skipped too.
+
+The hub logs skipped plugins at debug level and records a `spoa_plugin_skips_total` Prometheus counter with a `plugin` label.
+
+### 9. Build and deploy
 
 ```bash
 cargo build --release
@@ -397,7 +418,7 @@ cp target/release/libmy_spoa_plugin.so /opt/spoa-plugins/
 
 Add a `[[plugins]]` entry to the hub config and either restart the hub or send SIGHUP to reload.
 
-### 9. Plugin logging
+### 10. Plugin logging
 
 Plugins can emit structured logs through the hub's logging infrastructure via the `LogFn` callback in `PluginContext`. Store it during `init()`:
 
@@ -407,7 +428,7 @@ Plugins can emit structured logs through the hub's logging infrastructure via th
 
 Log lines appear in the hub's JSON output with the plugin name as context. Available levels: `Trace`, `Debug`, `Info`, `Warn`, `Error`.
 
-### 10. Plugin metrics
+### 11. Plugin metrics
 
 Plugins can emit Prometheus metrics via callbacks in `PluginContext`:
 
@@ -464,6 +485,7 @@ metrics_addr = "0.0.0.0:9090"
 | `spoa_active_connections` | gauge | — | Current active SPOP connections |
 | `spoa_plugin_errors_total` | counter | `plugin`, `kind` | Plugin processing errors (`kind`: `transient` or `permanent`) |
 | `spoa_plugin_timeouts_total` | counter | `plugin` | Plugin timeout events |
+| `spoa_plugin_skips_total` | counter | `plugin` | Plugins skipped via `hub.skip_plugins` |
 
 All metrics carry a `service="haproxy-spoa-hub"` global label.
 

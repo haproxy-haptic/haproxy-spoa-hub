@@ -1,11 +1,17 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
+use abi_stable::std_types::{RHashMap, RString, Tuple2};
 use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, VarScope};
 use spop::actions::VarScope as SpopVarScope;
 use spop::types::TypedData;
 
 use crate::registry::{ExecutionPlan, PluginRegistry};
+
+/// Prefix for hub control args. Args with this prefix are consumed by
+/// the hub and stripped from the message before plugins see them.
+const HUB_ARG_PREFIX: &str = "hub.";
 
 /// Convert a spop `TypedData` value to our FFI-safe `SpoeValue`.
 #[must_use]
@@ -59,6 +65,66 @@ pub fn spoe_value_to_typed_data(val: &SpoeValue) -> TypedData {
     }
 }
 
+/// Extract hub control args from a message, returning the skip set and
+/// a cleaned message with all `hub.*` args removed.
+///
+/// Hub control args use the `hub.` prefix and are consumed by the hub
+/// dispatch layer. Plugins never see them.
+fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, SpoeMessage) {
+    let mut skip_set = HashSet::new();
+    let mut cleaned_args = RHashMap::new();
+
+    for Tuple2(key, value) in &message.args {
+        if let Some(suffix) = key.strip_prefix(HUB_ARG_PREFIX) {
+            if suffix == "skip_plugins" {
+                if let SpoeValue::String(s) = value {
+                    skip_set = s
+                        .as_str()
+                        .split(',')
+                        .map(|name| name.trim().to_string())
+                        .filter(|name| !name.is_empty())
+                        .collect();
+                }
+            }
+            // All hub.* args consumed regardless of whether they're recognized
+        } else {
+            cleaned_args.insert(key.clone(), value.clone());
+        }
+    }
+
+    let cleaned = SpoeMessage {
+        name: message.name.clone(),
+        args: cleaned_args,
+        stream_id: message.stream_id,
+        frame_id: message.frame_id,
+    };
+
+    (skip_set, cleaned)
+}
+
+/// Expand the skip set by adding plugins that depend on any skipped plugin.
+///
+/// Called after processing each execution group. Because groups are
+/// topologically sorted, upstream skip decisions are finalized before
+/// downstream groups are evaluated.
+fn expand_skip_cascade(
+    skipped_name: &str,
+    registry: &PluginRegistry,
+    skip_set: &mut HashSet<String>,
+) {
+    for (name, deps) in registry.all_dependencies() {
+        if deps.iter().any(|d| d == skipped_name) && !skip_set.contains(name.as_str()) {
+            tracing::debug!(
+                plugin = %name,
+                reason = %skipped_name,
+                "plugin skipped (dependency cascade)"
+            );
+            crate::metrics::record_plugin_skip(name);
+            skip_set.insert(name.clone());
+        }
+    }
+}
+
 /// Result of dispatching a message to all plugins.
 pub struct DispatchResult {
     /// All collected transaction variables with namespace prefixes applied.
@@ -67,28 +133,56 @@ pub struct DispatchResult {
 
 /// Dispatch a message through the execution plan, running independent
 /// plugins in parallel and respecting dependency ordering.
+///
+/// Hub control args (`hub.*` prefix) are extracted and stripped before
+/// any plugin sees the message. The `hub.skip_plugins` arg skips named
+/// plugins and their transitive dependents.
 pub async fn dispatch_message(
     message: &SpoeMessage,
     plan: &ExecutionPlan,
     registry: &Arc<PluginRegistry>,
 ) -> DispatchResult {
+    let (mut skip_set, cleaned_message) = extract_hub_args(message);
+
     let mut all_variables: Vec<(VarScope, String, SpoeValue)> = Vec::new();
-    // Track whether upstream plugins have added variables.
-    // Only clone args when needed for dependency data flow.
-    let mut extra_args: Option<
-        abi_stable::std_types::RHashMap<abi_stable::std_types::RString, SpoeValue>,
-    > = None;
+    let mut extra_args: Option<RHashMap<RString, SpoeValue>> = None;
 
     for group in &plan.groups {
-        let group_results = execute_group(group, message, extra_args.as_ref(), registry).await;
+        // Filter out skipped plugins
+        let active: Vec<String> = group
+            .iter()
+            .filter(|name| {
+                if skip_set.contains(name.as_str()) {
+                    tracing::debug!(plugin = %name, "plugin skipped");
+                    crate::metrics::record_plugin_skip(name);
+                    false
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+
+        // Cascade: skipped plugins in this group propagate to dependents
+        for name in group {
+            if skip_set.contains(name.as_str()) {
+                expand_skip_cascade(name, registry, &mut skip_set);
+            }
+        }
+
+        if active.is_empty() {
+            continue;
+        }
+
+        let group_results =
+            execute_group(&active, &cleaned_message, extra_args.as_ref(), registry).await;
 
         for (plugin_name, result) in group_results {
             for var in &result.variables {
                 let prefixed_name = format!("{}.{}", plugin_name, var.name);
                 all_variables.push((var.scope, prefixed_name.clone(), var.value.clone()));
-                // Lazily create extra_args only when there are downstream groups
                 extra_args
-                    .get_or_insert_with(abi_stable::std_types::RHashMap::new)
+                    .get_or_insert_with(RHashMap::new)
                     .insert(prefixed_name.into(), var.value.clone());
             }
         }
@@ -443,5 +537,156 @@ mod tests {
 
         // No plan for "nonexistent" message
         assert!(registry.plan_for_message("nonexistent").is_none());
+    }
+
+    // --- Hub control arg tests ---
+
+    fn make_message_with_args(args: Vec<(&str, SpoeValue)>) -> SpoeMessage {
+        let mut rargs = abi_stable::std_types::RHashMap::new();
+        for (k, v) in args {
+            rargs.insert(abi_stable::std_types::RString::from(k), v);
+        }
+        SpoeMessage {
+            name: "test".into(),
+            args: rargs,
+            stream_id: 1,
+            frame_id: 1,
+        }
+    }
+
+    #[test]
+    fn test_extract_hub_args_parses_skip_plugins() {
+        let msg = make_message_with_args(vec![(
+            "hub.skip_plugins",
+            SpoeValue::String("a,b,c".into()),
+        )]);
+        let (skip_set, _) = extract_hub_args(&msg);
+        assert_eq!(
+            skip_set,
+            HashSet::from(["a".into(), "b".into(), "c".into()])
+        );
+    }
+
+    #[test]
+    fn test_extract_hub_args_trims_whitespace() {
+        let msg = make_message_with_args(vec![(
+            "hub.skip_plugins",
+            SpoeValue::String("a , b ".into()),
+        )]);
+        let (skip_set, _) = extract_hub_args(&msg);
+        assert_eq!(skip_set, HashSet::from(["a".into(), "b".into()]));
+    }
+
+    #[test]
+    fn test_extract_hub_args_empty_when_missing() {
+        let msg = make_message_with_args(vec![("src", SpoeValue::String("1.2.3.4".into()))]);
+        let (skip_set, _) = extract_hub_args(&msg);
+        assert!(skip_set.is_empty());
+    }
+
+    #[test]
+    fn test_extract_hub_args_ignores_non_string() {
+        let msg = make_message_with_args(vec![("hub.skip_plugins", SpoeValue::Bool(true))]);
+        let (skip_set, _) = extract_hub_args(&msg);
+        assert!(skip_set.is_empty());
+    }
+
+    #[test]
+    fn test_extract_hub_args_strips_hub_prefix() {
+        let msg = make_message_with_args(vec![
+            ("src", SpoeValue::String("1.2.3.4".into())),
+            ("hub.skip_plugins", SpoeValue::String("noop".into())),
+            ("hub.future_arg", SpoeValue::Int32(42)),
+            ("method", SpoeValue::String("GET".into())),
+        ]);
+        let (_, cleaned) = extract_hub_args(&msg);
+        // Regular args kept
+        assert!(cleaned.args.get(&RString::from("src")).is_some());
+        assert!(cleaned.args.get(&RString::from("method")).is_some());
+        // Hub args stripped
+        assert!(
+            cleaned
+                .args
+                .get(&RString::from("hub.skip_plugins"))
+                .is_none()
+        );
+        assert!(cleaned.args.get(&RString::from("hub.future_arg")).is_none());
+        assert_eq!(cleaned.args.len(), 2);
+    }
+
+    #[test]
+    fn test_expand_skip_cascade_skips_direct_dependent() {
+        use crate::plugin_loader::LoadedPlugin;
+
+        let plugins = vec![
+            LoadedPlugin {
+                name: "a".into(),
+                version: "0.1.0".into(),
+                instance: load_noop_plugin().instance,
+                messages: vec!["msg".into()],
+                depends_on: vec![],
+                timeout: std::time::Duration::from_millis(100),
+            },
+            LoadedPlugin {
+                name: "b".into(),
+                version: "0.1.0".into(),
+                instance: load_noop_plugin().instance,
+                messages: vec!["msg".into()],
+                depends_on: vec!["a".into()],
+                timeout: std::time::Duration::from_millis(100),
+            },
+        ];
+        let registry = crate::registry::PluginRegistry::build(plugins).unwrap();
+        let mut skip_set = HashSet::from(["a".to_string()]);
+        expand_skip_cascade("a", &registry, &mut skip_set);
+        assert!(skip_set.contains("b"), "b should be cascaded from a");
+    }
+
+    #[test]
+    fn test_expand_skip_cascade_preserves_independent() {
+        use crate::plugin_loader::LoadedPlugin;
+
+        let plugins = vec![
+            LoadedPlugin {
+                name: "a".into(),
+                version: "0.1.0".into(),
+                instance: load_noop_plugin().instance,
+                messages: vec!["msg".into()],
+                depends_on: vec![],
+                timeout: std::time::Duration::from_millis(100),
+            },
+            LoadedPlugin {
+                name: "c".into(),
+                version: "0.1.0".into(),
+                instance: load_noop_plugin().instance,
+                messages: vec!["msg".into()],
+                depends_on: vec![],
+                timeout: std::time::Duration::from_millis(100),
+            },
+        ];
+        let registry = crate::registry::PluginRegistry::build(plugins).unwrap();
+        let mut skip_set = HashSet::from(["a".to_string()]);
+        expand_skip_cascade("a", &registry, &mut skip_set);
+        assert!(
+            !skip_set.contains("c"),
+            "c should NOT be cascaded (independent)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_skips_named_plugin() {
+        let plugin = load_noop_plugin();
+        let registry = Arc::new(crate::registry::PluginRegistry::build(vec![plugin]).unwrap());
+        let plan = registry.plan_for_message("test-msg").unwrap().clone();
+
+        let msg =
+            make_message_with_args(vec![("hub.skip_plugins", SpoeValue::String("noop".into()))]);
+
+        let result = dispatch_message(&msg, &plan, &registry).await;
+        assert!(
+            result.variables.is_empty(),
+            "expected no variables when plugin is skipped, got: {:?}",
+            result.variables.len()
+        );
     }
 }
