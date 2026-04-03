@@ -311,7 +311,9 @@ release:
 
 create-release-tag:
   stage: release
-  image: alpine/git:latest
+  image:
+    name: alpine/git:latest
+    entrypoint: [""]
   tags:
     - saas-linux-small-amd64
   needs: []
