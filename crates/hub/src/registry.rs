@@ -49,20 +49,22 @@ impl PluginRegistry {
         let mut depends_on_map = HashMap::with_capacity(loaded.len());
 
         for plugin in loaded {
-            for msg in &plugin.messages {
+            let LoadedPlugin {
+                name,
+                instance,
+                messages,
+                depends_on,
+                timeout,
+                version: _,
+            } = plugin;
+            for msg in messages {
                 message_to_plugins
-                    .entry(msg.clone())
+                    .entry(msg)
                     .or_default()
-                    .push(plugin.name.clone());
+                    .push(name.clone());
             }
-            depends_on_map.insert(plugin.name.clone(), plugin.depends_on);
-            plugins.insert(
-                plugin.name,
-                PluginEntry {
-                    instance: plugin.instance,
-                    timeout: plugin.timeout,
-                },
-            );
+            depends_on_map.insert(name.clone(), depends_on);
+            plugins.insert(name, PluginEntry { instance, timeout });
         }
 
         let mut message_plans = HashMap::new();

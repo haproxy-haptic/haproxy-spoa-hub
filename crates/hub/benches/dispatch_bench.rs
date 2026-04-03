@@ -16,40 +16,38 @@ fn workspace_target_dir() -> PathBuf {
         .join("debug")
 }
 
-fn build_single_noop_registry() -> Arc<PluginRegistry> {
-    let dir = workspace_target_dir();
-    let config = haproxy_spoa_hub::config::PluginConfig {
-        name: "noop".into(),
+fn noop_bench_config(name: &str, message: &str) -> haproxy_spoa_hub::config::PluginConfig {
+    haproxy_spoa_hub::config::PluginConfig {
+        name: name.into(),
         library: "libnoop_plugin.so".into(),
-        messages: vec!["bench-msg".into()],
+        messages: vec![message.into()],
         depends_on: vec![],
         timeout_ms: Some(5000),
         params: toml::Table::default(),
-    };
+    }
+}
+
+fn build_single_noop_registry() -> Arc<PluginRegistry> {
+    let dir = workspace_target_dir();
+    let config = noop_bench_config("noop", "bench-msg");
     let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config, 5000).unwrap();
     Arc::new(PluginRegistry::build(vec![loaded]).unwrap())
 }
 
 fn build_two_plugin_registry() -> Arc<PluginRegistry> {
     let dir = workspace_target_dir();
-    let config_a = haproxy_spoa_hub::config::PluginConfig {
-        name: "noop-a".into(),
-        library: "libnoop_plugin.so".into(),
-        messages: vec!["bench-parallel".into()],
-        depends_on: vec![],
-        timeout_ms: Some(5000),
-        params: toml::Table::default(),
-    };
-    let config_b = haproxy_spoa_hub::config::PluginConfig {
-        name: "noop-b".into(),
-        library: "libnoop_plugin.so".into(),
-        messages: vec!["bench-parallel".into()],
-        depends_on: vec![],
-        timeout_ms: Some(5000),
-        params: toml::Table::default(),
-    };
-    let a = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_a, 5000).unwrap();
-    let b = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_b, 5000).unwrap();
+    let a = haproxy_spoa_hub::plugin_loader::load_plugin(
+        &dir,
+        &noop_bench_config("noop-a", "bench-parallel"),
+        5000,
+    )
+    .unwrap();
+    let b = haproxy_spoa_hub::plugin_loader::load_plugin(
+        &dir,
+        &noop_bench_config("noop-b", "bench-parallel"),
+        5000,
+    )
+    .unwrap();
     Arc::new(PluginRegistry::build(vec![a, b]).unwrap())
 }
 
