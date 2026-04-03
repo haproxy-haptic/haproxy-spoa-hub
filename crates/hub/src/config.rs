@@ -152,8 +152,8 @@ impl HubConfig {
             })
             .collect();
 
-        let mut visited = HashSet::new();
-        let mut in_stack = HashSet::new();
+        let mut visited = HashSet::with_capacity(self.plugins.len());
+        let mut in_stack = HashSet::with_capacity(self.plugins.len());
 
         for plugin in &self.plugins {
             if !visited.contains(plugin.name.as_str()) {

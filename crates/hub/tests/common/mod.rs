@@ -6,10 +6,7 @@
     clippy::cast_possible_wrap,
     clippy::cast_lossless,
     clippy::cast_sign_loss,
-    clippy::doc_markdown,
-    clippy::match_same_arms,
-    clippy::no_effect_underscore_binding,
-    clippy::used_underscore_binding
+    clippy::doc_markdown
 )]
 pub mod spop_client;
 

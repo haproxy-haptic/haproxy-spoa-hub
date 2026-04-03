@@ -55,17 +55,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SpopClient<S> {
         // Parse ACK: skip frame_type(1) + flags(4) + stream_id(varint) + frame_id(varint)
         let mut pos = 1;
         pos += 4; // flags
-        let (_stream_id, consumed) = decode_varint(&frame[pos..]);
+        let (stream_id, consumed) = decode_varint(&frame[pos..]);
         pos += consumed;
-        let (_frame_id, consumed) = decode_varint(&frame[pos..]);
+        let (frame_id, consumed) = decode_varint(&frame[pos..]);
         pos += consumed;
 
         // Parse actions
         let actions = parse_actions(&frame[pos..]);
 
         Ok(AckResponse {
-            stream_id: _stream_id,
-            frame_id: _frame_id,
+            stream_id,
+            frame_id,
             actions,
         })
     }
