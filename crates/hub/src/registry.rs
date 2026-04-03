@@ -95,12 +95,6 @@ impl PluginRegistry {
         self.plugins.get(name)
     }
 
-    /// Get the declared dependencies for a plugin.
-    #[must_use]
-    pub fn dependencies_of(&self, name: &str) -> &[String] {
-        self.depends_on.get(name).map_or(&[], Vec::as_slice)
-    }
-
     /// Get all plugin dependency declarations.
     #[must_use]
     pub fn all_dependencies(&self) -> &HashMap<String, Vec<String>> {

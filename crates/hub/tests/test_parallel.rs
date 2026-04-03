@@ -1,40 +1,23 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::spop_client::SpopClient;
 use spop::types::TypedData;
-use tokio::net::UnixListener;
 
-/// Load two delay plugins under different names for the same message.
-fn load_two_delay_plugins() -> haproxy_spoa_hub::registry::SharedRegistry {
-    let dir = common::plugin_dir();
-
-    let config_a = haproxy_spoa_hub::config::PluginConfig {
-        name: "delay-a".to_string(),
+fn delay_config(
+    name: &str,
+    message: &str,
+    timeout_ms: u64,
+) -> haproxy_spoa_hub::config::PluginConfig {
+    haproxy_spoa_hub::config::PluginConfig {
+        name: name.to_string(),
         library: "libdelay_plugin.so".to_string(),
-        messages: vec!["check-parallel".to_string()],
+        messages: vec![message.to_string()],
         depends_on: vec![],
-        timeout_ms: Some(2000),
+        timeout_ms: Some(timeout_ms),
         params: toml::Table::default(),
-    };
-    let config_b = haproxy_spoa_hub::config::PluginConfig {
-        name: "delay-b".to_string(),
-        library: "libdelay_plugin.so".to_string(),
-        messages: vec!["check-parallel".to_string()],
-        depends_on: vec![],
-        timeout_ms: Some(2000),
-        params: toml::Table::default(),
-    };
-
-    let a = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_a, 2000).unwrap();
-    let b = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_b, 2000).unwrap();
-
-    Arc::new(arc_swap::ArcSwap::from_pointee(
-        haproxy_spoa_hub::registry::PluginRegistry::build(vec![a, b]).unwrap(),
-    ))
+    }
 }
 
 #[tokio::test]
@@ -42,19 +25,11 @@ async fn test_parallel_plugins_execute_concurrently() {
     let socket_path = common::unique_sock("parallel");
     let _ = std::fs::remove_file(&socket_path);
 
-    let registry = load_two_delay_plugins();
-
-    let listener = UnixListener::bind(&socket_path).unwrap();
-    let reg = Arc::clone(&registry);
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        haproxy_spoa_hub::connection::handle_connection(stream, reg).await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
-    let mut client = SpopClient::handshake(stream).await.unwrap();
+    let registry = common::build_registry(vec![
+        delay_config("delay-a", "check-parallel", 2000),
+        delay_config("delay-b", "check-parallel", 2000),
+    ]);
+    let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
     // Both delay plugins sleep for 50ms by default (configured via delay_ms arg).
     // If parallel: total ~50ms. If sequential: total ~100ms.
@@ -94,60 +69,22 @@ async fn test_plugin_timeout_returns_partial_results() {
     let socket_path = common::unique_sock("timeout");
     let _ = std::fs::remove_file(&socket_path);
 
-    let dir = common::plugin_dir();
+    // fast plugin: 2000ms timeout (will complete)
+    // slow plugin: 50ms timeout (will expire with 500ms delay)
+    let registry = common::build_registry(vec![
+        delay_config("fast", "check-timeout", 2000),
+        delay_config("slow", "check-timeout", 50),
+    ]);
+    let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
-    // fast plugin: 5ms delay, 2000ms timeout
-    let config_fast = haproxy_spoa_hub::config::PluginConfig {
-        name: "fast".to_string(),
-        library: "libdelay_plugin.so".to_string(),
-        messages: vec!["check-timeout".to_string()],
-        depends_on: vec![],
-        timeout_ms: Some(2000),
-        params: toml::Table::default(),
-    };
-    // slow plugin: will use 500ms delay from args, but only gets 50ms timeout
-    let config_slow = haproxy_spoa_hub::config::PluginConfig {
-        name: "slow".to_string(),
-        library: "libdelay_plugin.so".to_string(),
-        messages: vec!["check-timeout".to_string()],
-        depends_on: vec![],
-        timeout_ms: Some(50), // 50ms timeout — will expire
-        params: toml::Table::default(),
-    };
-
-    let fast = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_fast, 2000).unwrap();
-    let slow = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_slow, 50).unwrap();
-
-    let registry: haproxy_spoa_hub::registry::SharedRegistry =
-        Arc::new(arc_swap::ArcSwap::from_pointee(
-            haproxy_spoa_hub::registry::PluginRegistry::build(vec![fast, slow]).unwrap(),
-        ));
-
-    let listener = UnixListener::bind(&socket_path).unwrap();
-    let reg = Arc::clone(&registry);
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        haproxy_spoa_hub::connection::handle_connection(stream, reg).await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
-    let mut client = SpopClient::handshake(stream).await.unwrap();
-
-    // Fast plugin gets delay_ms=5 (within timeout), slow plugin gets
-    // delay_ms=500 (exceeds its 50ms timeout)
+    // Both plugins see delay_ms=500.
+    // Fast: 500ms delay, 2000ms timeout → completes.
+    // Slow: 500ms delay, 50ms timeout → times out.
     let mut args = HashMap::new();
     args.insert("delay_ms".to_string(), TypedData::UInt32(500));
 
     let ack = client.send_notify("check-timeout", args).await.unwrap();
 
-    // Fast plugin should have completed (5ms default < 2000ms timeout)
-    // Actually both get the same delay_ms=500 arg. But fast has 2000ms
-    // timeout so it completes. Slow has 50ms timeout so it times out.
-    // Wait — both plugins see the same message with delay_ms=500.
-    // Fast: 500ms delay, 2000ms timeout → completes.
-    // Slow: 500ms delay, 50ms timeout → times out.
     assert!(
         ack.find_var("fast.done").is_some(),
         "fast.done missing (should complete within 2000ms timeout), got: {:?}",

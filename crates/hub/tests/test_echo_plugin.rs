@@ -1,19 +1,14 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
-use common::spop_client::SpopClient;
 use spop::types::TypedData;
-use tokio::net::UnixListener;
 
 #[tokio::test]
 async fn test_echo_plugin_returns_all_types() {
     let socket_path = common::unique_sock("echo");
     let _ = std::fs::remove_file(&socket_path);
-
-    let plugin_dir = common::plugin_dir();
 
     let config = haproxy_spoa_hub::config::PluginConfig {
         name: "echo".to_string(),
@@ -24,26 +19,8 @@ async fn test_echo_plugin_returns_all_types() {
         params: toml::Table::default(),
     };
 
-    let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&plugin_dir, &config, 100)
-        .expect("failed to load echo plugin");
-
-    let registry: haproxy_spoa_hub::registry::SharedRegistry =
-        Arc::new(arc_swap::ArcSwap::from_pointee(
-            haproxy_spoa_hub::registry::PluginRegistry::build(vec![loaded])
-                .expect("failed to build registry"),
-        ));
-
-    let listener = UnixListener::bind(&socket_path).unwrap();
-    let registry_clone = Arc::clone(&registry);
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        haproxy_spoa_hub::connection::handle_connection(stream, registry_clone).await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
-    let mut client = SpopClient::handshake(stream).await.unwrap();
+    let registry = common::build_registry(vec![config]);
+    let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
     let mut args = HashMap::new();
     args.insert(

@@ -1,4 +1,6 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{Criterion, criterion_group, criterion_main};
 use haproxy_spoa_hub::dispatch::{spoe_value_to_typed_data, typed_data_to_spoe_value};
 use spop::types::TypedData;
 
