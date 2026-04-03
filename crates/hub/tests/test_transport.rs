@@ -137,8 +137,7 @@ async fn test_unix_notify_with_args() {
     let socket_path = common::unique_sock("unix-args");
     let _ = std::fs::remove_file(&socket_path);
 
-    let (mut client, server) =
-        common::start_server_and_connect(&socket_path, registry).await;
+    let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
     let mut args = HashMap::new();
     args.insert("payload".to_string(), TypedData::Binary(vec![0xDE, 0xAD]));

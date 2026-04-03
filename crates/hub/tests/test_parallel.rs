@@ -5,7 +5,11 @@ use std::time::{Duration, Instant};
 
 use spop::types::TypedData;
 
-fn delay_config(name: &str, message: &str, timeout_ms: u64) -> haproxy_spoa_hub::config::PluginConfig {
+fn delay_config(
+    name: &str,
+    message: &str,
+    timeout_ms: u64,
+) -> haproxy_spoa_hub::config::PluginConfig {
     haproxy_spoa_hub::config::PluginConfig {
         name: name.to_string(),
         library: "libdelay_plugin.so".to_string(),
