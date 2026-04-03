@@ -37,14 +37,15 @@ define_plugin!(EchoPlugin, {
         &self,
         message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
-        let mut variables = Vec::new();
-        for pair in &message.args {
-            variables.push(TxnVariable {
+        let variables: Vec<_> = message
+            .args
+            .iter()
+            .map(|pair| TxnVariable {
                 scope: VarScope::Transaction,
                 name: pair.0.clone(),
                 value: pair.1.clone(),
-            });
-        }
+            })
+            .collect();
         Ok(ProcessingResult {
             variables: variables.into(),
         })

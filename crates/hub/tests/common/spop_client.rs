@@ -89,6 +89,17 @@ async fn read_frame<S: AsyncRead + Unpin>(stream: &mut S) -> anyhow::Result<Vec<
     Ok(frame)
 }
 
+/// Assemble a length-prefixed SPOP frame from its components.
+fn assemble_frame(frame_type: u8, metadata: &[u8], payload: &[u8]) -> Vec<u8> {
+    let frame_len = 1 + metadata.len() + payload.len();
+    let mut frame = Vec::with_capacity(4 + frame_len);
+    frame.extend_from_slice(&(frame_len as u32).to_be_bytes());
+    frame.push(frame_type);
+    frame.extend_from_slice(metadata);
+    frame.extend_from_slice(payload);
+    frame
+}
+
 fn build_haproxy_hello() -> Vec<u8> {
     let mut payload = Vec::new();
 
@@ -112,19 +123,12 @@ fn build_haproxy_hello() -> Vec<u8> {
     payload.push(8);
     encode_spop_string(&mut payload, "test-engine");
 
-    let frame_type: u8 = 1; // HAPROXY-HELLO
     let mut metadata = Vec::new();
     metadata.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // flags: FIN
     encode_varint(&mut metadata, 0); // stream_id
     encode_varint(&mut metadata, 0); // frame_id
 
-    let frame_len = 1 + metadata.len() + payload.len();
-    let mut frame = Vec::with_capacity(4 + frame_len);
-    frame.extend_from_slice(&(frame_len as u32).to_be_bytes());
-    frame.push(frame_type);
-    frame.extend_from_slice(&metadata);
-    frame.extend_from_slice(&payload);
-    frame
+    assemble_frame(1, &metadata, &payload)
 }
 
 fn build_notify_frame(
@@ -146,14 +150,7 @@ fn build_notify_frame(
         encode_typed_data(&mut payload, value);
     }
 
-    let frame_type: u8 = 3; // NOTIFY
-    let frame_len = 1 + metadata.len() + payload.len();
-    let mut frame = Vec::with_capacity(4 + frame_len);
-    frame.extend_from_slice(&(frame_len as u32).to_be_bytes());
-    frame.push(frame_type);
-    frame.extend_from_slice(&metadata);
-    frame.extend_from_slice(&payload);
-    frame
+    assemble_frame(3, &metadata, &payload)
 }
 
 fn build_haproxy_disconnect() -> Vec<u8> {
@@ -165,19 +162,12 @@ fn build_haproxy_disconnect() -> Vec<u8> {
     payload.push(8); // string
     encode_spop_string(&mut payload, "test complete");
 
-    let frame_type: u8 = 2; // HAPROXY-DISCONNECT
     let mut metadata = Vec::new();
     metadata.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // FIN
     encode_varint(&mut metadata, 0);
     encode_varint(&mut metadata, 0);
 
-    let frame_len = 1 + metadata.len() + payload.len();
-    let mut frame = Vec::with_capacity(4 + frame_len);
-    frame.extend_from_slice(&(frame_len as u32).to_be_bytes());
-    frame.push(frame_type);
-    frame.extend_from_slice(&metadata);
-    frame.extend_from_slice(&payload);
-    frame
+    assemble_frame(2, &metadata, &payload)
 }
 
 /// Parse ACK actions from the payload portion of an ACK frame.
