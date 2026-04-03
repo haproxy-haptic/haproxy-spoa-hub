@@ -152,25 +152,17 @@ pub async fn dispatch_message(
     let mut extra_args: Option<ArgMap> = None;
 
     for group in &plan.groups {
-        // Filter out skipped plugins
-        let active: Vec<String> = group
-            .iter()
-            .filter(|name| {
-                if skip_set.contains(name.as_str()) {
-                    tracing::debug!(plugin = %name, "plugin skipped");
-                    crate::metrics::record_plugin_skip(name);
-                    false
-                } else {
-                    true
-                }
-            })
-            .cloned()
-            .collect();
-
-        // Cascade: skipped plugins in this group propagate to dependents
+        // Filter out skipped plugins and cascade to dependents in a single pass.
+        // Cascade is safe here: plugins in the same group are independent
+        // (topologically), so expanding the skip set cannot affect this group.
+        let mut active: Vec<String> = Vec::with_capacity(group.len());
         for name in group {
             if skip_set.contains(name.as_str()) {
+                tracing::debug!(plugin = %name, "plugin skipped");
+                crate::metrics::record_plugin_skip(name);
                 expand_skip_cascade(name, registry, &mut skip_set);
+            } else {
+                active.push(name.clone());
             }
         }
 
@@ -244,7 +236,7 @@ async fn execute_group(
         futures.push(async move {
             let start = Instant::now();
             let result = tokio::time::timeout(timeout, handle).await;
-            handle_plugin_result(&name, result, start, timeout)
+            handle_plugin_result(name, result, start, timeout)
         });
     }
 
@@ -274,12 +266,12 @@ async fn call_single_plugin(
     let start = Instant::now();
     let handle = tokio::task::spawn_blocking(move || instance.process(&msg).into_result());
     let result = tokio::time::timeout(timeout, handle).await;
-    handle_plugin_result(&name, result, start, timeout)
+    handle_plugin_result(name, result, start, timeout)
 }
 
 /// Classify and log the outcome of a single plugin `spawn_blocking` + timeout call.
 fn handle_plugin_result(
-    name: &str,
+    name: String,
     result: Result<
         Result<Result<ProcessingResult, abi_stable::std_types::RBoxError>, tokio::task::JoinError>,
         tokio::time::error::Elapsed,
@@ -295,7 +287,7 @@ fn handle_plugin_result(
                 variables = processing_result.variables.len(),
                 "plugin completed"
             );
-            Some((name.to_string(), processing_result))
+            Some((name, processing_result))
         }
         Ok(Ok(Err(e))) => {
             tracing::error!(
@@ -304,7 +296,7 @@ fn handle_plugin_result(
                 latency_us = start.elapsed().as_micros(),
                 "plugin returned error"
             );
-            crate::metrics::record_plugin_error(name);
+            crate::metrics::record_plugin_error(&name);
             None
         }
         Ok(Err(join_err)) => {
@@ -313,7 +305,7 @@ fn handle_plugin_result(
                 error = %join_err,
                 "plugin task panicked"
             );
-            crate::metrics::record_plugin_error(name);
+            crate::metrics::record_plugin_error(&name);
             None
         }
         Err(_) => {
@@ -322,7 +314,7 @@ fn handle_plugin_result(
                 timeout_ms = %timeout.as_millis(),
                 "plugin timed out"
             );
-            crate::metrics::record_plugin_timeout(name);
+            crate::metrics::record_plugin_timeout(&name);
             None
         }
     }
