@@ -112,26 +112,10 @@ fn validate_config_schema(
 }
 
 /// Convert a `toml::Table` to `serde_json::Value` for schema validation.
+///
+/// Uses serde's `Serialize` impl on `toml::Value` for a lossless conversion.
 fn toml_table_to_json(table: &toml::Table) -> serde_json::Value {
-    let map = table
-        .iter()
-        .map(|(k, v)| (k.clone(), toml_value_to_json(v)))
-        .collect();
-    serde_json::Value::Object(map)
-}
-
-fn toml_value_to_json(value: &toml::Value) -> serde_json::Value {
-    match value {
-        toml::Value::String(s) => serde_json::Value::String(s.clone()),
-        toml::Value::Integer(i) => serde_json::json!(i),
-        toml::Value::Float(f) => serde_json::json!(f),
-        toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
-        toml::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(toml_value_to_json).collect())
-        }
-        toml::Value::Table(t) => toml_table_to_json(t),
-        toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
-    }
+    serde_json::to_value(table).expect("TOML table is always valid JSON")
 }
 
 /// Load a single plugin from its `.so` file.
@@ -143,7 +127,9 @@ pub fn load_plugin(
     let lib_path = plugin_dir.join(&config.library);
     let lib_path_str = lib_path.display().to_string();
 
-    // Verify the library has a valid abi_stable header before full load
+    // Verify the library has a valid abi_stable header before full load.
+    // This is necessary because load_from_file() caches by path and may
+    // return stale results for invalid files without this pre-check.
     let _header = lib_header_from_path(&lib_path).map_err(|e| LoadError::Load {
         name: config.name.clone(),
         path: lib_path_str.clone(),

@@ -2,11 +2,8 @@ mod common;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use common::spop_client::SpopClient;
 use spop::types::TypedData;
-use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
 async fn test_dual_transport_identical_responses() {
@@ -25,24 +22,8 @@ async fn test_dual_transport_identical_responses() {
         .expect("unix send_notify failed");
 
     // --- TCP listener ---
-    let tcp_listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("failed to bind tcp");
-    let tcp_addr = tcp_listener.local_addr().unwrap();
-    let tcp_reg = Arc::clone(&registry);
-    let tcp_server = tokio::spawn(async move {
-        let (stream, _) = tcp_listener.accept().await.unwrap();
-        haproxy_spoa_hub::connection::handle_connection(stream, tcp_reg).await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let tcp_stream = TcpStream::connect(tcp_addr)
-        .await
-        .expect("failed to connect to tcp");
-    let mut tcp_client = SpopClient::handshake(tcp_stream)
-        .await
-        .expect("tcp handshake failed");
+    let (mut tcp_client, tcp_server) =
+        common::start_tcp_server_and_connect(Arc::clone(&registry)).await;
 
     let tcp_ack = tcp_client
         .send_notify("check-request", HashMap::new())
@@ -79,29 +60,15 @@ async fn test_dual_transport_identical_responses() {
     );
 
     // Cleanup
-    unix_client.disconnect().await.ok();
-    tcp_client.disconnect().await.ok();
-    let _ = tokio::time::timeout(Duration::from_secs(1), unix_server).await;
-    let _ = tokio::time::timeout(Duration::from_secs(1), tcp_server).await;
-    let _ = std::fs::remove_file(&socket_path);
+    common::cleanup(unix_client, unix_server, &socket_path).await;
+    common::cleanup_tcp(tcp_client, tcp_server).await;
 }
 
 #[tokio::test]
 async fn test_tcp_notify_with_args() {
     let registry = common::build_registry(&[common::noop_config()]);
 
-    let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let tcp_addr = tcp_listener.local_addr().unwrap();
-    let reg = Arc::clone(&registry);
-    let server = tokio::spawn(async move {
-        let (stream, _) = tcp_listener.accept().await.unwrap();
-        haproxy_spoa_hub::connection::handle_connection(stream, reg).await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let stream = TcpStream::connect(tcp_addr).await.unwrap();
-    let mut client = SpopClient::handshake(stream).await.unwrap();
+    let (mut client, server) = common::start_tcp_server_and_connect(registry).await;
 
     let mut args = HashMap::new();
     args.insert("key".to_string(), TypedData::String("value".to_string()));
@@ -115,8 +82,7 @@ async fn test_tcp_notify_with_args() {
     let var = ack.find_var("noop.result");
     assert!(var.is_some(), "expected noop.result in TCP ACK");
 
-    client.disconnect().await.ok();
-    let _ = tokio::time::timeout(Duration::from_secs(1), server).await;
+    common::cleanup_tcp(client, server).await;
 }
 
 #[tokio::test]

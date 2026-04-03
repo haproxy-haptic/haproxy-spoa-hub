@@ -100,6 +100,33 @@ pub async fn start_server_and_connect(
     (client, server)
 }
 
+/// Bind a TCP listener, spawn a single-connection server, and return a
+/// connected `SpopClient` ready for NOTIFY calls.
+pub async fn start_tcp_server_and_connect(
+    registry: haproxy_spoa_hub::registry::SharedRegistry,
+) -> (SpopClient<tokio::net::TcpStream>, JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind tcp");
+    let addr = listener.local_addr().unwrap();
+    let reg = Arc::clone(&registry);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        haproxy_spoa_hub::connection::handle_connection(stream, reg).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("failed to connect to tcp");
+    let client = SpopClient::handshake(stream)
+        .await
+        .expect("tcp handshake failed");
+
+    (client, server)
+}
+
 /// Disconnect the client, wait for the server task, and clean up the socket file.
 pub async fn cleanup(
     mut client: SpopClient<tokio::net::UnixStream>,
@@ -109,4 +136,10 @@ pub async fn cleanup(
     client.disconnect().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
     let _ = std::fs::remove_file(socket_path);
+}
+
+/// Disconnect a TCP client and wait for the server task.
+pub async fn cleanup_tcp(mut client: SpopClient<tokio::net::TcpStream>, server: JoinHandle<()>) {
+    client.disconnect().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
 }
