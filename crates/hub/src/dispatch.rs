@@ -180,10 +180,10 @@ pub async fn dispatch_message(
         for (plugin_name, result) in group_results {
             for var in &result.variables {
                 let prefixed_name = format!("{}.{}", plugin_name, var.name);
-                all_variables.push((var.scope, prefixed_name.clone(), var.value.clone()));
                 extra_args
                     .get_or_insert_with(RHashMap::new)
-                    .insert(prefixed_name.into(), var.value.clone());
+                    .insert(prefixed_name.as_str().into(), var.value.clone());
+                all_variables.push((var.scope, prefixed_name, var.value.clone()));
             }
         }
     }
@@ -265,12 +265,7 @@ async fn call_single_plugin(
     let timeout = entry.timeout;
     let name = plugin_name.to_string();
 
-    // Build message: avoid clone if no extra args
-    let msg = if extra_args.is_some() {
-        build_message(message, extra_args)
-    } else {
-        message.clone()
-    };
+    let msg = build_message(message, extra_args);
 
     let start = Instant::now();
     let handle = tokio::task::spawn_blocking(move || instance.process(&msg).into_result());
