@@ -181,8 +181,7 @@ fn parse_actions(data: &[u8]) -> Vec<AckAction> {
     while pos < data.len() {
         let action_type = data[pos];
         pos += 1;
-        let _nb_args = data[pos]; // nb-args byte
-        pos += 1;
+        pos += 1; // skip nb-args byte
 
         let scope = data[pos];
         pos += 1;
