@@ -250,7 +250,7 @@ mod tests {
             messages: vec!["test".into()],
             depends_on: vec![],
             timeout_ms: Some(500),
-            params: Default::default(),
+            params: toml::Table::default(),
         };
         let loaded = load_plugin(&plugin_dir, &config, 100).unwrap();
         assert_eq!(loaded.name, "noop");
@@ -289,7 +289,7 @@ mod tests {
             messages: vec!["test".into()],
             depends_on: vec![],
             timeout_ms: None,
-            params: Default::default(),
+            params: toml::Table::default(),
         };
         let loaded = load_plugin(&plugin_dir, &config, 200).unwrap();
         assert_eq!(loaded.timeout, std::time::Duration::from_millis(200));
@@ -304,7 +304,7 @@ mod tests {
             messages: vec![],
             depends_on: vec![],
             timeout_ms: None,
-            params: Default::default(),
+            params: toml::Table::default(),
         };
         let err = load_plugin(dir.path(), &config, 100).unwrap_err();
         assert!(matches!(err, LoadError::Load { .. }));
@@ -324,7 +324,7 @@ mod tests {
             messages: vec![],
             depends_on: vec![],
             timeout_ms: None,
-            params: Default::default(),
+            params: toml::Table::default(),
         };
         let err = load_plugin(dir.path(), &config, 100).unwrap_err();
         assert!(matches!(err, LoadError::Load { .. }));
@@ -342,7 +342,7 @@ mod tests {
             messages: vec![],
             depends_on: vec![],
             timeout_ms: None,
-            params: Default::default(),
+            params: toml::Table::default(),
         }];
         let loaded = load_all_plugins(dir.path(), &configs, 100);
         assert!(loaded.is_empty());
@@ -475,7 +475,7 @@ mod tests {
                 messages: vec![],
                 depends_on: vec![],
                 timeout_ms: None,
-                params: Default::default(),
+                params: toml::Table::default(),
             },
             PluginConfig {
                 name: "bad2".into(),
@@ -483,7 +483,7 @@ mod tests {
                 messages: vec![],
                 depends_on: vec![],
                 timeout_ms: None,
-                params: Default::default(),
+                params: toml::Table::default(),
             },
         ];
         // Both fail (invalid .so), but load_all_plugins doesn't panic
@@ -496,7 +496,7 @@ mod tests {
         let mut table = toml::Table::new();
         table.insert("s".into(), toml::Value::String("hello".into()));
         table.insert("i".into(), toml::Value::Integer(42));
-        table.insert("f".into(), toml::Value::Float(3.14));
+        table.insert("f".into(), toml::Value::Float(2.72));
         table.insert("b".into(), toml::Value::Boolean(true));
         table.insert(
             "arr".into(),
@@ -528,8 +528,8 @@ mod tests {
 
     #[test]
     fn test_toml_to_config_value_float() {
-        let v = toml_to_config_value(&toml::Value::Float(3.14));
-        assert_eq!(v, ConfigValue::Float(3.14));
+        let v = toml_to_config_value(&toml::Value::Float(2.72));
+        assert_eq!(v, ConfigValue::Float(2.72));
     }
 
     #[test]

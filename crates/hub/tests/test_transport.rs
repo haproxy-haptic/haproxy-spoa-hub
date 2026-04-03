@@ -1,7 +1,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,13 +10,7 @@ use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 /// Helper: load the noop plugin and build a shared registry.
 fn build_noop_registry() -> haproxy_spoa_hub::registry::SharedRegistry {
-    let plugin_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug");
+    let plugin_dir = common::plugin_dir();
 
     let config = haproxy_spoa_hub::config::PluginConfig {
         name: "noop".to_string(),
@@ -25,7 +18,7 @@ fn build_noop_registry() -> haproxy_spoa_hub::registry::SharedRegistry {
         messages: vec!["check-request".to_string()],
         depends_on: vec![],
         timeout_ms: Some(1000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
 
     let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&plugin_dir, &config, 100)
@@ -42,14 +35,7 @@ async fn test_dual_transport_identical_responses() {
     let registry = build_noop_registry();
 
     // --- Unix listener ---
-    let socket_path = format!(
-        "/tmp/spoa-hub-test-transport-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    );
+    let socket_path = common::unique_sock("transport");
     let _ = std::fs::remove_file(&socket_path);
 
     let unix_listener = UnixListener::bind(&socket_path).expect("failed to bind unix socket");
@@ -174,14 +160,7 @@ async fn test_tcp_notify_with_args() {
 async fn test_unix_notify_with_args() {
     let registry = build_noop_registry();
 
-    let socket_path = format!(
-        "/tmp/spoa-hub-test-unix-args-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    );
+    let socket_path = common::unique_sock("unix-args");
     let _ = std::fs::remove_file(&socket_path);
 
     let listener = UnixListener::bind(&socket_path).unwrap();

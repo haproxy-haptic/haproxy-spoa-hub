@@ -1,4 +1,4 @@
-use abi_stable::std_types::{RBoxError, RResult, RStr};
+use abi_stable::std_types::{RBoxError, RHashMap, RResult, RStr};
 
 use haproxy_spoa_hub_plugin_api::{
     PluginContext, PluginPanicError, ProcessingResult, SpoeMessage, SpoePlugin, SpoePlugin_TO,
@@ -44,7 +44,7 @@ fn test_panicking_plugin_returns_rerr() {
 
     let msg = SpoeMessage {
         name: "test".into(),
-        args: Default::default(),
+        args: RHashMap::default(),
         stream_id: 1,
         frame_id: 1,
     };
@@ -100,7 +100,7 @@ fn test_error_plugin_returns_rerr_without_panic() {
 
     let msg = SpoeMessage {
         name: "test".into(),
-        args: Default::default(),
+        args: RHashMap::default(),
         stream_id: 1,
         frame_id: 1,
     };

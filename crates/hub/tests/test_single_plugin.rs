@@ -1,7 +1,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,26 +10,10 @@ use tokio::net::UnixListener;
 
 #[tokio::test]
 async fn test_noop_plugin_sets_variable() {
-    let socket_path = format!(
-        "/tmp/spoa-hub-test-noop-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    );
-
-    // Clean up stale socket
+    let socket_path = common::unique_sock("noop");
     let _ = std::fs::remove_file(&socket_path);
 
-    // Load the noop plugin
-    let plugin_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug");
+    let plugin_dir = common::plugin_dir();
 
     let config = haproxy_spoa_hub::config::PluginConfig {
         name: "noop".to_string(),
@@ -38,7 +21,7 @@ async fn test_noop_plugin_sets_variable() {
         messages: vec!["check-request".to_string()],
         depends_on: vec![],
         timeout_ms: Some(1000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
 
     let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&plugin_dir, &config, 100)
@@ -96,23 +79,10 @@ async fn test_noop_plugin_sets_variable() {
 
 #[tokio::test]
 async fn test_unregistered_message_returns_empty_ack() {
-    let socket_path = format!(
-        "/tmp/spoa-hub-test-unreg-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    );
+    let socket_path = common::unique_sock("unreg");
     let _ = std::fs::remove_file(&socket_path);
 
-    let plugin_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug");
+    let plugin_dir = common::plugin_dir();
 
     let config = haproxy_spoa_hub::config::PluginConfig {
         name: "noop".to_string(),
@@ -120,7 +90,7 @@ async fn test_unregistered_message_returns_empty_ack() {
         messages: vec!["check-request".to_string()],
         depends_on: vec![],
         timeout_ms: Some(1000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
 
     let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&plugin_dir, &config, 100).unwrap();
