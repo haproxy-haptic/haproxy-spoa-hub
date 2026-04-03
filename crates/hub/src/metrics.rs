@@ -36,7 +36,7 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
 }
 
 pub fn record_message_processed(message: &str, duration: std::time::Duration) {
-    let message = message.to_string();
+    let message = message.to_owned();
     counter!("spoa_messages_total", "message" => message.clone()).increment(1);
     histogram!("spoa_message_duration_seconds", "message" => message)
         .record(duration.as_secs_f64());

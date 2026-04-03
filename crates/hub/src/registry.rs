@@ -44,9 +44,9 @@ impl PluginRegistry {
     /// Computes execution plans for each SPOE message based on
     /// plugin dependency declarations.
     pub fn build(loaded: Vec<LoadedPlugin>) -> Result<Self, RegistryError> {
-        let mut plugins = HashMap::new();
+        let mut plugins = HashMap::with_capacity(loaded.len());
         let mut message_to_plugins: HashMap<String, Vec<String>> = HashMap::new();
-        let mut depends_on_map: HashMap<String, Vec<String>> = HashMap::new();
+        let mut depends_on_map = HashMap::with_capacity(loaded.len());
 
         for plugin in loaded {
             for msg in &plugin.messages {
@@ -126,7 +126,7 @@ fn build_execution_plan(
         plugin_names.iter().map(String::as_str).collect();
 
     // Filter dependencies to only those relevant to this message's plugins
-    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+    let mut in_degree: HashMap<&str, usize> = HashMap::with_capacity(plugin_names.len());
     let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
 
     for name in plugin_names {
