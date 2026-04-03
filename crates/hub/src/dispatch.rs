@@ -33,6 +33,9 @@ pub fn var_scope_to_spop(scope: &VarScope) -> SpopVarScope {
         VarScope::Transaction => SpopVarScope::Transaction,
         VarScope::Request => SpopVarScope::Request,
         VarScope::Response => SpopVarScope::Response,
+        // Unknown scope — default to Transaction as the safest option
+        #[allow(clippy::match_same_arms)]
+        VarScope::__Other(_) => SpopVarScope::Transaction,
     }
 }
 
@@ -50,6 +53,9 @@ pub fn spoe_value_to_typed_data(val: &SpoeValue) -> TypedData {
         SpoeValue::Ipv6(octets) => TypedData::IPv6(std::net::Ipv6Addr::from(*octets)),
         SpoeValue::String(s) => TypedData::String(s.to_string()),
         SpoeValue::Binary(b) => TypedData::Binary(b.to_vec()),
+        // Unknown value type — convert to Null to avoid data loss in ACK
+        #[allow(clippy::match_same_arms)]
+        SpoeValue::__Other(_, _) => TypedData::Null,
     }
 }
 

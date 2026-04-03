@@ -33,6 +33,11 @@ pub enum ConfigValue {
     Array(RVec<ConfigValue>),
     /// Key-value table (nested map).
     Table(RHashMap<RString, ConfigValue>),
+    /// Reserved for future value types. Plugins should handle this
+    /// gracefully (e.g., skip unknown values or treat as null).
+    /// The `u8` preserves the original discriminant for roundtripping.
+    #[doc(hidden)]
+    __Other(u8, RVec<u8>),
 }
 
 impl ConfigValue {
@@ -106,6 +111,7 @@ impl PartialEq for ConfigValue {
                 a.iter()
                     .all(|Tuple2(k, v)| b.get(k).is_some_and(|bv| v == bv))
             }
+            (Self::__Other(t1, d1), Self::__Other(t2, d2)) => t1 == t2 && d1 == d2,
             _ => false,
         }
     }
@@ -178,6 +184,10 @@ pub enum SpoeValue {
     String(RString),
     /// Raw byte buffer. Uses `RVec<u8>` for FFI safety.
     Binary(RVec<u8>),
+    /// Reserved for future SPOP typed-data variants. The `u8` preserves
+    /// the original type tag for roundtripping.
+    #[doc(hidden)]
+    __Other(u8, RVec<u8>),
 }
 
 /// Pre-parsed SPOE message passed to plugins by the hub.
@@ -265,6 +275,10 @@ pub enum VarScope {
     Request = 3,
     /// Persists for the current response only.
     Response = 4,
+    /// Reserved for future scope types. The `u8` preserves the
+    /// original scope value for roundtripping.
+    #[doc(hidden)]
+    __Other(u8),
 }
 
 #[cfg(test)]

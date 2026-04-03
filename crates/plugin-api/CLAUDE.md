@@ -63,9 +63,15 @@ aborts the entire process.
 
 ## Versioning Rules
 
-- Adding new `SpoeValue` or `ConfigValue` variants = major version bump
-  (enum layout change)
-- Adding new `SpoeMessage` fields = requires prefix types
+- Adding new named variants to enums **before** `__Other` = minor version
+  (safe, `__Other` catch-all absorbs the layout change for old plugins)
 - Adding new `SpoePlugin` methods after `last_prefix_field` = minor version
   (safe, old plugins use defaults)
+- Adding new `SpoeMessage` fields = requires prefix types (major version)
+- Changing existing variant/field types or reordering = major version bump
+- Removing variants or fields = major version bump
 - Moving `#[sabi(last_prefix_field)]` = major version bump
+
+All public enums (`ConfigValue`, `SpoeValue`, `VarScope`) have a `__Other`
+catch-all variant. Plugins MUST use `_ =>` wildcard arms in match
+statements to handle future variants gracefully.

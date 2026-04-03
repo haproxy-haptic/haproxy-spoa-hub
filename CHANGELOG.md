@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `define_plugin!` macro now accepts an optional `fn config_schema()`
   block for declaring a JSON Schema
 
+- Forward-compatible `__Other` catch-all variants on `ConfigValue`,
+  `SpoeValue`, and `VarScope` enums — new variants can now be added
+  in minor versions without breaking existing plugins
+
 ### Changed
 
 - **Breaking**: `PluginContext.config` type changed from
