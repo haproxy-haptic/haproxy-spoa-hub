@@ -29,7 +29,7 @@ cd tests/integration && make test    # Docker integration tests (SIGTERM, SIGHUP
 
 ## Rust Conventions
 
-- Edition 2024, MSRV 1.85
+- Edition 2024, MSRV 1.86
 - `clippy::pedantic` enabled as warnings at workspace level
 - `rustfmt.toml`: max_width = 100
 - Error types: `thiserror::Error` for library errors, `anyhow` in main/tests
@@ -83,12 +83,3 @@ cd tests/integration && make test    # Docker integration tests (SIGTERM, SIGHUP
 - **abi_stable module caching**: `load_from_file()` caches by path. Tests
   that load different plugins must run in separate test binaries to avoid
   cross-contamination.
-
-<!-- MANUAL ADDITIONS START -->
-<!-- MANUAL ADDITIONS END -->
-
-## Active Technologies
-- Rust, Edition 2024, MSRV 1.85 + `abi_stable` 0.11 (FFI), `spop` 0.11 (SPOE protocol), `tokio` 1 (async runtime) (003-hub-control-args)
-
-## Recent Changes
-- 003-hub-control-args: Added Rust, Edition 2024, MSRV 1.85 + `abi_stable` 0.11 (FFI), `spop` 0.11 (SPOE protocol), `tokio` 1 (async runtime)

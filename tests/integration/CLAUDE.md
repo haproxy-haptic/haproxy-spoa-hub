@@ -18,7 +18,7 @@ make clean             # Tear down containers and prune images
 
 - **docker-compose.yml**: Two services (`hub` + `haproxy`) sharing a named
   volume (`spoe-sock`) for the Unix socket.
-- **Dockerfile.hub**: Multi-stage build — `rust:1.85-bookworm` builder,
+- **Dockerfile.hub**: Multi-stage build — `rust:1.94-bookworm` builder,
   `debian:bookworm-slim` runtime. Bakes in all three plugin `.so` files.
 - **HAProxy** connects to the hub via `/var/run/spoe/hub.sock` (SPOE
   backend defined in `haproxy.cfg`, not in `spoe-hub.conf`).
