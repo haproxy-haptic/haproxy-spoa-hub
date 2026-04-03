@@ -139,10 +139,7 @@ pub async fn cleanup(
 }
 
 /// Disconnect a TCP client and wait for the server task.
-pub async fn cleanup_tcp(
-    mut client: SpopClient<tokio::net::TcpStream>,
-    server: JoinHandle<()>,
-) {
+pub async fn cleanup_tcp(mut client: SpopClient<tokio::net::TcpStream>, server: JoinHandle<()>) {
     client.disconnect().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
 }
