@@ -48,8 +48,13 @@ pub trait SpoePlugin: Send + Sync + Debug {
     #[sabi(last_prefix_field)]
     fn version(&self) -> RStr<'_>;
 
-    // Future minor versions may add methods below this line
-    // with default implementations.
+    // Methods below are after last_prefix_field — optional with defaults.
+
+    /// Return a JSON Schema string to validate plugin configuration.
+    /// Default: RNone (no validation).
+    fn config_schema(&self) -> ROption<RString> {
+        ROption::RNone
+    }
 }
 ```
 

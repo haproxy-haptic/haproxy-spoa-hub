@@ -5,21 +5,25 @@ crate plugin authors need to depend on.
 
 ## Public API
 
-- **`SpoePlugin`** trait (`plugin_trait.rs`): `init`, `process`, `name`, `version`.
-  Defined via `#[sabi_trait]` for FFI safety. Requires `Send + Sync + Debug`.
+- **`SpoePlugin`** trait (`plugin_trait.rs`): `init`, `process`, `name`,
+  `version`, `shutdown`, `config_schema`. Defined via `#[sabi_trait]` for
+  FFI safety. Requires `Send + Sync + Debug`.
 - **`define_plugin!`** macro (`lib.rs`): Generates `#[export_root_module]`
   boilerplate and wraps `process()` in `catch_unwind` for panic safety.
-- **Types** (`types.rs`): `SpoeValue`, `SpoeMessage`, `ProcessingResult`,
-  `TxnVariable`, `VarScope` — all `#[derive(StableAbi)]`.
+  Supports an optional `config_schema` block for JSON Schema validation.
+- **Types** (`types.rs`): `ConfigValue`, `SpoeValue`, `SpoeMessage`,
+  `ProcessingResult`, `TxnVariable`, `VarScope` — all `#[derive(StableAbi)]`.
 - **`PluginMod` / `PluginMod_Ref`**: Root module with factory function.
 
 ## abi_stable Conventions
 
-- `#[sabi(last_prefix_field)]` on `SpoePlugin::version()` — methods added
+- `#[sabi(last_prefix_field)]` on `SpoePlugin::shutdown()` — methods added
   in future minor versions go after this marker with default implementations.
+  `config_schema()` is the first such method (returns `RNone` by default).
 - `RootModule::load_from_file()` for loading (not `load_from_directory()`
   which caches per `RootModule` type).
-- FFI-safe types: `RString`, `RVec`, `RHashMap`, `RResult`, `RBoxError`.
+- FFI-safe types: `RString`, `RVec`, `RHashMap`, `RResult`, `RBoxError`,
+  `ROption`.
 - `RHashMap` iterates as `Tuple2<&K, &V>`, not `(&K, &V)` tuples. Use
   `pair.0` / `pair.1` instead of destructuring.
 
@@ -59,7 +63,8 @@ aborts the entire process.
 
 ## Versioning Rules
 
-- Adding new `SpoeValue` variants = major version bump (enum layout change)
+- Adding new `SpoeValue` or `ConfigValue` variants = major version bump
+  (enum layout change)
 - Adding new `SpoeMessage` fields = requires prefix types
 - Adding new `SpoePlugin` methods after `last_prefix_field` = minor version
   (safe, old plugins use defaults)

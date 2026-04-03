@@ -63,6 +63,8 @@ cd tests/integration && make test    # Docker integration tests (SIGTERM, SIGHUP
 | `metrics` + `metrics-exporter-prometheus` | Prometheus `/metrics` endpoint |
 | `clap` 4 | CLI argument parsing |
 | `toml` + `serde` | TOML configuration |
+| `serde_json` 1 | TOML-to-JSON conversion for schema validation |
+| `jsonschema` 0.45 | JSON Schema validation of plugin config |
 
 ## Known Gotchas
 
