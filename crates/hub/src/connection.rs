@@ -159,10 +159,10 @@ async fn handle_notify_frame(
             let result = dispatch::dispatch_message(&spoe_msg, plan, &current_registry).await;
 
             // Add all variables to the ACK response
-            for (scope, name, value) in &result.variables {
-                let spop_scope = dispatch::var_scope_to_spop(scope);
-                let typed_data = dispatch::spoe_value_to_typed_data(value);
-                ack = ack.set_var(spop_scope, name, typed_data);
+            for (scope, name, value) in result.variables {
+                let spop_scope = dispatch::var_scope_to_spop(&scope);
+                let typed_data = dispatch::spoe_value_into_typed_data(value);
+                ack = ack.set_var(spop_scope, &name, typed_data);
             }
         } else {
             tracing::debug!(
