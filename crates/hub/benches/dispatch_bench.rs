@@ -24,7 +24,7 @@ fn build_single_noop_registry() -> Arc<PluginRegistry> {
         messages: vec!["bench-msg".into()],
         depends_on: vec![],
         timeout_ms: Some(5000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
     let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config, 5000).unwrap();
     Arc::new(PluginRegistry::build(vec![loaded]).unwrap())
@@ -38,7 +38,7 @@ fn build_two_plugin_registry() -> Arc<PluginRegistry> {
         messages: vec!["bench-parallel".into()],
         depends_on: vec![],
         timeout_ms: Some(5000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
     let config_b = haproxy_spoa_hub::config::PluginConfig {
         name: "noop-b".into(),
@@ -46,7 +46,7 @@ fn build_two_plugin_registry() -> Arc<PluginRegistry> {
         messages: vec!["bench-parallel".into()],
         depends_on: vec![],
         timeout_ms: Some(5000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
     let a = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_a, 5000).unwrap();
     let b = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_b, 5000).unwrap();

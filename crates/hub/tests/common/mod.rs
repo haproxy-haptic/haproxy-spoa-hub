@@ -1,3 +1,6 @@
+// Not all test binaries use every helper; suppress dead-code warnings.
+#![allow(dead_code)]
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
@@ -30,7 +33,10 @@ pub fn unique_sock(prefix: &str) -> String {
     )
 }
 
-pub fn plugin_dir() -> PathBuf {
+/// Path to `target/debug` where plugin `.so` files are built.
+/// (Duplicated from `test_support::workspace_target_dir` because
+/// integration tests cannot access `#[cfg(test)]` library modules.)
+pub fn workspace_target_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -42,9 +48,9 @@ pub fn plugin_dir() -> PathBuf {
 
 /// Build a shared registry from a list of plugin configs.
 pub fn build_registry(
-    configs: Vec<haproxy_spoa_hub::config::PluginConfig>,
+    configs: &[haproxy_spoa_hub::config::PluginConfig],
 ) -> haproxy_spoa_hub::registry::SharedRegistry {
-    let dir = plugin_dir();
+    let dir = workspace_target_dir();
     let loaded: Vec<_> = configs
         .iter()
         .map(|c| {
@@ -56,6 +62,17 @@ pub fn build_registry(
         haproxy_spoa_hub::registry::PluginRegistry::build(loaded)
             .expect("failed to build registry"),
     ))
+}
+
+pub fn noop_config() -> haproxy_spoa_hub::config::PluginConfig {
+    haproxy_spoa_hub::config::PluginConfig {
+        name: "noop".to_string(),
+        library: "libnoop_plugin.so".to_string(),
+        messages: vec!["check-request".to_string()],
+        depends_on: vec![],
+        timeout_ms: Some(1000),
+        params: toml::Table::default(),
+    }
 }
 
 /// Bind a Unix listener, spawn a single-connection server, and return a
@@ -81,4 +98,15 @@ pub async fn start_server_and_connect(
         .expect("handshake failed");
 
     (client, server)
+}
+
+/// Disconnect the client, wait for the server task, and clean up the socket file.
+pub async fn cleanup(
+    mut client: SpopClient<tokio::net::UnixStream>,
+    server: JoinHandle<()>,
+    socket_path: &str,
+) {
+    client.disconnect().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+    let _ = std::fs::remove_file(socket_path);
 }

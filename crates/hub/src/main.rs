@@ -159,8 +159,7 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
         tracing::error!(error = %e, "listener failed");
     }
     tracing::info!("shutdown complete");
-    result?;
-    Ok(())
+    result
 }
 
 /// Re-read the config file and rebuild the plugin registry.
