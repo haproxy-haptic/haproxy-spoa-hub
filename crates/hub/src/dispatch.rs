@@ -9,6 +9,9 @@ use spop::types::TypedData;
 
 use crate::registry::{ExecutionPlan, PluginRegistry};
 
+/// Alias for the extra-args map threaded through the dispatch pipeline.
+type ArgMap = RHashMap<RString, SpoeValue>;
+
 /// Prefix for hub control args. Args with this prefix are consumed by
 /// the hub and stripped from the message before plugins see them.
 const HUB_ARG_PREFIX: &str = "hub.";
@@ -81,8 +84,9 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, SpoeMessage) {
                     skip_set = s
                         .as_str()
                         .split(',')
-                        .map(|name| name.trim().to_string())
+                        .map(str::trim)
                         .filter(|name| !name.is_empty())
+                        .map(String::from)
                         .collect();
                 }
             }
@@ -144,8 +148,8 @@ pub async fn dispatch_message(
 ) -> DispatchResult {
     let (mut skip_set, cleaned_message) = extract_hub_args(message);
 
-    let mut all_variables: Vec<(VarScope, String, SpoeValue)> = Vec::new();
-    let mut extra_args: Option<RHashMap<RString, SpoeValue>> = None;
+    let mut all_variables = Vec::new();
+    let mut extra_args: Option<ArgMap> = None;
 
     for group in &plan.groups {
         // Filter out skipped plugins
@@ -178,13 +182,12 @@ pub async fn dispatch_message(
             execute_group(&active, &cleaned_message, extra_args.as_ref(), registry).await;
 
         for (plugin_name, result) in group_results {
-            for var in &result.variables {
+            for var in result.variables {
                 let prefixed_name = format!("{}.{}", plugin_name, var.name);
-                let value = var.value.clone();
                 extra_args
                     .get_or_insert_with(RHashMap::new)
-                    .insert(prefixed_name.as_str().into(), value.clone());
-                all_variables.push((var.scope, prefixed_name, value));
+                    .insert(prefixed_name.as_str().into(), var.value.clone());
+                all_variables.push((var.scope, prefixed_name, var.value));
             }
         }
     }
@@ -200,7 +203,7 @@ pub async fn dispatch_message(
 async fn execute_group(
     group: &[String],
     message: &SpoeMessage,
-    extra_args: Option<&abi_stable::std_types::RHashMap<abi_stable::std_types::RString, SpoeValue>>,
+    extra_args: Option<&ArgMap>,
     registry: &Arc<PluginRegistry>,
 ) -> Vec<(String, ProcessingResult)> {
     if group.len() == 1 {
@@ -258,7 +261,7 @@ async fn execute_group(
 async fn call_single_plugin(
     plugin_name: &str,
     message: &SpoeMessage,
-    extra_args: Option<&abi_stable::std_types::RHashMap<abi_stable::std_types::RString, SpoeValue>>,
+    extra_args: Option<&ArgMap>,
     registry: &Arc<PluginRegistry>,
 ) -> Option<(String, ProcessingResult)> {
     let entry = registry.get_plugin(plugin_name)?;
@@ -326,10 +329,7 @@ fn handle_plugin_result(
 }
 
 /// Build a message with extra args merged in (for dependency data flow).
-fn build_message(
-    original: &SpoeMessage,
-    extra_args: Option<&abi_stable::std_types::RHashMap<abi_stable::std_types::RString, SpoeValue>>,
-) -> SpoeMessage {
+fn build_message(original: &SpoeMessage, extra_args: Option<&ArgMap>) -> SpoeMessage {
     let mut msg = original.clone();
     if let Some(extras) = extra_args {
         for pair in extras {
