@@ -145,7 +145,7 @@ fn build_execution_plan(
     }
 
     let mut groups = Vec::new();
-    let mut remaining: HashMap<&str, usize> = in_degree.clone();
+    let mut remaining = in_degree;
 
     loop {
         // Collect all plugins with zero in-degree
