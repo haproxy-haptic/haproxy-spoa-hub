@@ -164,7 +164,7 @@ depends_on = ["ja3"]  # runs after ja3, receives ja3.hash in message args
 | `messages` | array | yes | — | SPOE message names this plugin handles |
 | `depends_on` | array | no | `[]` | Plugin names that must complete before this one |
 | `timeout_ms` | integer | no | `default_timeout_ms` | Per-plugin timeout override |
-| `params` | table | no | `{}` | Free-form key-value parameters passed to `init()` |
+| `params` | table | no | `{}` | Typed parameters passed to `init()` (supports nested tables, arrays, and all TOML types) |
 
 !!! note
     Top-level keys (`plugin_dir`, `default_timeout_ms`, etc.) must appear **before** any `[[listeners]]` or `[[plugins]]` table arrays in the TOML file.
@@ -284,7 +284,7 @@ You set variables with plain names (e.g., `"country_code"`). The hub automatical
 
 ### 5. Plugin configuration
 
-Plugins receive per-plugin parameters via the `[plugins.params]` TOML table:
+Plugins receive per-plugin parameters via the `[plugins.params]` TOML table. All native TOML types are supported — strings, integers, floats, booleans, arrays, and nested tables:
 
 ```toml
 [[plugins]]
@@ -295,20 +295,85 @@ messages = ["check-request"]
 [plugins.params]
 db_path = "/data/GeoLite2-City.mmdb"
 locale = "en"
+max_results = 10
+trusted_cidrs = ["10.0.0.0/8", "172.16.0.0/12"]
+
+[plugins.params.cache]
+enabled = true
+ttl_seconds = 300
 ```
 
-These are passed to `init()` as a `PluginContext` with a string key-value map:
+These are passed to `init()` as a `PluginContext` with a typed config map. Use the `ConfigValue` accessor methods to extract values:
 
 ```rust
 fn init(&mut self, context: &PluginContext) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db_path = context.config.get(&"db_path".into())
+        .and_then(|v| v.as_str())
         .ok_or("missing required config: db_path")?;
-    self.db = MaxMindDB::open(db_path.as_str())?;
+    self.db = MaxMindDB::open(db_path)?;
+
+    // Integer parameters
+    self.max_results = context.config.get(&"max_results".into())
+        .and_then(|v| v.as_integer())
+        .unwrap_or(5) as usize;
+
+    // Nested table access
+    if let Some(cache) = context.config.get(&"cache".into())
+        .and_then(|v| v.as_table())
+    {
+        self.cache_enabled = cache.get(&"enabled".into())
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+    }
     Ok(())
 }
 ```
 
-### 6. Plugin dependencies
+`ConfigValue` provides typed accessors: `as_str()`, `as_integer()`, `as_float()`, `as_bool()`, `as_array()`, and `as_table()`. Each returns `None` if the value is a different type.
+
+### 6. Config schema validation
+
+Plugins can declare a [JSON Schema](https://json-schema.org/) to validate their configuration at startup. If the user-provided config doesn't match the schema, the hub rejects the plugin with a clear error message before `init()` is called.
+
+Add an optional `config_schema` block to `define_plugin!`:
+
+```rust
+define_plugin!(MyPlugin, {
+    fn new() -> Self { /* ... */ }
+    fn init(&mut self, context: &PluginContext) -> /* ... */ { /* ... */ }
+    fn name(&self) -> &str { "my-plugin" }
+    fn version(&self) -> &str { env!("CARGO_PKG_VERSION") }
+    fn process(&self, message: &SpoeMessage) -> /* ... */ { /* ... */ }
+
+    fn config_schema(&self) -> Option<&str> {
+        Some(r#"{
+            "type": "object",
+            "required": ["db_path"],
+            "properties": {
+                "db_path": { "type": "string" },
+                "max_results": { "type": "integer", "minimum": 1 },
+                "cache": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": { "type": "boolean" },
+                        "ttl_seconds": { "type": "integer", "minimum": 0 }
+                    }
+                }
+            }
+        }"#)
+    }
+});
+```
+
+If the config is invalid, the hub logs an error like:
+
+```json
+{"level":"ERROR","message":"failed to load plugin","error":"plugin 'my-plugin' config validation failed: \"db_path\" is a required property"}
+```
+
+Plugins that don't declare a schema skip validation entirely (the default).
+
+### 7. Plugin dependencies
 
 If your plugin needs output from another plugin, declare it in the hub config:
 
@@ -323,7 +388,7 @@ timeout_ms = 80
 
 Your plugin receives the upstream plugin's output variables as additional entries in `message.args`, keyed by their prefixed names (e.g., `"ja3.hash"`).
 
-### 7. Build and deploy
+### 8. Build and deploy
 
 ```bash
 cargo build --release
@@ -332,7 +397,7 @@ cp target/release/libmy_spoa_plugin.so /opt/spoa-plugins/
 
 Add a `[[plugins]]` entry to the hub config and either restart the hub or send SIGHUP to reload.
 
-### 8. Plugin logging
+### 9. Plugin logging
 
 Plugins can emit structured logs through the hub's logging infrastructure via the `LogFn` callback in `PluginContext`. Store it during `init()`:
 
@@ -342,7 +407,7 @@ Plugins can emit structured logs through the hub's logging infrastructure via th
 
 Log lines appear in the hub's JSON output with the plugin name as context. Available levels: `Trace`, `Debug`, `Info`, `Warn`, `Error`.
 
-### 9. Plugin metrics
+### 10. Plugin metrics
 
 Plugins can emit Prometheus metrics via callbacks in `PluginContext`:
 
@@ -439,7 +504,7 @@ crates/
   plugin-api/               Published plugin API crate
     src/
       lib.rs                Re-exports, define_plugin! macro
-      types.rs              SpoeMessage, SpoeValue, ProcessingResult
+      types.rs              ConfigValue, SpoeMessage, SpoeValue, ProcessingResult
       plugin_trait.rs       #[sabi_trait] SpoePlugin + PluginMod
 examples/
   noop/                     Example: sets one variable

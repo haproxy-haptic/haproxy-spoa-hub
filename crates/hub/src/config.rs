@@ -42,9 +42,10 @@ pub struct PluginConfig {
     #[serde(default)]
     pub depends_on: Vec<String>,
     pub timeout_ms: Option<u64>,
-    /// Free-form key-value parameters passed to the plugin's `init()`.
+    /// Typed parameters from the `[plugins.params]` TOML table.
+    /// Supports nested tables, arrays, and all native TOML value types.
     #[serde(default)]
-    pub params: HashMap<String, String>,
+    pub params: toml::Table,
 }
 
 fn default_timeout() -> u64 {
@@ -292,8 +293,14 @@ mod tests {
         let (_f, path) = write_config(&cfg);
         let config = HubConfig::load(&path).unwrap();
         let plugin = &config.plugins[0];
-        assert_eq!(plugin.params.get("db_path").unwrap(), "/data/GeoLite2.mmdb");
-        assert_eq!(plugin.params.get("locale").unwrap(), "en");
+        assert_eq!(
+            plugin.params.get("db_path").unwrap(),
+            &toml::Value::String("/data/GeoLite2.mmdb".into())
+        );
+        assert_eq!(
+            plugin.params.get("locale").unwrap(),
+            &toml::Value::String("en".into())
+        );
     }
 
     #[test]

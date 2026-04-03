@@ -80,6 +80,7 @@ timeout_ms = 80
 | messages | array of string | yes | — | SPOE message names to handle |
 | depends_on | array of string | no | [] | Plugin names that must complete first |
 | timeout_ms | integer | no | default_timeout_ms | Per-plugin timeout override |
+| params | table | no | {} | Typed parameters passed to `init()` (supports nested tables, arrays, all TOML types) |
 
 ## Validation Rules
 

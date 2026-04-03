@@ -6,7 +6,8 @@
     clippy::used_underscore_binding,
     clippy::needless_lifetimes,
     clippy::expl_impl_clone_on_copy,
-    clippy::must_use_candidate
+    clippy::must_use_candidate,
+    clippy::cast_ptr_alignment
 )]
 
 use abi_stable::{
@@ -14,7 +15,7 @@ use abi_stable::{
     library::RootModule,
     package_version_strings, sabi_trait,
     sabi_types::VersionStrings,
-    std_types::{RBox, RBoxError, RResult, RStr},
+    std_types::{RBox, RBoxError, ROption, RResult, RStr, RString},
 };
 
 use crate::types::{PluginContext, ProcessingResult, SpoeMessage};
@@ -80,6 +81,19 @@ pub trait SpoePlugin: Send + Sync + core::fmt::Debug {
     /// with default implementations.
     #[sabi(last_prefix_field)]
     fn shutdown(&self);
+
+    /// Return a JSON Schema string to validate plugin configuration.
+    ///
+    /// The hub calls this after `new()` and before `init()`. If
+    /// `RSome(schema)` is returned, the hub parses the string as
+    /// JSON Schema and validates the plugin's `[plugins.params]`
+    /// against it. Validation failure prevents `init()` from being
+    /// called.
+    ///
+    /// Return `RNone` (the default) to skip validation.
+    fn config_schema(&self) -> ROption<RString> {
+        ROption::RNone
+    }
 }
 
 /// Root module exported by every plugin shared library.

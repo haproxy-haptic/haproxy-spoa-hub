@@ -1,7 +1,115 @@
 use abi_stable::{
     StableAbi,
-    std_types::{RHashMap, RString, RVec},
+    std_types::{RHashMap, RString, RVec, Tuple2},
 };
+
+/// A typed configuration value representing a TOML value tree.
+///
+/// The hub converts each plugin's `[plugins.params]` TOML table into
+/// a tree of `ConfigValue` nodes, preserving native TOML types across
+/// the FFI boundary. Plugins receive this in [`PluginContext::config`].
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use haproxy_spoa_hub_plugin_api::ConfigValue;
+///
+/// let s = ConfigValue::String("hello".into());
+/// let n = ConfigValue::Integer(42);
+/// let b = ConfigValue::Bool(true);
+/// ```
+#[repr(u8)]
+#[derive(Debug, Clone, StableAbi)]
+pub enum ConfigValue {
+    /// UTF-8 string value. Also used for TOML datetime values (stringified).
+    String(RString),
+    /// Signed 64-bit integer.
+    Integer(i64),
+    /// 64-bit floating point.
+    Float(f64),
+    /// Boolean value.
+    Bool(bool),
+    /// Ordered array of values.
+    Array(RVec<ConfigValue>),
+    /// Key-value table (nested map).
+    Table(RHashMap<RString, ConfigValue>),
+}
+
+impl ConfigValue {
+    /// Returns the contained string slice, or `None` if not a `String`.
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Returns the contained integer, or `None` if not an `Integer`.
+    #[must_use]
+    pub fn as_integer(&self) -> Option<i64> {
+        match self {
+            Self::Integer(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// Returns the contained float, or `None` if not a `Float`.
+    #[must_use]
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            Self::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// Returns the contained boolean, or `None` if not a `Bool`.
+    #[must_use]
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the contained array, or `None` if not an `Array`.
+    #[must_use]
+    pub fn as_array(&self) -> Option<&RVec<ConfigValue>> {
+        match self {
+            Self::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the contained table, or `None` if not a `Table`.
+    #[must_use]
+    pub fn as_table(&self) -> Option<&RHashMap<RString, ConfigValue>> {
+        match self {
+            Self::Table(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq for ConfigValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Integer(a), Self::Integer(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => a == b,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Array(a), Self::Array(b)) => a == b,
+            (Self::Table(a), Self::Table(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                a.iter()
+                    .all(|Tuple2(k, v)| b.get(k).is_some_and(|bv| v == bv))
+            }
+            _ => false,
+        }
+    }
+}
 
 /// Configuration and metadata passed to a plugin during initialization.
 ///
@@ -16,8 +124,9 @@ use abi_stable::{
 ///     -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 /// {
 ///     let db_path = context.config.get(&"db_path".into())
+///         .and_then(|v| v.as_str())
 ///         .ok_or("missing db_path config")?;
-///     self.db = open_database(db_path.as_str())?;
+///     self.db = open_database(db_path)?;
 ///     Ok(())
 /// }
 /// ```
@@ -26,8 +135,9 @@ use abi_stable::{
 pub struct PluginContext {
     /// Plugin name as declared in the hub configuration.
     pub name: RString,
-    /// Free-form key-value parameters from the `[plugins.params]` TOML table.
-    pub config: RHashMap<RString, RString>,
+    /// Typed parameters from the `[plugins.params]` TOML table.
+    /// Supports nested tables, arrays, and all native TOML types.
+    pub config: RHashMap<RString, ConfigValue>,
 }
 
 /// A typed value from an SPOE message argument or plugin output.
@@ -155,4 +265,80 @@ pub enum VarScope {
     Request = 3,
     /// Persists for the current response only.
     Response = 4,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_value_as_str() {
+        let v = ConfigValue::String("hello".into());
+        assert_eq!(v.as_str(), Some("hello"));
+        assert_eq!(ConfigValue::Integer(1).as_str(), None);
+    }
+
+    #[test]
+    fn config_value_as_integer() {
+        let v = ConfigValue::Integer(42);
+        assert_eq!(v.as_integer(), Some(42));
+        assert_eq!(ConfigValue::String("x".into()).as_integer(), None);
+    }
+
+    #[test]
+    fn config_value_as_float() {
+        let v = ConfigValue::Float(3.14);
+        assert_eq!(v.as_float(), Some(3.14));
+        assert_eq!(ConfigValue::Integer(1).as_float(), None);
+    }
+
+    #[test]
+    fn config_value_as_bool() {
+        let v = ConfigValue::Bool(true);
+        assert_eq!(v.as_bool(), Some(true));
+        assert_eq!(ConfigValue::String("true".into()).as_bool(), None);
+    }
+
+    #[test]
+    fn config_value_as_array() {
+        let arr: RVec<ConfigValue> = vec![ConfigValue::Integer(1), ConfigValue::Integer(2)].into();
+        let v = ConfigValue::Array(arr.clone());
+        assert_eq!(v.as_array(), Some(&arr));
+        assert_eq!(ConfigValue::Integer(1).as_array(), None);
+    }
+
+    #[test]
+    fn config_value_as_table() {
+        let mut map = RHashMap::new();
+        map.insert(RString::from("key"), ConfigValue::Bool(true));
+        let v = ConfigValue::Table(map.clone());
+        assert!(v.as_table().is_some());
+        assert_eq!(ConfigValue::Integer(1).as_table(), None);
+    }
+
+    #[test]
+    fn config_value_partial_eq() {
+        assert_eq!(
+            ConfigValue::String("a".into()),
+            ConfigValue::String("a".into())
+        );
+        assert_ne!(
+            ConfigValue::String("a".into()),
+            ConfigValue::String("b".into())
+        );
+        assert_ne!(ConfigValue::String("1".into()), ConfigValue::Integer(1));
+        assert_eq!(ConfigValue::Integer(42), ConfigValue::Integer(42));
+        assert_eq!(ConfigValue::Float(1.0), ConfigValue::Float(1.0));
+        assert_eq!(ConfigValue::Bool(true), ConfigValue::Bool(true));
+
+        let arr1: RVec<ConfigValue> = vec![ConfigValue::Integer(1)].into();
+        let arr2: RVec<ConfigValue> = vec![ConfigValue::Integer(1)].into();
+        assert_eq!(ConfigValue::Array(arr1), ConfigValue::Array(arr2));
+
+        let mut t1 = RHashMap::new();
+        t1.insert(RString::from("k"), ConfigValue::Integer(1));
+        let mut t2 = RHashMap::new();
+        t2.insert(RString::from("k"), ConfigValue::Integer(1));
+        assert_eq!(ConfigValue::Table(t1), ConfigValue::Table(t2));
+    }
 }
