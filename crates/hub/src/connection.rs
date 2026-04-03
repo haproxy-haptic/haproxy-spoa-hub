@@ -55,20 +55,7 @@ where
         }
     };
 
-    // Check if this is a health check
-    if haproxy_hello.healthcheck.unwrap_or(false) {
-        let agent_hello = AgentHello {
-            version: spop::Version::new(2, 0, 0),
-            max_frame_size: haproxy_hello.max_frame_size,
-            capabilities: vec![FrameCapabilities::Pipelining],
-        };
-        if let Err(e) = framed.send(Box::new(agent_hello)).await {
-            tracing::error!(error = %e, "failed to send AGENT-HELLO for healthcheck");
-        }
-        return;
-    }
-
-    // Step 2: Send AGENT-HELLO
+    // Step 2: Send AGENT-HELLO (also used for health checks)
     let agent_hello = AgentHello {
         version: spop::Version::new(2, 0, 0),
         max_frame_size: haproxy_hello.max_frame_size,
@@ -76,6 +63,10 @@ where
     };
     if let Err(e) = framed.send(Box::new(agent_hello)).await {
         tracing::error!(error = %e, "failed to send AGENT-HELLO");
+        return;
+    }
+
+    if haproxy_hello.healthcheck.unwrap_or(false) {
         return;
     }
 

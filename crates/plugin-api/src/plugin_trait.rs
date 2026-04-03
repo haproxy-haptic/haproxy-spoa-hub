@@ -1,5 +1,3 @@
-// Suppressed warnings originate from abi_stable's #[sabi_trait] and #[derive(StableAbi)]
-// macro expansions, not from hand-written code.
 // Suppressed warnings originate from abi_stable's #[sabi_trait] and
 // #[derive(StableAbi)] macro expansions, not from hand-written code.
 #![allow(

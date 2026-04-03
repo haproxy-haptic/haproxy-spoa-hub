@@ -77,6 +77,29 @@ pub async fn start_listeners(
     Ok(())
 }
 
+/// Spawn a connection handler with semaphore-gated concurrency and metrics tracking.
+fn spawn_connection<S>(stream: S, registry: &SharedRegistry, semaphore: Option<&Arc<Semaphore>>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
+    #[allow(clippy::cast_precision_loss)]
+    crate::metrics::update_active_connections(count as f64);
+
+    let registry = Arc::clone(registry);
+    let permit = semaphore.map(Arc::clone);
+    tokio::spawn(async move {
+        let _permit = match permit {
+            Some(s) => Some(s.acquire_owned().await.expect("semaphore closed")),
+            None => None,
+        };
+        handle_connection(stream, registry).await;
+        let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
+        #[allow(clippy::cast_precision_loss)]
+        crate::metrics::update_active_connections(count as f64);
+    });
+}
+
 async fn run_unix_listener(
     path: &str,
     registry: SharedRegistry,
@@ -103,26 +126,8 @@ async fn run_unix_listener(
         tokio::select! {
             result = listener.accept() => {
                 match result {
-                    Ok((stream, _addr)) => {
-                        let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
-                        #[allow(clippy::cast_precision_loss)]
-                        crate::metrics::update_active_connections(count as f64);
-                        let registry = Arc::clone(&registry);
-                        let permit = semaphore.as_ref().map(Arc::clone);
-                        tokio::spawn(async move {
-                            let _permit = match permit {
-                                Some(s) => Some(s.acquire_owned().await.expect("semaphore closed")),
-                                None => None,
-                            };
-                            handle_connection(stream, registry).await;
-                            let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
-                            #[allow(clippy::cast_precision_loss)]
-                            crate::metrics::update_active_connections(count as f64);
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to accept Unix connection");
-                    }
+                    Ok((stream, _addr)) => spawn_connection(stream, &registry, semaphore.as_ref()),
+                    Err(e) => tracing::error!(error = %e, "failed to accept Unix connection"),
                 }
             }
             () = shutdown.cancelled() => {
@@ -145,36 +150,20 @@ async fn run_tcp_listener(
 
     loop {
         tokio::select! {
-        result = listener.accept() => {
-            match result {
-                Ok((stream, peer_addr)) => {
-                    let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
-                    #[allow(clippy::cast_precision_loss)]
-                    crate::metrics::update_active_connections(count as f64);
-                    tracing::debug!(%peer_addr, "TCP connection accepted");
-                    let registry = Arc::clone(&registry);
-                    let permit = semaphore.as_ref().map(Arc::clone);
-                    tokio::spawn(async move {
-                        let _permit = match permit {
-                            Some(s) => Some(s.acquire_owned().await.expect("semaphore closed")),
-                            None => None,
-                        };
-                        handle_connection(stream, registry).await;
-                        let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
-                        #[allow(clippy::cast_precision_loss)]
-                        crate::metrics::update_active_connections(count as f64);
-                    });
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to accept TCP connection");
-                        }
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, peer_addr)) => {
+                        tracing::debug!(%peer_addr, "TCP connection accepted");
+                        spawn_connection(stream, &registry, semaphore.as_ref());
                     }
-                }
-                () = shutdown.cancelled() => {
-                    tracing::info!(transport = "tcp", "listener shutting down");
-                    break;
+                    Err(e) => tracing::error!(error = %e, "failed to accept TCP connection"),
                 }
             }
+            () = shutdown.cancelled() => {
+                tracing::info!(transport = "tcp", "listener shutting down");
+                break;
+            }
+        }
     }
 
     Ok(())
