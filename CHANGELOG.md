@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-request plugin skip via `hub.skip_plugins` SPOE message arg:
+  HAProxy can skip specific plugins using ACLs, with zero processing
+  overhead for skipped plugins. Transitive dependents are automatically
+  cascaded.
+- `hub.`-prefixed control arg namespace: all `hub.*` args are consumed
+  by the hub and stripped from messages before plugins see them,
+  providing a clean extensibility mechanism for future hub features
+- `spoa_plugin_skips_total` Prometheus counter with `plugin` label
 - Nested plugin configuration: `[plugins.params]` now supports all
   native TOML value types (integers, floats, booleans, arrays, nested
   tables) in addition to strings

@@ -27,6 +27,10 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
     );
     describe_counter!("spoa_plugin_errors_total", "Total plugin processing errors");
     describe_counter!("spoa_plugin_timeouts_total", "Total plugin timeout events");
+    describe_counter!(
+        "spoa_plugin_skips_total",
+        "Plugins skipped via hub.skip_plugins arg"
+    );
 
     Ok(())
 }
@@ -43,6 +47,10 @@ pub fn record_plugin_error(plugin: &str) {
 
 pub fn record_plugin_timeout(plugin: &str) {
     counter!("spoa_plugin_timeouts_total", "plugin" => plugin.to_string()).increment(1);
+}
+
+pub fn record_plugin_skip(plugin: &str) {
+    counter!("spoa_plugin_skips_total", "plugin" => plugin.to_string()).increment(1);
 }
 
 pub fn update_active_connections(count: f64) {

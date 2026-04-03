@@ -86,3 +86,9 @@ cd tests/integration && make test    # Docker integration tests (SIGTERM, SIGHUP
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
+
+## Active Technologies
+- Rust, Edition 2024, MSRV 1.85 + `abi_stable` 0.11 (FFI), `spop` 0.11 (SPOE protocol), `tokio` 1 (async runtime) (003-hub-control-args)
+
+## Recent Changes
+- 003-hub-control-args: Added Rust, Edition 2024, MSRV 1.85 + `abi_stable` 0.11 (FFI), `spop` 0.11 (SPOE protocol), `tokio` 1 (async runtime)
