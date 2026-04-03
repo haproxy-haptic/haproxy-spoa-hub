@@ -27,8 +27,6 @@ pub struct ExecutionPlan {
 
 /// Runtime plugin entry in the registry.
 pub struct PluginEntry {
-    #[allow(dead_code)] // Retained for debugging and future SIGHUP reload logging
-    pub name: String,
     pub instance: Arc<PluginBox>,
     pub timeout: std::time::Duration,
 }
@@ -57,11 +55,10 @@ impl PluginRegistry {
                     .or_default()
                     .push(plugin.name.clone());
             }
-            depends_on_map.insert(plugin.name.clone(), plugin.depends_on.clone());
+            depends_on_map.insert(plugin.name.clone(), plugin.depends_on);
             plugins.insert(
-                plugin.name.clone(),
+                plugin.name,
                 PluginEntry {
-                    name: plugin.name,
                     instance: plugin.instance,
                     timeout: plugin.timeout,
                 },

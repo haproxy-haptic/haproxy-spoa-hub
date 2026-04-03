@@ -301,8 +301,8 @@ mod tests {
 
     #[test]
     fn config_value_as_float() {
-        let v = ConfigValue::Float(3.14);
-        assert_eq!(v.as_float(), Some(3.14));
+        let v = ConfigValue::Float(2.72);
+        assert_eq!(v.as_float(), Some(2.72));
         assert_eq!(ConfigValue::Integer(1).as_float(), None);
     }
 

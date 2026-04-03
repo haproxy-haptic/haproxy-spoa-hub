@@ -376,7 +376,9 @@ fn decode_typed_data(data: &[u8]) -> (TypedData, usize) {
 
 #[derive(Debug)]
 pub struct AckResponse {
+    #[allow(dead_code)]
     pub stream_id: u64,
+    #[allow(dead_code)]
     pub frame_id: u64,
     pub actions: Vec<AckAction>,
 }
@@ -393,6 +395,7 @@ impl AckResponse {
 #[derive(Debug)]
 pub enum AckAction {
     SetVar {
+        #[allow(dead_code)]
         scope: String,
         name: String,
         value: TypedData,

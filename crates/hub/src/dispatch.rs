@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_typed_data_ipv4_conversion() {
-        let addr = std::net::Ipv4Addr::new(127, 0, 0, 1);
+        let addr = std::net::Ipv4Addr::LOCALHOST;
         let result = typed_data_to_spoe_value(&TypedData::IPv4(addr));
         assert!(matches!(result, SpoeValue::Ipv4([127, 0, 0, 1])));
     }
@@ -498,7 +498,7 @@ mod tests {
             messages: vec!["test-msg".into()],
             depends_on: vec![],
             timeout_ms: Some(1000),
-            params: Default::default(),
+            params: toml::Table::default(),
         };
         crate::plugin_loader::load_plugin(&dir, &config, 100).unwrap()
     }

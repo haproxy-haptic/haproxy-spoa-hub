@@ -1,7 +1,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,31 +8,9 @@ use common::spop_client::SpopClient;
 use spop::types::TypedData;
 use tokio::net::UnixListener;
 
-fn unique_sock(prefix: &str) -> String {
-    format!(
-        "/tmp/spoa-hub-{}-{}-{}.sock",
-        prefix,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    )
-}
-
-fn plugin_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug")
-}
-
 /// Load two delay plugins under different names for the same message.
 fn load_two_delay_plugins() -> haproxy_spoa_hub::registry::SharedRegistry {
-    let dir = plugin_dir();
+    let dir = common::plugin_dir();
 
     let config_a = haproxy_spoa_hub::config::PluginConfig {
         name: "delay-a".to_string(),
@@ -41,7 +18,7 @@ fn load_two_delay_plugins() -> haproxy_spoa_hub::registry::SharedRegistry {
         messages: vec!["check-parallel".to_string()],
         depends_on: vec![],
         timeout_ms: Some(2000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
     let config_b = haproxy_spoa_hub::config::PluginConfig {
         name: "delay-b".to_string(),
@@ -49,7 +26,7 @@ fn load_two_delay_plugins() -> haproxy_spoa_hub::registry::SharedRegistry {
         messages: vec!["check-parallel".to_string()],
         depends_on: vec![],
         timeout_ms: Some(2000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
 
     let a = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_a, 2000).unwrap();
@@ -62,7 +39,7 @@ fn load_two_delay_plugins() -> haproxy_spoa_hub::registry::SharedRegistry {
 
 #[tokio::test]
 async fn test_parallel_plugins_execute_concurrently() {
-    let socket_path = unique_sock("parallel");
+    let socket_path = common::unique_sock("parallel");
     let _ = std::fs::remove_file(&socket_path);
 
     let registry = load_two_delay_plugins();
@@ -104,8 +81,7 @@ async fn test_parallel_plugins_execute_concurrently() {
     // Allow generous margin for CI overhead.
     assert!(
         elapsed < Duration::from_millis(200),
-        "expected parallel execution (<200ms), took {:?}",
-        elapsed
+        "expected parallel execution (<200ms), took {elapsed:?}",
     );
 
     client.disconnect().await.ok();
@@ -115,10 +91,10 @@ async fn test_parallel_plugins_execute_concurrently() {
 
 #[tokio::test]
 async fn test_plugin_timeout_returns_partial_results() {
-    let socket_path = unique_sock("timeout");
+    let socket_path = common::unique_sock("timeout");
     let _ = std::fs::remove_file(&socket_path);
 
-    let dir = plugin_dir();
+    let dir = common::plugin_dir();
 
     // fast plugin: 5ms delay, 2000ms timeout
     let config_fast = haproxy_spoa_hub::config::PluginConfig {
@@ -127,7 +103,7 @@ async fn test_plugin_timeout_returns_partial_results() {
         messages: vec!["check-timeout".to_string()],
         depends_on: vec![],
         timeout_ms: Some(2000),
-        params: Default::default(),
+        params: toml::Table::default(),
     };
     // slow plugin: will use 500ms delay from args, but only gets 50ms timeout
     let config_slow = haproxy_spoa_hub::config::PluginConfig {
@@ -136,7 +112,7 @@ async fn test_plugin_timeout_returns_partial_results() {
         messages: vec!["check-timeout".to_string()],
         depends_on: vec![],
         timeout_ms: Some(50), // 50ms timeout — will expire
-        params: Default::default(),
+        params: toml::Table::default(),
     };
 
     let fast = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config_fast, 2000).unwrap();
