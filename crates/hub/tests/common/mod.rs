@@ -6,7 +6,7 @@
     clippy::doc_markdown,
     clippy::match_same_arms,
     clippy::no_effect_underscore_binding,
-    clippy::used_underscore_binding,
+    clippy::used_underscore_binding
 )]
 pub mod spop_client;
 
