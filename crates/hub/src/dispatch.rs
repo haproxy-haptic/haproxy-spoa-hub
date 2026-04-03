@@ -68,19 +68,39 @@ pub fn spoe_value_to_typed_data(val: &SpoeValue) -> TypedData {
     }
 }
 
+/// Consuming variant of [`spoe_value_to_typed_data`] that moves String and
+/// Binary contents instead of cloning them.
+#[must_use]
+pub fn spoe_value_into_typed_data(val: SpoeValue) -> TypedData {
+    match val {
+        SpoeValue::Null => TypedData::Null,
+        SpoeValue::Bool(b) => TypedData::Bool(b),
+        SpoeValue::Int32(v) => TypedData::Int32(v),
+        SpoeValue::Uint32(v) => TypedData::UInt32(v),
+        SpoeValue::Int64(v) => TypedData::Int64(v),
+        SpoeValue::Uint64(v) => TypedData::UInt64(v),
+        SpoeValue::Ipv4(octets) => TypedData::IPv4(std::net::Ipv4Addr::from(octets)),
+        SpoeValue::Ipv6(octets) => TypedData::IPv6(std::net::Ipv6Addr::from(octets)),
+        SpoeValue::String(s) => TypedData::String(s.into_string()),
+        SpoeValue::Binary(b) => TypedData::Binary(b.into_vec()),
+        #[allow(clippy::match_same_arms)]
+        SpoeValue::__Other(_, _) => TypedData::Null,
+    }
+}
+
 /// Extract hub control args from a message, returning the skip set and
 /// a cleaned message with all `hub.*` args removed.
 ///
 /// Hub control args use the `hub.` prefix and are consumed by the hub
 /// dispatch layer. Plugins never see them.
-fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, SpoeMessage) {
+fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessage>) {
     let has_hub_args = message
         .args
         .iter()
         .any(|Tuple2(key, _)| key.starts_with(HUB_ARG_PREFIX));
 
     if !has_hub_args {
-        return (HashSet::new(), message.clone());
+        return (HashSet::new(), None);
     }
 
     let mut skip_set = HashSet::new();
@@ -112,7 +132,7 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, SpoeMessage) {
         frame_id: message.frame_id,
     };
 
-    (skip_set, cleaned)
+    (skip_set, Some(cleaned))
 }
 
 /// Expand the skip set by adding plugins that depend on any skipped plugin.
@@ -156,6 +176,7 @@ pub async fn dispatch_message(
     registry: &Arc<PluginRegistry>,
 ) -> DispatchResult {
     let (mut skip_set, cleaned_message) = extract_hub_args(message);
+    let effective_message = cleaned_message.as_ref().unwrap_or(message);
 
     let mut all_variables = Vec::new();
     let mut extra_args: Option<ArgMap> = None;
@@ -180,7 +201,7 @@ pub async fn dispatch_message(
         }
 
         let group_results =
-            execute_group(&active, &cleaned_message, extra_args.as_ref(), registry).await;
+            execute_group(&active, effective_message, extra_args.as_ref(), registry).await;
 
         for (plugin_name, result) in group_results {
             for var in result.variables {
@@ -530,8 +551,9 @@ mod tests {
     #[test]
     fn test_extract_hub_args_empty_when_missing() {
         let msg = make_message_with_args(vec![("src", SpoeValue::String("1.2.3.4".into()))]);
-        let (skip_set, _) = extract_hub_args(&msg);
+        let (skip_set, cleaned) = extract_hub_args(&msg);
         assert!(skip_set.is_empty());
+        assert!(cleaned.is_none(), "no hub args means no cleaned message");
     }
 
     #[test]
@@ -550,6 +572,7 @@ mod tests {
             ("method", SpoeValue::String("GET".into())),
         ]);
         let (_, cleaned) = extract_hub_args(&msg);
+        let cleaned = cleaned.expect("hub args present, should return cleaned message");
         // Regular args kept
         assert!(cleaned.args.get(&RString::from("src")).is_some());
         assert!(cleaned.args.get(&RString::from("method")).is_some());
