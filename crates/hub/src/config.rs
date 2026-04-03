@@ -53,7 +53,7 @@ fn default_timeout() -> u64 {
 }
 
 fn default_log_level() -> String {
-    "info".to_string()
+    String::from("info")
 }
 
 #[derive(Debug, thiserror::Error)]

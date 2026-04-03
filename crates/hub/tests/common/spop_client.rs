@@ -202,14 +202,14 @@ fn parse_actions(data: &[u8]) -> Vec<AckAction> {
             let (value, consumed) = decode_typed_data(&data[pos..]);
             pos += consumed;
             actions.push(AckAction::SetVar {
-                scope: scope_name.to_string(),
+                scope: scope_name,
                 name,
                 value,
             });
         } else if action_type == 2 {
             // unset-var: no value
             actions.push(AckAction::UnSetVar {
-                scope: scope_name.to_string(),
+                scope: scope_name,
                 name,
             });
         } else {
@@ -263,7 +263,7 @@ fn encode_spop_string(buf: &mut Vec<u8>, s: &str) {
 
 fn decode_spop_string(data: &[u8]) -> (String, usize) {
     let (len, consumed) = decode_varint(data);
-    let s = String::from_utf8_lossy(&data[consumed..consumed + len as usize]).to_string();
+    let s = String::from_utf8_lossy(&data[consumed..consumed + len as usize]).into_owned();
     (s, consumed + len as usize)
 }
 
@@ -385,10 +385,10 @@ impl AckResponse {
 pub enum AckAction {
     SetVar {
         #[allow(dead_code)]
-        scope: String,
+        scope: &'static str,
         name: String,
         value: TypedData,
     },
     #[allow(dead_code)]
-    UnSetVar { scope: String, name: String },
+    UnSetVar { scope: &'static str, name: String },
 }
