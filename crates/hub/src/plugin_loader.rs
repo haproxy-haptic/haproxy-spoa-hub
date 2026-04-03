@@ -113,7 +113,11 @@ fn validate_config_schema(
 
 /// Convert a `toml::Table` to `serde_json::Value` for schema validation.
 fn toml_table_to_json(table: &toml::Table) -> serde_json::Value {
-    toml_value_to_json(&toml::Value::Table(table.clone()))
+    let map = table
+        .iter()
+        .map(|(k, v)| (k.clone(), toml_value_to_json(v)))
+        .collect();
+    serde_json::Value::Object(map)
 }
 
 fn toml_value_to_json(value: &toml::Value) -> serde_json::Value {
@@ -125,13 +129,7 @@ fn toml_value_to_json(value: &toml::Value) -> serde_json::Value {
         toml::Value::Array(arr) => {
             serde_json::Value::Array(arr.iter().map(toml_value_to_json).collect())
         }
-        toml::Value::Table(t) => {
-            let map = t
-                .iter()
-                .map(|(k, v)| (k.clone(), toml_value_to_json(v)))
-                .collect();
-            serde_json::Value::Object(map)
-        }
+        toml::Value::Table(t) => toml_table_to_json(t),
         toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
     }
 }
@@ -229,17 +227,8 @@ pub fn load_all_plugins(
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::path::PathBuf;
 
-    fn workspace_target_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target")
-            .join("debug")
-    }
+    use crate::test_support::workspace_target_dir;
 
     #[test]
     fn test_load_valid_plugin() {

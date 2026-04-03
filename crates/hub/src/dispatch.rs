@@ -240,47 +240,7 @@ async fn execute_group(
         futures.push(async move {
             let start = Instant::now();
             let result = tokio::time::timeout(timeout, handle).await;
-            let elapsed = start.elapsed();
-
-            match result {
-                Ok(Ok(Ok(processing_result))) => {
-                    tracing::debug!(
-                        plugin = %name,
-                        latency_us = elapsed.as_micros(),
-                        variables = processing_result.variables.len(),
-                        "plugin completed"
-                    );
-                    Some((name, processing_result))
-                }
-                Ok(Ok(Err(e))) => {
-                    tracing::error!(
-                        plugin = %name,
-                        error = %e,
-                        latency_us = elapsed.as_micros(),
-                        "plugin returned error"
-                    );
-                    crate::metrics::record_plugin_error(&name);
-                    None
-                }
-                Ok(Err(join_err)) => {
-                    tracing::error!(
-                        plugin = %name,
-                        error = %join_err,
-                        "plugin task panicked"
-                    );
-                    crate::metrics::record_plugin_error(&name);
-                    None
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        plugin = %name,
-                        timeout_ms = %timeout.as_millis(),
-                        "plugin timed out"
-                    );
-                    crate::metrics::record_plugin_timeout(&name);
-                    None
-                }
-            }
+            handle_plugin_result(&name, result, start, timeout)
         });
     }
 
@@ -314,8 +274,21 @@ async fn call_single_plugin(
 
     let start = Instant::now();
     let handle = tokio::task::spawn_blocking(move || instance.process(&msg).into_result());
+    let result = tokio::time::timeout(timeout, handle).await;
+    handle_plugin_result(&name, result, start, timeout)
+}
 
-    match tokio::time::timeout(timeout, handle).await {
+/// Classify and log the outcome of a single plugin `spawn_blocking` + timeout call.
+fn handle_plugin_result(
+    name: &str,
+    result: Result<
+        Result<Result<ProcessingResult, abi_stable::std_types::RBoxError>, tokio::task::JoinError>,
+        tokio::time::error::Elapsed,
+    >,
+    start: Instant,
+    timeout: std::time::Duration,
+) -> Option<(String, ProcessingResult)> {
+    match result {
         Ok(Ok(Ok(processing_result))) => {
             tracing::debug!(
                 plugin = %name,
@@ -323,7 +296,7 @@ async fn call_single_plugin(
                 variables = processing_result.variables.len(),
                 "plugin completed"
             );
-            Some((name, processing_result))
+            Some((name.to_string(), processing_result))
         }
         Ok(Ok(Err(e))) => {
             tracing::error!(
@@ -332,7 +305,7 @@ async fn call_single_plugin(
                 latency_us = start.elapsed().as_micros(),
                 "plugin returned error"
             );
-            crate::metrics::record_plugin_error(&name);
+            crate::metrics::record_plugin_error(name);
             None
         }
         Ok(Err(join_err)) => {
@@ -341,7 +314,7 @@ async fn call_single_plugin(
                 error = %join_err,
                 "plugin task panicked"
             );
-            crate::metrics::record_plugin_error(&name);
+            crate::metrics::record_plugin_error(name);
             None
         }
         Err(_) => {
@@ -350,7 +323,7 @@ async fn call_single_plugin(
                 timeout_ms = %timeout.as_millis(),
                 "plugin timed out"
             );
-            crate::metrics::record_plugin_timeout(&name);
+            crate::metrics::record_plugin_timeout(name);
             None
         }
     }
@@ -480,28 +453,7 @@ mod tests {
     // The following tests exercise the async dispatch logic with real
     // plugin instances. They require the noop plugin .so to be built.
 
-    fn workspace_target_dir() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target")
-            .join("debug")
-    }
-
-    fn load_noop_plugin() -> crate::plugin_loader::LoadedPlugin {
-        let dir = workspace_target_dir();
-        let config = crate::config::PluginConfig {
-            name: "noop".into(),
-            library: "libnoop_plugin.so".into(),
-            messages: vec!["test-msg".into()],
-            depends_on: vec![],
-            timeout_ms: Some(1000),
-            params: toml::Table::default(),
-        };
-        crate::plugin_loader::load_plugin(&dir, &config, 100).unwrap()
-    }
+    use crate::test_support::load_noop_plugin;
 
     #[tokio::test]
     async fn test_dispatch_single_plugin_returns_prefixed_vars() {
