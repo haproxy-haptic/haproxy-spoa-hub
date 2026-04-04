@@ -59,8 +59,8 @@ async fn test_dual_transport_identical_responses() {
     );
 
     // Cleanup
-    common::cleanup(unix_client, unix_server, &socket_path).await;
-    common::cleanup_tcp(tcp_client, tcp_server).await;
+    common::cleanup(unix_client, unix_server, Some(&socket_path)).await;
+    common::cleanup(tcp_client, tcp_server, None).await;
 }
 
 #[tokio::test]
@@ -80,7 +80,7 @@ async fn test_tcp_notify_with_args() {
     let var = ack.find_var("noop.result");
     assert!(var.is_some(), "expected noop.result in TCP ACK");
 
-    common::cleanup_tcp(client, server).await;
+    common::cleanup(client, server, None).await;
 }
 
 #[tokio::test]
@@ -101,5 +101,5 @@ async fn test_unix_notify_with_args() {
     let var = ack.find_var("noop.result");
     assert!(var.is_some(), "expected noop.result in Unix ACK");
 
-    common::cleanup(client, server, &socket_path).await;
+    common::cleanup(client, server, Some(&socket_path)).await;
 }

@@ -211,28 +211,18 @@ mod tests {
 
     use super::*;
 
-    use crate::test_support::workspace_target_dir;
+    use crate::test_support::{self, workspace_target_dir};
 
     fn noop_config(name: &str, timeout_ms: Option<u64>) -> PluginConfig {
-        PluginConfig {
-            name: name.into(),
-            library: "libnoop_plugin.so".into(),
-            messages: vec!["test".into()],
-            depends_on: vec![],
-            timeout_ms,
-            params: toml::Table::default(),
-        }
+        let mut config = test_support::plugin_config(name, "libnoop_plugin.so", &["test"], 0);
+        config.timeout_ms = timeout_ms;
+        config
     }
 
     fn fake_config(name: &str, library: &str) -> PluginConfig {
-        PluginConfig {
-            name: name.into(),
-            library: library.into(),
-            messages: vec![],
-            depends_on: vec![],
-            timeout_ms: None,
-            params: toml::Table::default(),
-        }
+        let mut config = test_support::plugin_config(name, library, &[], 0);
+        config.timeout_ms = None;
+        config
     }
 
     #[test]

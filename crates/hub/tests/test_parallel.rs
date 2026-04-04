@@ -5,21 +5,13 @@ use std::time::{Duration, Instant};
 
 use spop::types::TypedData;
 
-fn delay_config(
-    name: &str,
-    message: &str,
-    timeout_ms: u64,
-) -> haproxy_spoa_hub::config::PluginConfig {
-    common::plugin_config(name, "libdelay_plugin.so", &[message], timeout_ms)
-}
-
 #[tokio::test]
 async fn test_parallel_plugins_execute_concurrently() {
     let socket_path = common::unique_sock("parallel");
 
     let registry = common::build_registry(&[
-        delay_config("delay-a", "check-parallel", 2000),
-        delay_config("delay-b", "check-parallel", 2000),
+        common::delay_config("delay-a", "check-parallel", 2000),
+        common::delay_config("delay-b", "check-parallel", 2000),
     ]);
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
@@ -50,7 +42,7 @@ async fn test_parallel_plugins_execute_concurrently() {
         "expected parallel execution (<200ms), took {elapsed:?}",
     );
 
-    common::cleanup(client, server, &socket_path).await;
+    common::cleanup(client, server, Some(&socket_path)).await;
 }
 
 #[tokio::test]
@@ -60,8 +52,8 @@ async fn test_plugin_timeout_returns_partial_results() {
     // fast plugin: 2000ms timeout (will complete)
     // slow plugin: 50ms timeout (will expire with 500ms delay)
     let registry = common::build_registry(&[
-        delay_config("fast", "check-timeout", 2000),
-        delay_config("slow", "check-timeout", 50),
+        common::delay_config("fast", "check-timeout", 2000),
+        common::delay_config("slow", "check-timeout", 50),
     ]);
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
@@ -84,5 +76,5 @@ async fn test_plugin_timeout_returns_partial_results() {
         ack.actions
     );
 
-    common::cleanup(client, server, &socket_path).await;
+    common::cleanup(client, server, Some(&socket_path)).await;
 }
