@@ -113,12 +113,9 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
     let stream_id = metadata.stream_id;
     let frame_id = metadata.frame_id;
 
-    let messages = match frame.payload() {
-        FramePayload::ListOfMessages(msgs) => msgs,
-        other => {
-            tracing::error!(payload = ?other, "unexpected NOTIFY payload type");
-            return Ack::new(stream_id, frame_id);
-        }
+    let FramePayload::ListOfMessages(messages) = frame.payload() else {
+        tracing::error!(payload = ?frame.payload(), "unexpected NOTIFY payload type");
+        return Ack::new(stream_id, frame_id);
     };
 
     // Load current registry snapshot for this NOTIFY frame.
