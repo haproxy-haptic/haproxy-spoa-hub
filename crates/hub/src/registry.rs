@@ -88,19 +88,15 @@ impl PluginRegistry {
             plugins.insert(name, PluginEntry { instance, timeout });
         }
 
-        let mut message_plans = HashMap::new();
+        let mut message_plans = HashMap::with_capacity(message_to_plugins.len());
         for (msg, plugin_names) in message_to_plugins {
-            match build_execution_plan(&plugin_names, &depends_on_map) {
-                Ok(plan) => {
-                    message_plans.insert(msg, plan);
+            let plan = build_execution_plan(&plugin_names, &depends_on_map).map_err(|reason| {
+                RegistryError::ExecutionPlan {
+                    message: msg.clone(),
+                    reason,
                 }
-                Err(reason) => {
-                    return Err(RegistryError::ExecutionPlan {
-                        message: msg,
-                        reason,
-                    });
-                }
-            }
+            })?;
+            message_plans.insert(msg, plan);
         }
 
         Ok(Self {

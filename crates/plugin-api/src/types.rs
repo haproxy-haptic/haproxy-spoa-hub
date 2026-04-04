@@ -105,11 +105,9 @@ impl PartialEq for ConfigValue {
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Array(a), Self::Array(b)) => a == b,
             (Self::Table(a), Self::Table(b)) => {
-                if a.len() != b.len() {
-                    return false;
-                }
-                a.iter()
-                    .all(|Tuple2(k, v)| b.get(k).is_some_and(|bv| v == bv))
+                a.len() == b.len()
+                    && a.iter()
+                        .all(|Tuple2(k, v)| b.get(k).is_some_and(|bv| v == bv))
             }
             (Self::__Other(t1, d1), Self::__Other(t2, d2)) => t1 == t2 && d1 == d2,
             _ => false,

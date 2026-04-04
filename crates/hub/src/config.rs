@@ -115,13 +115,11 @@ impl HubConfig {
                 )));
             }
 
-            if let Some(timeout) = plugin.timeout_ms {
-                if timeout == 0 {
-                    return Err(ConfigError::Validation(format!(
-                        "plugin '{}': timeout_ms must be positive",
-                        plugin.name
-                    )));
-                }
+            if plugin.timeout_ms.is_some_and(|t| t == 0) {
+                return Err(ConfigError::Validation(format!(
+                    "plugin '{}': timeout_ms must be positive",
+                    plugin.name
+                )));
             }
         }
 
