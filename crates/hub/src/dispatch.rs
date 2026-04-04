@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use abi_stable::std_types::{RHashMap, RString, Tuple2};
 use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, VarScope};
@@ -290,7 +290,7 @@ fn handle_plugin_result(
         tokio::time::error::Elapsed,
     >,
     start: Instant,
-    timeout: std::time::Duration,
+    timeout: Duration,
 ) -> Option<(String, ProcessingResult)> {
     match result {
         Ok(Ok(Ok(processing_result))) => {

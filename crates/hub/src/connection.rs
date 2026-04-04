@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use abi_stable::std_types::RString;
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
@@ -11,7 +9,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
 
 use crate::dispatch;
-use crate::registry::PluginRegistry;
+use crate::registry::{PluginRegistry, SharedRegistry};
 
 /// Handle a single SPOP connection from `HAProxy`.
 ///
@@ -21,7 +19,7 @@ use crate::registry::PluginRegistry;
 /// Accepts a `SharedRegistry` (`Arc<ArcSwap<PluginRegistry>>`) so that
 /// a registry swap (e.g., on SIGHUP) is picked up on the next message
 /// without interrupting the connection.
-pub async fn handle_connection<S>(stream: S, registry: Arc<ArcSwap<PluginRegistry>>)
+pub async fn handle_connection<S>(stream: S, registry: SharedRegistry)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -109,10 +107,7 @@ where
 
 /// Process a single NOTIFY frame: dispatch each message to its plugins
 /// and build the ACK response with all collected variables.
-async fn handle_notify_frame(
-    frame: Box<dyn SpopFrame>,
-    registry: &Arc<ArcSwap<PluginRegistry>>,
-) -> Ack {
+async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &ArcSwap<PluginRegistry>) -> Ack {
     let metadata = frame.metadata();
     let stream_id = metadata.stream_id;
     let frame_id = metadata.frame_id;
