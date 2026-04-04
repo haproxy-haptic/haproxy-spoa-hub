@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -68,7 +69,7 @@ pub enum ConfigError {
 
 impl HubConfig {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let content = std::fs::read_to_string(path)?;
+        let content = fs::read_to_string(path)?;
         let config: Self = toml::from_str(&content)?;
         config.validate()?;
         Ok(config)
@@ -207,7 +208,7 @@ mod tests {
     #[test]
     fn test_valid_config_parses() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
+        fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
 
         let cfg = format!(
             "plugin_dir = \"{}\"\n\
@@ -240,7 +241,7 @@ mod tests {
     #[test]
     fn test_duplicate_plugin_name_fails() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("liba.so"), b"fake").unwrap();
+        fs::write(dir.path().join("liba.so"), b"fake").unwrap();
 
         let cfg = format!(
             "plugin_dir = \"{}\"\n\
@@ -277,7 +278,7 @@ mod tests {
     #[test]
     fn test_plugin_params_parsed() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("libgeoip.so"), b"fake").unwrap();
+        fs::write(dir.path().join("libgeoip.so"), b"fake").unwrap();
 
         let cfg = format!(
             "plugin_dir = \"{}\"\n\
@@ -309,7 +310,7 @@ mod tests {
     #[test]
     fn test_plugin_params_default_empty() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
+        fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
 
         let cfg = format!(
             "plugin_dir = \"{}\"\n\
@@ -330,7 +331,7 @@ mod tests {
     #[test]
     fn test_invalid_depends_on_fails() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("liba.so"), b"fake").unwrap();
+        fs::write(dir.path().join("liba.so"), b"fake").unwrap();
 
         let cfg = format!(
             "plugin_dir = \"{}\"\n\
