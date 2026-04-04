@@ -33,8 +33,7 @@ async fn test_parallel_plugins_execute_concurrently() {
 
     // Both delay plugins sleep for 50ms by default (configured via delay_ms arg).
     // If parallel: total ~50ms. If sequential: total ~100ms.
-    let mut args = HashMap::new();
-    args.insert("delay_ms".to_string(), TypedData::UInt32(50));
+    let args = HashMap::from([("delay_ms".to_string(), TypedData::UInt32(50))]);
 
     let start = Instant::now();
     let ack = client.send_notify("check-parallel", args).await.unwrap();
@@ -78,8 +77,7 @@ async fn test_plugin_timeout_returns_partial_results() {
     // Both plugins see delay_ms=500.
     // Fast: 500ms delay, 2000ms timeout → completes.
     // Slow: 500ms delay, 50ms timeout → times out.
-    let mut args = HashMap::new();
-    args.insert("delay_ms".to_string(), TypedData::UInt32(500));
+    let args = HashMap::from([("delay_ms".to_string(), TypedData::UInt32(500))]);
 
     let ack = client.send_notify("check-timeout", args).await.unwrap();
 

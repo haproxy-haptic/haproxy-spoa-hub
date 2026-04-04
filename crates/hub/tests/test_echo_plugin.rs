@@ -21,13 +21,14 @@ async fn test_echo_plugin_returns_all_types() {
     let registry = common::build_registry(&[config]);
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
-    let mut args = HashMap::new();
-    args.insert(
-        "string_val".to_string(),
-        TypedData::String("hello".to_string()),
-    );
-    args.insert("uint32_val".to_string(), TypedData::UInt32(42));
-    args.insert("bool_val".to_string(), TypedData::Bool(true));
+    let args = HashMap::from([
+        (
+            "string_val".to_string(),
+            TypedData::String("hello".to_string()),
+        ),
+        ("uint32_val".to_string(), TypedData::UInt32(42)),
+        ("bool_val".to_string(), TypedData::Bool(true)),
+    ]);
 
     let ack = client.send_notify("check-types", args).await.unwrap();
 
