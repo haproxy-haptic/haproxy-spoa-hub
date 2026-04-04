@@ -63,6 +63,27 @@ pub fn delay_config(
     plugin_config(name, "libdelay_plugin.so", &[message], timeout_ms)
 }
 
+/// Spawn a single-connection server from a pre-created listener, then connect
+/// a `SpopClient` to it. The two futures represent the server-side accept and
+/// client-side connect respectively.
+async fn spawn_server_and_connect<S>(
+    server_stream: impl std::future::Future<Output = S> + Send + 'static,
+    client_stream: impl std::future::Future<Output = S>,
+    registry: haproxy_spoa_hub::registry::SharedRegistry,
+) -> (SpopClient<S>, JoinHandle<()>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let server = tokio::spawn(async move {
+        haproxy_spoa_hub::connection::handle_connection(server_stream.await, registry).await;
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let client = SpopClient::handshake(client_stream.await)
+        .await
+        .expect("handshake failed");
+    (client, server)
+}
+
 /// Bind a Unix listener, spawn a single-connection server, and return a
 /// connected `SpopClient` ready for NOTIFY calls.
 pub async fn start_server_and_connect(
@@ -70,22 +91,16 @@ pub async fn start_server_and_connect(
     registry: haproxy_spoa_hub::registry::SharedRegistry,
 ) -> (SpopClient<tokio::net::UnixStream>, JoinHandle<()>) {
     let listener = UnixListener::bind(socket_path).expect("failed to bind socket");
-    let reg = Arc::clone(&registry);
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        haproxy_spoa_hub::connection::handle_connection(stream, reg).await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let stream = tokio::net::UnixStream::connect(socket_path)
-        .await
-        .expect("failed to connect");
-    let client = SpopClient::handshake(stream)
-        .await
-        .expect("handshake failed");
-
-    (client, server)
+    spawn_server_and_connect(
+        async move { listener.accept().await.unwrap().0 },
+        async {
+            tokio::net::UnixStream::connect(socket_path)
+                .await
+                .expect("failed to connect")
+        },
+        registry,
+    )
+    .await
 }
 
 /// Bind a TCP listener, spawn a single-connection server, and return a
@@ -97,22 +112,16 @@ pub async fn start_tcp_server_and_connect(
         .await
         .expect("failed to bind tcp");
     let addr = listener.local_addr().unwrap();
-    let reg = Arc::clone(&registry);
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        haproxy_spoa_hub::connection::handle_connection(stream, reg).await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let stream = tokio::net::TcpStream::connect(addr)
-        .await
-        .expect("failed to connect to tcp");
-    let client = SpopClient::handshake(stream)
-        .await
-        .expect("tcp handshake failed");
-
-    (client, server)
+    spawn_server_and_connect(
+        async move { listener.accept().await.unwrap().0 },
+        async move {
+            tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("failed to connect")
+        },
+        registry,
+    )
+    .await
 }
 
 /// Disconnect the client, wait for the server task, and optionally clean up a
