@@ -98,21 +98,22 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessa
     let mut cleaned_args = RHashMap::new();
 
     for Tuple2(key, value) in &message.args {
-        if let Some(suffix) = key.strip_prefix(HUB_ARG_PREFIX) {
-            if suffix == "skip_plugins" {
-                if let SpoeValue::String(s) = value {
-                    skip_set = s
-                        .as_str()
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|name| !name.is_empty())
-                        .map(String::from)
-                        .collect();
-                }
-            }
-            // All hub.* args consumed regardless of whether they're recognized
-        } else {
+        let Some(suffix) = key.strip_prefix(HUB_ARG_PREFIX) else {
             cleaned_args.insert(key.clone(), value.clone());
+            continue;
+        };
+
+        // All hub.* args consumed regardless of whether they're recognized
+        if suffix == "skip_plugins" {
+            if let SpoeValue::String(s) = value {
+                skip_set = s
+                    .as_str()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(String::from)
+                    .collect();
+            }
         }
     }
 
@@ -347,8 +348,8 @@ fn build_message(original: &SpoeMessage, extra_args: Option<&ArgMap>) -> SpoeMes
         return original.clone();
     };
     let mut msg = original.clone();
-    for pair in extras {
-        msg.args.insert(pair.0.clone(), pair.1.clone());
+    for Tuple2(key, value) in extras {
+        msg.args.insert(key.clone(), value.clone());
     }
     msg
 }
