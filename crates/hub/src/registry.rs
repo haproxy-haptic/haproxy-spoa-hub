@@ -152,7 +152,7 @@ fn build_execution_plan(
 
     // Filter dependencies to only those relevant to this message's plugins
     let mut in_degree: HashMap<&str, usize> = HashMap::with_capacity(plugin_names.len());
-    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::with_capacity(plugin_names.len());
 
     for name in plugin_names {
         let degree = in_degree.entry(name.as_str()).or_insert(0);
