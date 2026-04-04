@@ -96,28 +96,10 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     // Set up graceful shutdown via CancellationToken
     let shutdown = CancellationToken::new();
 
-    #[cfg(unix)]
     {
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("failed to listen for SIGTERM");
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {},
-                _ = sigterm.recv() => {},
-            }
-            tracing::info!("received shutdown signal, initiating graceful drain");
-            shutdown.cancel();
-        });
-    }
-    #[cfg(not(unix))]
-    {
-        let shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to listen for ctrl-c");
+            wait_for_shutdown_signal().await;
             tracing::info!("received shutdown signal, initiating graceful drain");
             shutdown.cancel();
         });
@@ -166,6 +148,25 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     }
     tracing::info!("shutdown complete");
     result
+}
+
+/// Wait for a shutdown signal (SIGTERM or Ctrl-C on Unix, Ctrl-C elsewhere).
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to listen for SIGTERM");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for ctrl-c");
+    }
 }
 
 /// Re-read the config file and rebuild the plugin registry.

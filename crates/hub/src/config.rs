@@ -102,9 +102,7 @@ impl HubConfig {
                     plugin.name
                 )));
             }
-        }
 
-        for plugin in &self.plugins {
             let lib_path = self.plugin_dir.join(&plugin.library);
             if !lib_path.exists() {
                 return Err(ConfigError::Validation(format!(
@@ -115,20 +113,24 @@ impl HubConfig {
                 )));
             }
 
-            for dep in &plugin.depends_on {
-                if !names.contains(dep) {
-                    return Err(ConfigError::Validation(format!(
-                        "plugin '{}': depends_on '{}' which is not a configured plugin",
-                        plugin.name, dep
-                    )));
-                }
-            }
-
             if let Some(timeout) = plugin.timeout_ms {
                 if timeout == 0 {
                     return Err(ConfigError::Validation(format!(
                         "plugin '{}': timeout_ms must be positive",
                         plugin.name
+                    )));
+                }
+            }
+        }
+
+        // Dependency validation in a separate pass since all names must
+        // be collected first to check forward references.
+        for plugin in &self.plugins {
+            for dep in &plugin.depends_on {
+                if !names.contains(dep) {
+                    return Err(ConfigError::Validation(format!(
+                        "plugin '{}': depends_on '{}' which is not a configured plugin",
+                        plugin.name, dep
                     )));
                 }
             }
