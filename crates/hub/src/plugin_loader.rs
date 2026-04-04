@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use abi_stable::{
     library::{RootModule, lib_header_from_path},
-    std_types::{RHashMap, ROption, RString},
+    std_types::{RHashMap, RString},
 };
 use haproxy_spoa_hub_plugin_api::{ConfigValue, PluginBox, PluginContext, PluginMod_Ref};
 
@@ -82,9 +82,8 @@ fn validate_config_schema(
     plugin_name: &str,
     params: &toml::Table,
 ) -> Result<(), LoadError> {
-    let schema_str = match instance.config_schema() {
-        ROption::RSome(s) => s,
-        ROption::RNone => return Ok(()),
+    let Some(schema_str) = instance.config_schema().into_option() else {
+        return Ok(());
     };
 
     let make_schema_err = |e: &dyn fmt::Display| LoadError::Validation {
