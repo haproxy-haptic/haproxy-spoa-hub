@@ -1,4 +1,4 @@
-use std::io;
+use std::io::stderr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -36,7 +36,7 @@ fn init_logging(log_level: &str) {
                 .flatten_event(true)
                 .with_current_span(true)
                 .with_target(true)
-                .with_writer(io::stderr),
+                .with_writer(stderr),
         )
         .init();
 }
