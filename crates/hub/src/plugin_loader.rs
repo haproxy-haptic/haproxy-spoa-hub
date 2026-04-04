@@ -116,11 +116,10 @@ pub fn load_plugin(
     config: &PluginConfig,
     default_timeout_ms: u64,
 ) -> Result<LoadedPlugin, LoadError> {
-    let name = config.name.clone();
     let lib_path = plugin_dir.join(&config.library);
 
     let load_err = |source| LoadError::Load {
-        name: name.clone(),
+        name: config.name.clone(),
         path: lib_path.display().to_string(),
         source,
     };
@@ -135,16 +134,16 @@ pub fn load_plugin(
 
     // Create plugin instance via factory function
     let mut instance = module.new()().into_result().map_err(|e| LoadError::Init {
-        name: name.clone(),
+        name: config.name.clone(),
         reason: e.to_string(),
     })?;
 
     // Validate config against plugin's schema (if declared)
-    validate_config_schema(&instance, &name, &config.params)?;
+    validate_config_schema(&instance, &config.name, &config.params)?;
 
     // Build plugin context from config
     let context = PluginContext {
-        name: RString::from(name.as_str()),
+        name: RString::from(config.name.as_str()),
         config: toml_table_to_config(&config.params),
     };
 
@@ -153,7 +152,7 @@ pub fn load_plugin(
         .init(&context)
         .into_result()
         .map_err(|e| LoadError::Init {
-            name: name.clone(),
+            name: config.name.clone(),
             reason: e.to_string(),
         })?;
 
@@ -161,7 +160,7 @@ pub fn load_plugin(
     let timeout_ms = config.timeout_ms.unwrap_or(default_timeout_ms);
 
     Ok(LoadedPlugin {
-        name,
+        name: config.name.clone(),
         version,
         instance: Arc::new(instance),
         messages: config.messages.clone(),
