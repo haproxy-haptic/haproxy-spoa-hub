@@ -445,7 +445,7 @@ mod tests {
     // The following tests exercise the async dispatch logic with real
     // plugin instances. They require the noop plugin .so to be built.
 
-    use crate::plugin_loader;
+    use crate::plugin_loader::LoadedPlugin;
     use crate::test_support::load_noop_plugin;
 
     #[tokio::test]
@@ -487,13 +487,12 @@ mod tests {
     // --- Hub control arg tests ---
 
     fn make_message_with_args(args: Vec<(&str, SpoeValue)>) -> SpoeMessage {
-        let mut rargs = RHashMap::new();
-        for (k, v) in args {
-            rargs.insert(RString::from(k), v);
-        }
         SpoeMessage {
             name: "test".into(),
-            args: rargs,
+            args: args
+                .into_iter()
+                .map(|(k, v)| (RString::from(k), v))
+                .collect(),
             stream_id: 1,
             frame_id: 1,
         }
@@ -561,8 +560,8 @@ mod tests {
         assert_eq!(cleaned.args.len(), 2);
     }
 
-    fn test_plugin(name: &str, depends_on: &[&str]) -> plugin_loader::LoadedPlugin {
-        plugin_loader::LoadedPlugin {
+    fn test_plugin(name: &str, depends_on: &[&str]) -> LoadedPlugin {
+        LoadedPlugin {
             name: name.into(),
             version: "0.1.0".into(),
             instance: load_noop_plugin().instance,

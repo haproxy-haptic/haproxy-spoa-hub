@@ -66,7 +66,7 @@ where
         return;
     }
 
-    if haproxy_hello.healthcheck.unwrap_or(false) {
+    if haproxy_hello.healthcheck.unwrap_or_default() {
         return;
     }
 
