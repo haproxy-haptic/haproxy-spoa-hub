@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -159,8 +160,6 @@ async fn run_unix_listener(
     shutdown: CancellationToken,
     semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     // Clean up stale socket file
     if std::path::Path::new(path).exists() {
         std::fs::remove_file(path)?;

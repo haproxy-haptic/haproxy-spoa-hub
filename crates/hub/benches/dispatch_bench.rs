@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use abi_stable::std_types::RHashMap;
 use criterion::{Criterion, criterion_group, criterion_main};
 use haproxy_spoa_hub::dispatch::dispatch_message;
 use haproxy_spoa_hub::registry::PluginRegistry;
@@ -56,7 +57,7 @@ fn bench_dispatch_single_plugin(c: &mut Criterion) {
     let registry = build_single_noop_registry();
     let msg = SpoeMessage {
         name: "bench-msg".into(),
-        args: abi_stable::std_types::RHashMap::new(),
+        args: RHashMap::new(),
         stream_id: 1,
         frame_id: 1,
     };
@@ -72,7 +73,7 @@ fn bench_dispatch_two_plugins_parallel(c: &mut Criterion) {
     let registry = build_two_plugin_registry();
     let msg = SpoeMessage {
         name: "bench-parallel".into(),
-        args: abi_stable::std_types::RHashMap::new(),
+        args: RHashMap::new(),
         stream_id: 1,
         frame_id: 1,
     };
@@ -86,7 +87,7 @@ fn bench_dispatch_two_plugins_parallel(c: &mut Criterion) {
 fn bench_dispatch_with_args(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = build_single_noop_registry();
-    let mut args = abi_stable::std_types::RHashMap::new();
+    let mut args = RHashMap::new();
     args.insert("src".into(), SpoeValue::String("10.0.0.1".into()));
     args.insert("dst".into(), SpoeValue::String("10.0.0.2".into()));
     args.insert("method".into(), SpoeValue::String("GET".into()));

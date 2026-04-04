@@ -41,7 +41,7 @@ define_plugin!(DelayPlugin, {
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
         let delay_ms = message
             .args
-            .get(&abi_stable::std_types::RString::from("delay_ms"))
+            .get(&RString::from("delay_ms"))
             .and_then(|v| match v {
                 SpoeValue::Int32(ms) => u64::try_from(*ms).ok(),
                 SpoeValue::Uint32(ms) => Some(u64::from(*ms)),
