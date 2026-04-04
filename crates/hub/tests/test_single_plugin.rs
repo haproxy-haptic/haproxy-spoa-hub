@@ -29,7 +29,7 @@ async fn test_noop_plugin_sets_variable() {
         other => panic!("expected String(\"ok\"), got {other:?}"),
     }
 
-    common::cleanup(client, server, &socket_path).await;
+    common::cleanup(client, server, Some(&socket_path)).await;
 }
 
 #[tokio::test]
@@ -52,5 +52,5 @@ async fn test_unregistered_message_returns_empty_ack() {
         ack.actions
     );
 
-    common::cleanup(client, server, &socket_path).await;
+    common::cleanup(client, server, Some(&socket_path)).await;
 }

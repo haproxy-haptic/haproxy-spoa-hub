@@ -2,26 +2,14 @@ use std::sync::Arc;
 
 use abi_stable::std_types::RHashMap;
 use criterion::{Criterion, criterion_group, criterion_main};
-use haproxy_spoa_hub::config::PluginConfig;
 use haproxy_spoa_hub::dispatch::dispatch_message;
 use haproxy_spoa_hub::registry::PluginRegistry;
-use haproxy_spoa_hub::test_support::workspace_target_dir;
+use haproxy_spoa_hub::test_support::{plugin_config, workspace_target_dir};
 use haproxy_spoa_hub_plugin_api::{SpoeMessage, SpoeValue};
-
-fn noop_bench_config(name: &str, message: &str) -> PluginConfig {
-    PluginConfig {
-        name: name.into(),
-        library: "libnoop_plugin.so".into(),
-        messages: vec![message.into()],
-        depends_on: vec![],
-        timeout_ms: Some(5000),
-        params: toml::Table::default(),
-    }
-}
 
 fn build_single_noop_registry() -> Arc<PluginRegistry> {
     let dir = workspace_target_dir();
-    let config = noop_bench_config("noop", "bench-msg");
+    let config = plugin_config("noop", "libnoop_plugin.so", &["bench-msg"], 5000);
     let loaded = haproxy_spoa_hub::plugin_loader::load_plugin(&dir, &config, 5000).unwrap();
     Arc::new(PluginRegistry::build(vec![loaded]).unwrap())
 }
@@ -30,13 +18,13 @@ fn build_two_plugin_registry() -> Arc<PluginRegistry> {
     let dir = workspace_target_dir();
     let a = haproxy_spoa_hub::plugin_loader::load_plugin(
         &dir,
-        &noop_bench_config("noop-a", "bench-parallel"),
+        &plugin_config("noop-a", "libnoop_plugin.so", &["bench-parallel"], 5000),
         5000,
     )
     .unwrap();
     let b = haproxy_spoa_hub::plugin_loader::load_plugin(
         &dir,
-        &noop_bench_config("noop-b", "bench-parallel"),
+        &plugin_config("noop-b", "libnoop_plugin.so", &["bench-parallel"], 5000),
         5000,
     )
     .unwrap();

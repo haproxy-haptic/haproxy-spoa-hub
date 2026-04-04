@@ -13,6 +13,7 @@ pub mod spop_client;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use haproxy_spoa_hub::test_support::{plugin_config, workspace_target_dir};
 use spop_client::SpopClient;
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
@@ -32,8 +33,6 @@ pub fn unique_sock(prefix: &str) -> String {
     path
 }
 
-use haproxy_spoa_hub::test_support::workspace_target_dir;
-
 /// Build a shared registry from a list of plugin configs.
 pub fn build_registry(
     configs: &[haproxy_spoa_hub::config::PluginConfig],
@@ -52,24 +51,16 @@ pub fn build_registry(
     ))
 }
 
-pub fn plugin_config(
-    name: &str,
-    library: &str,
-    messages: &[&str],
-    timeout_ms: u64,
-) -> haproxy_spoa_hub::config::PluginConfig {
-    haproxy_spoa_hub::config::PluginConfig {
-        name: name.into(),
-        library: library.into(),
-        messages: messages.iter().map(|&m| m.into()).collect(),
-        depends_on: vec![],
-        timeout_ms: Some(timeout_ms),
-        params: toml::Table::default(),
-    }
-}
-
 pub fn noop_config() -> haproxy_spoa_hub::config::PluginConfig {
     plugin_config("noop", "libnoop_plugin.so", &["check-request"], 1000)
+}
+
+pub fn delay_config(
+    name: &str,
+    message: &str,
+    timeout_ms: u64,
+) -> haproxy_spoa_hub::config::PluginConfig {
+    plugin_config(name, "libdelay_plugin.so", &[message], timeout_ms)
 }
 
 /// Bind a Unix listener, spawn a single-connection server, and return a
@@ -124,26 +115,18 @@ pub async fn start_tcp_server_and_connect(
     (client, server)
 }
 
-/// Disconnect a client and wait for the server task to finish.
-async fn shutdown_client<S>(mut client: SpopClient<S>, server: JoinHandle<()>)
-where
+/// Disconnect the client, wait for the server task, and optionally clean up a
+/// Unix socket file.
+pub async fn cleanup<S>(
+    mut client: SpopClient<S>,
+    server: JoinHandle<()>,
+    socket_path: Option<&str>,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     client.disconnect().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
-}
-
-/// Disconnect the client, wait for the server task, and clean up the socket file.
-pub async fn cleanup(
-    client: SpopClient<tokio::net::UnixStream>,
-    server: JoinHandle<()>,
-    socket_path: &str,
-) {
-    shutdown_client(client, server).await;
-    let _ = std::fs::remove_file(socket_path);
-}
-
-/// Disconnect a TCP client and wait for the server task.
-pub async fn cleanup_tcp(client: SpopClient<tokio::net::TcpStream>, server: JoinHandle<()>) {
-    shutdown_client(client, server).await;
+    if let Some(path) = socket_path {
+        let _ = std::fs::remove_file(path);
+    }
 }

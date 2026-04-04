@@ -2,13 +2,14 @@ mod common;
 
 use std::collections::HashMap;
 
+use haproxy_spoa_hub::test_support::plugin_config;
 use spop::types::TypedData;
 
 #[tokio::test]
 async fn test_echo_plugin_returns_all_types() {
     let socket_path = common::unique_sock("echo");
 
-    let config = common::plugin_config("echo", "libecho_plugin.so", &["check-types"], 1000);
+    let config = plugin_config("echo", "libecho_plugin.so", &["check-types"], 1000);
 
     let registry = common::build_registry(&[config]);
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
@@ -40,5 +41,5 @@ async fn test_echo_plugin_returns_all_types() {
     );
     assert!(ack.find_var("echo.bool_val").is_some(), "missing bool_val");
 
-    common::cleanup(client, server, &socket_path).await;
+    common::cleanup(client, server, Some(&socket_path)).await;
 }

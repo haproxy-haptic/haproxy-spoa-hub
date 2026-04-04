@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
+use crate::config::PluginConfig;
+
 #[cfg(test)]
-use crate::{
-    config::PluginConfig,
-    plugin_loader::{self, LoadedPlugin},
-};
+use crate::plugin_loader::{self, LoadedPlugin};
 
 /// Path to the workspace `target/debug` directory where plugin `.so` files are built.
 #[must_use]
@@ -18,18 +17,32 @@ pub fn workspace_target_dir() -> PathBuf {
         .join("debug")
 }
 
+/// Build a `PluginConfig` with common defaults (no dependencies, empty params).
+///
+/// Shared across unit tests, integration tests, and benchmarks to avoid
+/// duplicating `PluginConfig` construction.
+#[must_use]
+pub fn plugin_config(
+    name: &str,
+    library: &str,
+    messages: &[&str],
+    timeout_ms: u64,
+) -> PluginConfig {
+    PluginConfig {
+        name: name.into(),
+        library: library.into(),
+        messages: messages.iter().map(|&m| m.into()).collect(),
+        depends_on: vec![],
+        timeout_ms: Some(timeout_ms),
+        params: toml::Table::default(),
+    }
+}
+
 /// Load the noop plugin from the workspace build output.
 #[cfg(test)]
 #[must_use]
 pub fn load_noop_plugin() -> LoadedPlugin {
     let dir = workspace_target_dir();
-    let config = PluginConfig {
-        name: "noop".into(),
-        library: "libnoop_plugin.so".into(),
-        messages: vec!["test-msg".into()],
-        depends_on: vec![],
-        timeout_ms: Some(1000),
-        params: toml::Table::default(),
-    };
+    let config = plugin_config("noop", "libnoop_plugin.so", &["test-msg"], 1000);
     plugin_loader::load_plugin(&dir, &config, 100).unwrap()
 }
