@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use haproxy_spoa_hub_plugin_api::PluginBox;
@@ -28,7 +29,7 @@ pub struct ExecutionPlan {
 /// Runtime plugin entry in the registry.
 pub struct PluginEntry {
     pub instance: Arc<PluginBox>,
-    pub timeout: std::time::Duration,
+    pub timeout: Duration,
 }
 
 /// Registry of loaded plugins and their execution plans per message.

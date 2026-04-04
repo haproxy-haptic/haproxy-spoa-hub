@@ -4,7 +4,7 @@ use std::sync::Arc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use haproxy_spoa_hub::dispatch::dispatch_message;
 use haproxy_spoa_hub::registry::PluginRegistry;
-use haproxy_spoa_hub_plugin_api::SpoeMessage;
+use haproxy_spoa_hub_plugin_api::{SpoeMessage, SpoeValue};
 
 fn workspace_target_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -87,22 +87,10 @@ fn bench_dispatch_with_args(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = build_single_noop_registry();
     let mut args = abi_stable::std_types::RHashMap::new();
-    args.insert(
-        "src".into(),
-        haproxy_spoa_hub_plugin_api::SpoeValue::String("10.0.0.1".into()),
-    );
-    args.insert(
-        "dst".into(),
-        haproxy_spoa_hub_plugin_api::SpoeValue::String("10.0.0.2".into()),
-    );
-    args.insert(
-        "method".into(),
-        haproxy_spoa_hub_plugin_api::SpoeValue::String("GET".into()),
-    );
-    args.insert(
-        "path".into(),
-        haproxy_spoa_hub_plugin_api::SpoeValue::String("/api/v1/users".into()),
-    );
+    args.insert("src".into(), SpoeValue::String("10.0.0.1".into()));
+    args.insert("dst".into(), SpoeValue::String("10.0.0.2".into()));
+    args.insert("method".into(), SpoeValue::String("GET".into()));
+    args.insert("path".into(), SpoeValue::String("/api/v1/users".into()));
     let msg = SpoeMessage {
         name: "bench-msg".into(),
         args,

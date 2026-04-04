@@ -29,7 +29,7 @@ pub struct LoadedPlugin {
     pub instance: Arc<PluginBox>,
     pub messages: Vec<String>,
     pub depends_on: Vec<String>,
-    pub timeout: std::time::Duration,
+    pub timeout: Duration,
 }
 
 /// Convert a `toml::Value` into an FFI-safe `ConfigValue`.

@@ -9,6 +9,17 @@ use spop::types::TypedData;
 
 use crate::registry::{ExecutionPlan, PluginRegistry};
 
+/// Result of `tokio::time::timeout(spawn_blocking(plugin.process()))`.
+///
+/// The three nesting layers reflect the runtime pipeline:
+/// - Outer: `timeout` → `Elapsed` on expiry
+/// - Middle: `spawn_blocking` → `JoinError` on panic/cancellation
+/// - Inner: plugin `process()` → `RBoxError` on plugin failure
+type PluginCallResult = Result<
+    Result<Result<ProcessingResult, abi_stable::std_types::RBoxError>, tokio::task::JoinError>,
+    tokio::time::error::Elapsed,
+>;
+
 /// Alias for the extra-args map threaded through the dispatch pipeline.
 type ArgMap = RHashMap<RString, SpoeValue>;
 
@@ -284,10 +295,7 @@ async fn call_single_plugin(
 /// Classify and log the outcome of a single plugin `spawn_blocking` + timeout call.
 fn handle_plugin_result(
     name: String,
-    result: Result<
-        Result<Result<ProcessingResult, abi_stable::std_types::RBoxError>, tokio::task::JoinError>,
-        tokio::time::error::Elapsed,
-    >,
+    result: PluginCallResult,
     start: Instant,
     timeout: Duration,
 ) -> Option<(String, ProcessingResult)> {
