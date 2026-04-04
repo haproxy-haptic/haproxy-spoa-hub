@@ -122,7 +122,7 @@ macro_rules! __define_plugin_impl {
         mod __plugin_impl {
             use super::*;
             use $crate::abi_stable::std_types::{
-                RBoxError, ROption, RResult, RStr, RString, RBox,
+                RBoxError, ROption, RResult, RStr, RString,
             };
             use $crate::abi_stable::sabi_trait::prelude::TD_Opaque;
 
