@@ -1,7 +1,6 @@
 use std::time::Instant;
 
 use abi_stable::std_types::RString;
-use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
 use spop::{
     SpopFrame,
@@ -12,10 +11,7 @@ use spop::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
 
-use crate::{
-    dispatch, metrics,
-    registry::{PluginRegistry, SharedRegistry},
-};
+use crate::{dispatch, metrics, registry::SharedRegistry};
 
 /// Handle a single SPOP connection from `HAProxy`.
 ///
@@ -113,7 +109,7 @@ where
 
 /// Process a single NOTIFY frame: dispatch each message to its plugins
 /// and build the ACK response with all collected variables.
-async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &ArcSwap<PluginRegistry>) -> Ack {
+async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistry) -> Ack {
     let metadata = frame.metadata();
     let stream_id = metadata.stream_id;
     let frame_id = metadata.frame_id;

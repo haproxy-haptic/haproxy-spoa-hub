@@ -20,6 +20,9 @@ Thumbs.db
 .env*
 *.log
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # Example plugin build artifacts (compiled .so files)
 # Note: do NOT ignore examples/ source code
 examples/*/target/
