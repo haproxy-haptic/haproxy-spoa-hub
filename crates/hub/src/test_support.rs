@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
 use crate::config::PluginConfig;
-
-#[cfg(test)]
 use crate::plugin_loader::{self, LoadedPlugin};
 
 /// Path to the workspace `target/debug` directory where plugin `.so` files are built.
@@ -38,11 +36,36 @@ pub fn plugin_config(
     }
 }
 
+/// Load plugins from a list of configs using the workspace build directory.
+///
+/// Shared across integration tests and benchmarks to avoid duplicating
+/// the load-and-unwrap pattern.
+#[must_use]
+pub fn load_test_plugins(configs: &[PluginConfig], default_timeout_ms: u64) -> Vec<LoadedPlugin> {
+    let dir = workspace_target_dir();
+    configs
+        .iter()
+        .map(|c| {
+            plugin_loader::load_plugin(&dir, c, default_timeout_ms)
+                .unwrap_or_else(|e| panic!("failed to load plugin '{}': {e}", c.name))
+        })
+        .collect()
+}
+
 /// Load the noop plugin from the workspace build output.
 #[cfg(test)]
 #[must_use]
 pub fn load_noop_plugin() -> LoadedPlugin {
-    let dir = workspace_target_dir();
-    let config = plugin_config("noop", "libnoop_plugin.so", &["test-msg"], 1000);
-    plugin_loader::load_plugin(&dir, &config, 100).unwrap()
+    load_test_plugins(
+        &[plugin_config(
+            "noop",
+            "libnoop_plugin.so",
+            &["test-msg"],
+            1000,
+        )],
+        100,
+    )
+    .into_iter()
+    .next()
+    .unwrap()
 }

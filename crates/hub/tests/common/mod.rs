@@ -13,7 +13,7 @@ pub mod spop_client;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use haproxy_spoa_hub::test_support::{plugin_config, workspace_target_dir};
+use haproxy_spoa_hub::test_support::{load_test_plugins, plugin_config};
 use spop_client::SpopClient;
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
@@ -37,14 +37,7 @@ pub fn unique_sock(prefix: &str) -> String {
 pub fn build_registry(
     configs: &[haproxy_spoa_hub::config::PluginConfig],
 ) -> haproxy_spoa_hub::registry::SharedRegistry {
-    let dir = workspace_target_dir();
-    let loaded: Vec<_> = configs
-        .iter()
-        .map(|c| {
-            haproxy_spoa_hub::plugin_loader::load_plugin(&dir, c, 100)
-                .unwrap_or_else(|e| panic!("failed to load plugin '{}': {e}", c.name))
-        })
-        .collect();
+    let loaded = load_test_plugins(configs, 100);
     Arc::new(arc_swap::ArcSwap::from_pointee(
         haproxy_spoa_hub::registry::PluginRegistry::build(loaded)
             .expect("failed to build registry"),
