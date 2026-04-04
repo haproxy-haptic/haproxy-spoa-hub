@@ -1,5 +1,6 @@
 use std::fs;
 use std::future::Future;
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -141,12 +142,12 @@ async fn accept_loop<L, S>(
 /// Trait abstracting over `TcpListener` and `UnixListener` for the accept loop.
 trait Accept {
     type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
-    fn accept_stream(&self) -> impl Future<Output = std::io::Result<Self::Stream>> + Send;
+    fn accept_stream(&self) -> impl Future<Output = io::Result<Self::Stream>> + Send;
 }
 
 impl Accept for TcpListener {
     type Stream = tokio::net::TcpStream;
-    async fn accept_stream(&self) -> std::io::Result<Self::Stream> {
+    async fn accept_stream(&self) -> io::Result<Self::Stream> {
         let (stream, peer_addr) = self.accept().await?;
         tracing::debug!(%peer_addr, "TCP connection accepted");
         Ok(stream)
@@ -155,7 +156,7 @@ impl Accept for TcpListener {
 
 impl Accept for UnixListener {
     type Stream = tokio::net::UnixStream;
-    async fn accept_stream(&self) -> std::io::Result<Self::Stream> {
+    async fn accept_stream(&self) -> io::Result<Self::Stream> {
         let (stream, _addr) = self.accept().await?;
         Ok(stream)
     }

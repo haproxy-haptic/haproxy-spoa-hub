@@ -5,6 +5,9 @@
     clippy::wildcard_imports
 )]
 
+use std::thread;
+use std::time::Duration;
+
 use haproxy_spoa_hub_plugin_api::*;
 
 /// A test plugin that sleeps for a configurable duration (default 5ms)
@@ -49,7 +52,7 @@ define_plugin!(DelayPlugin, {
             })
             .unwrap_or(5);
 
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        thread::sleep(Duration::from_millis(delay_ms));
 
         Ok(ProcessingResult {
             variables: vec![TxnVariable {
