@@ -171,6 +171,17 @@ fn build_haproxy_disconnect() -> Vec<u8> {
     assemble_frame(2, &metadata, &payload)
 }
 
+fn scope_to_name(scope: u8) -> &'static str {
+    match scope {
+        0 => "Process",
+        1 => "Session",
+        2 => "Transaction",
+        3 => "Request",
+        4 => "Response",
+        _ => "Unknown",
+    }
+}
+
 /// Parse ACK actions from the payload portion of an ACK frame.
 ///
 /// SPOP action format:
@@ -186,14 +197,7 @@ fn parse_actions(data: &[u8]) -> Vec<AckAction> {
 
         let scope = data[pos];
         pos += 1;
-        let scope_name = match scope {
-            0 => "Process",
-            1 => "Session",
-            2 => "Transaction",
-            3 => "Request",
-            4 => "Response",
-            _ => "Unknown",
-        };
+        let scope_name = scope_to_name(scope);
 
         let (name, bytes_read) = decode_spop_string(&data[pos..]);
         pos += bytes_read;
@@ -211,7 +215,7 @@ fn parse_actions(data: &[u8]) -> Vec<AckAction> {
             }
             2 => {
                 // unset-var: no value
-                actions.push(AckAction::UnSetVar {
+                actions.push(AckAction::UnsetVar {
                     scope: scope_name,
                     name,
                 });
@@ -388,7 +392,7 @@ pub enum AckAction {
         name: String,
         value: TypedData,
     },
-    UnSetVar {
+    UnsetVar {
         scope: &'static str,
         name: String,
     },
