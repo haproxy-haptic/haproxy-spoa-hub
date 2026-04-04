@@ -113,17 +113,17 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
     let stream_id = metadata.stream_id;
     let frame_id = metadata.frame_id;
 
+    let mut ack = Ack::new(stream_id, frame_id);
+
     let FramePayload::ListOfMessages(messages) = frame.payload() else {
         tracing::error!(payload = ?frame.payload(), "unexpected NOTIFY payload type");
-        return Ack::new(stream_id, frame_id);
+        return ack;
     };
 
     // Load current registry snapshot for this NOTIFY frame.
     // load_full() returns Arc<PluginRegistry> directly, keeping
     // the snapshot alive for the duration of this frame's processing.
     let current_registry = registry.load_full();
-
-    let mut ack = Ack::new(stream_id, frame_id);
 
     for msg in messages {
         let start = Instant::now();

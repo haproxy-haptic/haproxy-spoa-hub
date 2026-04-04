@@ -185,8 +185,9 @@ pub async fn dispatch_message(
 
     let mut all_variables = Vec::new();
     let mut extra_args = None;
+    let num_groups = plan.groups.len();
 
-    for group in &plan.groups {
+    for (group_idx, group) in plan.groups.iter().enumerate() {
         // Filter out skipped plugins and cascade to dependents in a single pass.
         // Cascade is safe here: plugins in the same group are independent
         // (topologically), so expanding the skip set cannot affect this group.
@@ -213,12 +214,15 @@ pub async fn dispatch_message(
         )
         .await;
 
+        let is_last_group = group_idx + 1 == num_groups;
         for (plugin_name, result) in group_results {
             for var in result.variables {
                 let prefixed_name = format!("{}.{}", plugin_name, var.name);
-                extra_args
-                    .get_or_insert_with(RHashMap::new)
-                    .insert(prefixed_name.as_str().into(), var.value.clone());
+                if !is_last_group {
+                    extra_args
+                        .get_or_insert_with(RHashMap::new)
+                        .insert(prefixed_name.as_str().into(), var.value.clone());
+                }
                 all_variables.push((var.scope, prefixed_name, var.value));
             }
         }
