@@ -191,12 +191,7 @@ mod tests {
 
     fn make_deps(deps: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
         deps.iter()
-            .map(|(name, d)| {
-                (
-                    (*name).to_string(),
-                    d.iter().map(|s| (*s).to_string()).collect(),
-                )
-            })
+            .map(|(name, d)| (name.to_string(), d.iter().map(|s| s.to_string()).collect()))
             .collect()
     }
 

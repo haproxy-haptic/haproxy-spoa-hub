@@ -51,11 +51,10 @@ fn toml_to_config_value(value: &toml::Value) -> ConfigValue {
 
 /// Convert a `toml::Table` into an `RHashMap<RString, ConfigValue>`.
 fn toml_table_to_config(table: &toml::Table) -> RHashMap<RString, ConfigValue> {
-    let mut map = RHashMap::new();
-    for (k, v) in table {
-        map.insert(RString::from(k.as_str()), toml_to_config_value(v));
-    }
-    map
+    table
+        .iter()
+        .map(|(k, v)| (RString::from(k.as_str()), toml_to_config_value(v)))
+        .collect()
 }
 
 /// Validate plugin config against a JSON Schema declared by the plugin.
