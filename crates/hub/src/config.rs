@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io;
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fs, io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 

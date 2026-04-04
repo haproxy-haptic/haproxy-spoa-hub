@@ -1,6 +1,8 @@
-use std::collections::HashMap;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, Ipv6Addr},
+    time::Duration,
+};
 
 use spop::types::TypedData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

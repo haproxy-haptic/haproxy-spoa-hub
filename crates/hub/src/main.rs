@@ -1,6 +1,8 @@
-use std::io::stderr;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    io::stderr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use clap::Parser;
 use haproxy_spoa_hub::{config, listener, metrics, plugin_loader, registry};

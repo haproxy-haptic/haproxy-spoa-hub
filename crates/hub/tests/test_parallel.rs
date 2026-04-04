@@ -1,7 +1,9 @@
 mod common;
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use spop::types::TypedData;
 

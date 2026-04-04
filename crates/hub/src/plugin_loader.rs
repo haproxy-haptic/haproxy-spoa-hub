@@ -1,7 +1,4 @@
-use std::fmt;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{fmt, path::Path, sync::Arc, time::Duration};
 
 use abi_stable::{
     library::{RootModule, lib_header_from_path},
@@ -207,8 +204,7 @@ pub fn load_all_plugins(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::io::Write;
+    use std::{fs, io::Write};
 
     use super::*;
 

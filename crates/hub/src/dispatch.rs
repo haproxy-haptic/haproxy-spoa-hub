@@ -1,7 +1,9 @@
-use std::collections::HashSet;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashSet,
+    net::{Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use abi_stable::std_types::{RHashMap, RString, Tuple2};
 use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, VarScope};
@@ -388,12 +390,11 @@ mod tests {
 
     #[test]
     fn test_typed_data_binary_conversion() {
-        let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let result = typed_data_to_spoe_value(&TypedData::Binary(data.clone()));
+        let result = typed_data_to_spoe_value(&TypedData::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]));
         let SpoeValue::Binary(b) = result else {
             panic!("expected Binary variant");
         };
-        assert_eq!(b.as_slice(), &data);
+        assert_eq!(b.as_slice(), &[0xDE, 0xAD, 0xBE, 0xEF]);
     }
 
     #[test]

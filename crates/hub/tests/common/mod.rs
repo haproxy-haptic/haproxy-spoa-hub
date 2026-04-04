@@ -14,8 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use haproxy_spoa_hub::test_support::{load_test_plugins, plugin_config};
 use spop_client::SpopClient;
-use tokio::net::UnixListener;
-use tokio::task::JoinHandle;
+use tokio::{net::UnixListener, task::JoinHandle};
 
 pub fn unique_sock(prefix: &str) -> String {
     let path = format!(
