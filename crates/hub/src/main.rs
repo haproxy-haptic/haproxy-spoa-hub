@@ -91,9 +91,7 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
 
     // Build plugin registry with execution plans, wrapped in ArcSwap
     // for future hot-reload support (e.g., SIGHUP)
-    let registry: registry::SharedRegistry = Arc::new(arc_swap::ArcSwap::from_pointee(
-        registry::PluginRegistry::build(loaded)?,
-    ));
+    let registry = registry::shared_registry(loaded)?;
 
     // Set up graceful shutdown via CancellationToken
     let shutdown = CancellationToken::new();

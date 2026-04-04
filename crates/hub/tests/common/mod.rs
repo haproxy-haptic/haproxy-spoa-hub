@@ -10,7 +10,6 @@
 )]
 pub mod spop_client;
 
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use haproxy_spoa_hub::test_support::{load_test_plugins, plugin_config};
@@ -38,10 +37,7 @@ pub fn build_registry(
     configs: &[haproxy_spoa_hub::config::PluginConfig],
 ) -> haproxy_spoa_hub::registry::SharedRegistry {
     let loaded = load_test_plugins(configs, 100);
-    Arc::new(arc_swap::ArcSwap::from_pointee(
-        haproxy_spoa_hub::registry::PluginRegistry::build(loaded)
-            .expect("failed to build registry"),
-    ))
+    haproxy_spoa_hub::registry::shared_registry(loaded).expect("failed to build registry")
 }
 
 pub fn noop_config() -> haproxy_spoa_hub::config::PluginConfig {
