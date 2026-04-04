@@ -1,6 +1,8 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use arc_swap::ArcSwap;
 use haproxy_spoa_hub_plugin_api::PluginBox;

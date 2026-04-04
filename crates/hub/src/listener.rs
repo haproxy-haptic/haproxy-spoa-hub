@@ -1,11 +1,15 @@
-use std::fs;
-use std::future::Future;
-use std::io;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    fs,
+    future::Future,
+    io,
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use tokio::{
     io::{AsyncRead, AsyncWrite},

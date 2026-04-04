@@ -1,5 +1,4 @@
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 
