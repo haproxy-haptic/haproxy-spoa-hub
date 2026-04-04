@@ -95,7 +95,7 @@ where
     metrics::update_active_connections(count);
 
     let registry = Arc::clone(registry);
-    let permit = semaphore.map(Arc::clone);
+    let permit = semaphore.cloned();
     tokio::spawn(async move {
         let _permit = match permit {
             Some(s) => Some(s.acquire_owned().await.expect("semaphore closed")),
