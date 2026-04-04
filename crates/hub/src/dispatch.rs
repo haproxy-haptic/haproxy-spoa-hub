@@ -244,6 +244,10 @@ async fn execute_group(
     // 2. True thread-level parallelism for CPU-bound plugins
     let mut futures = Vec::with_capacity(group.len());
 
+    // Build the merged message once and clone per plugin to avoid
+    // redundantly re-merging extra_args for each plugin in the group.
+    let base_msg = build_message(message, extra_args);
+
     for &plugin_name in group {
         let Some(entry) = registry.get_plugin(plugin_name) else {
             tracing::error!(plugin = %plugin_name, "plugin not found in registry");
@@ -252,7 +256,7 @@ async fn execute_group(
 
         let instance = Arc::clone(&entry.instance);
         let name = plugin_name.to_owned();
-        let msg = build_message(message, extra_args);
+        let msg = base_msg.clone();
         let timeout = entry.timeout;
 
         // Launch on blocking thread pool immediately

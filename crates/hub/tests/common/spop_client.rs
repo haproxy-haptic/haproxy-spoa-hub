@@ -24,8 +24,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SpopClient<S> {
         // Read AGENT-HELLO response
         let frame = read_frame(&mut stream).await?;
         let frame_type = frame[0];
-        assert_eq!(
-            frame_type, 101,
+        anyhow::ensure!(
+            frame_type == 101,
             "expected AGENT-HELLO (101), got {frame_type}"
         );
 
@@ -51,7 +51,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SpopClient<S> {
             tokio::time::timeout(Duration::from_secs(5), read_frame(&mut self.stream)).await??;
 
         let frame_type = frame[0];
-        assert_eq!(frame_type, 103, "expected ACK (103), got {frame_type}");
+        anyhow::ensure!(frame_type == 103, "expected ACK (103), got {frame_type}");
 
         // Parse ACK: skip frame_type(1) + flags(4) + stream_id(varint) + frame_id(varint)
         let mut pos = 1;
