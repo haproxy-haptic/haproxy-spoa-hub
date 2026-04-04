@@ -59,9 +59,9 @@ impl PluginRegistry {
     /// plugin dependency declarations.
     pub fn build(loaded: Vec<LoadedPlugin>) -> Result<Self, RegistryError> {
         let mut plugins = HashMap::with_capacity(loaded.len());
-        let mut message_to_plugins: HashMap<_, Vec<String>> = HashMap::new();
+        let mut message_to_plugins: HashMap<_, Vec<String>> = HashMap::with_capacity(loaded.len());
         let mut depends_on_map = HashMap::with_capacity(loaded.len());
-        let mut reverse_deps: HashMap<_, Vec<String>> = HashMap::new();
+        let mut reverse_deps: HashMap<_, Vec<String>> = HashMap::with_capacity(loaded.len());
 
         for plugin in loaded {
             let LoadedPlugin {
