@@ -159,7 +159,7 @@ async fn handle_notify_frame(
 
             // Add all variables to the ACK response
             for (scope, name, value) in result.variables {
-                let spop_scope = dispatch::var_scope_to_spop(&scope);
+                let spop_scope = dispatch::var_scope_to_spop(scope);
                 let typed_data = dispatch::spoe_value_into_typed_data(value);
                 ack = ack.set_var(spop_scope, &name, typed_data);
             }
