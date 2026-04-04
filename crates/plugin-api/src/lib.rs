@@ -146,22 +146,17 @@ macro_rules! __define_plugin_impl {
                     &mut self,
                     context: &$crate::PluginContext,
                 ) -> RResult<(), RBoxError> {
-                    match self.__init(context) {
-                        Ok(()) => RResult::ROk(()),
-                        Err(e) => RResult::RErr(RBoxError::from_box(e)),
-                    }
+                    self.__init(context).map_err(RBoxError::from_box).into()
                 }
 
                 fn process(
                     &self,
                     message: &$crate::SpoeMessage,
                 ) -> RResult<$crate::ProcessingResult, RBoxError> {
-                    let result = std::panic::catch_unwind(
+                    match std::panic::catch_unwind(
                         std::panic::AssertUnwindSafe(|| self.__process(message)),
-                    );
-                    match result {
-                        Ok(Ok(res)) => RResult::ROk(res),
-                        Ok(Err(e)) => RResult::RErr(RBoxError::from_box(e)),
+                    ) {
+                        Ok(res) => res.map_err(RBoxError::from_box).into(),
                         Err(_panic) => {
                             RResult::RErr(RBoxError::new(
                                 $crate::PluginPanicError,
@@ -181,10 +176,7 @@ macro_rules! __define_plugin_impl {
                 fn shutdown(&self) {}
 
                 fn config_schema(&self) -> ROption<RString> {
-                    match self.__config_schema() {
-                        Some(s) => ROption::RSome(RString::from(s)),
-                        None => ROption::RNone,
-                    }
+                    self.__config_schema().map(RString::from).into()
                 }
             }
 
