@@ -36,8 +36,8 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn record_message_processed(message: &str, duration: Duration) {
-    let message: String = message.into();
+pub fn record_message_processed(message: impl Into<String>, duration: Duration) {
+    let message = message.into();
     histogram!("spoa_message_duration_seconds", "message" => message.clone())
         .record(duration.as_secs_f64());
     counter!("spoa_messages_total", "message" => message).increment(1);
