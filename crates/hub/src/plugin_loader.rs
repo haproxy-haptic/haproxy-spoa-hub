@@ -85,7 +85,8 @@ fn validate_config_schema(
     let schema = jsonschema::validator_for(&schema_json).map_err(|e| make_schema_err(&e))?;
 
     // Convert TOML params to JSON for validation
-    let params_json = toml_table_to_json(params);
+    let params_json =
+        serde_json::to_value(params).expect("TOML table is always serializable to JSON");
 
     let errors: Vec<String> = schema
         .iter_errors(&params_json)
@@ -107,13 +108,6 @@ fn validate_config_schema(
             errors: errors.join("; "),
         })
     }
-}
-
-/// Convert a `toml::Table` to `serde_json::Value` for schema validation.
-///
-/// Uses serde's `Serialize` impl on `toml::Value` for a lossless conversion.
-fn toml_table_to_json(table: &toml::Table) -> serde_json::Value {
-    serde_json::to_value(table).expect("TOML table is always valid JSON")
 }
 
 /// Load a single plugin from its `.so` file.
@@ -308,7 +302,7 @@ mod tests {
         let validator = jsonschema::validator_for(&schema_json).unwrap();
         let mut params = toml::Table::new();
         params.insert("name".into(), toml::Value::String("test".into()));
-        let params_json = toml_table_to_json(&params);
+        let params_json = serde_json::to_value(&params).unwrap();
         assert!(validator.validate(&params_json).is_ok());
     }
 
@@ -319,7 +313,7 @@ mod tests {
         let schema_json: serde_json::Value = serde_json::from_str(schema).unwrap();
         let validator = jsonschema::validator_for(&schema_json).unwrap();
         let params = toml::Table::new();
-        let params_json = toml_table_to_json(&params);
+        let params_json = serde_json::to_value(&params).unwrap();
         let errors: Vec<_> = validator.iter_errors(&params_json).collect();
         assert!(!errors.is_empty());
         let msg = errors[0].to_string();
@@ -333,7 +327,7 @@ mod tests {
         let validator = jsonschema::validator_for(&schema_json).unwrap();
         let mut params = toml::Table::new();
         params.insert("count".into(), toml::Value::String("not-a-number".into()));
-        let params_json = toml_table_to_json(&params);
+        let params_json = serde_json::to_value(&params).unwrap();
         let errors: Vec<_> = validator.iter_errors(&params_json).collect();
         assert!(!errors.is_empty());
     }
@@ -342,7 +336,7 @@ mod tests {
     fn test_validate_schema_no_schema_skips_validation() {
         // No schema means validation is always skipped; empty params are fine
         let params = toml::Table::new();
-        let params_json = toml_table_to_json(&params);
+        let params_json = serde_json::to_value(&params).unwrap();
         // Just verify we can convert and it's a valid JSON object
         assert!(params_json.is_object());
     }
@@ -377,7 +371,7 @@ mod tests {
         server.insert("port".into(), toml::Value::Integer(8080));
         let mut params = toml::Table::new();
         params.insert("server".into(), toml::Value::Table(server));
-        let params_json = toml_table_to_json(&params);
+        let params_json = serde_json::to_value(&params).unwrap();
 
         let errors: Vec<String> = validator
             .iter_errors(&params_json)
@@ -444,7 +438,7 @@ mod tests {
         nested.insert("k".into(), toml::Value::String("v".into()));
         table.insert("obj".into(), toml::Value::Table(nested));
 
-        let json = toml_table_to_json(&table);
+        let json = serde_json::to_value(&table).unwrap();
         assert_eq!(json["s"], "hello");
         assert_eq!(json["i"], 42);
         assert_eq!(json["b"], true);
