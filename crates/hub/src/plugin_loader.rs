@@ -87,10 +87,8 @@ fn validate_config_schema(
         ROption::RNone => return Ok(()),
     };
 
-    let name = plugin_name.to_owned();
-
     let make_schema_err = |e: &dyn fmt::Display| LoadError::Validation {
-        name: name.clone(),
+        name: plugin_name.to_owned(),
         errors: format!("invalid JSON Schema: {e}"),
     };
 
@@ -112,7 +110,7 @@ fn validate_config_schema(
         Ok(())
     } else {
         Err(LoadError::Validation {
-            name,
+            name: plugin_name.to_owned(),
             errors: errors.join("; "),
         })
     }
@@ -124,11 +122,10 @@ pub fn load_plugin(
     config: &PluginConfig,
     default_timeout_ms: u64,
 ) -> Result<LoadedPlugin, LoadError> {
-    let name = config.name.clone();
     let lib_path = plugin_dir.join(&config.library);
 
     let load_err = |source| LoadError::Load {
-        name: name.clone(),
+        name: config.name.clone(),
         path: lib_path.display().to_string(),
         source,
     };
@@ -140,6 +137,8 @@ pub fn load_plugin(
 
     // Load the root module (performs ABI version + layout checking)
     let module = PluginMod_Ref::load_from_file(&lib_path).map_err(load_err)?;
+
+    let name = config.name.clone();
 
     // Create plugin instance via factory function
     let mut instance = module.new()().into_result().map_err(|e| LoadError::Init {
