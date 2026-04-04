@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use abi_stable::std_types::RString;
 use futures::{SinkExt, StreamExt};
 use spop::{
     SpopFrame,
@@ -138,7 +137,7 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
             .iter()
             .map(|(key, value)| {
                 (
-                    RString::from(key.as_str()),
+                    key.as_str().into(),
                     dispatch::typed_data_to_spoe_value(value),
                 )
             })
