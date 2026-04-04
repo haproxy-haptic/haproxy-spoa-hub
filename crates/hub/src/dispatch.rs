@@ -250,9 +250,16 @@ async fn execute_group(
 ) -> Vec<(String, ProcessingResult)> {
     let mut futures = Vec::with_capacity(group.len());
 
-    // Build the merged message once and clone per plugin to avoid
-    // redundantly re-merging extra_args for each plugin in the group.
-    let base_msg = build_message(message, extra_args);
+    // Build the merged message once (only allocates when extra_args is Some)
+    // and clone per plugin to avoid re-merging for each plugin in the group.
+    let merged;
+    let base_msg = match extra_args {
+        Some(extras) => {
+            merged = build_message(message, extras);
+            &merged
+        }
+        None => message,
+    };
 
     for &plugin_name in group {
         let Some(entry) = registry.get_plugin(plugin_name) else {
@@ -333,10 +340,7 @@ fn handle_plugin_result(
 }
 
 /// Build a message with extra args merged in (for dependency data flow).
-fn build_message(original: &SpoeMessage, extra_args: Option<&ArgMap>) -> SpoeMessage {
-    let Some(extras) = extra_args else {
-        return original.clone();
-    };
+fn build_message(original: &SpoeMessage, extras: &ArgMap) -> SpoeMessage {
     let mut msg = original.clone();
     for Tuple2(key, value) in extras {
         msg.args.insert(key.clone(), value.clone());
