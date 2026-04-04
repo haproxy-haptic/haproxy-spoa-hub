@@ -129,7 +129,7 @@ pub fn load_plugin(
     // Verify the library has a valid abi_stable header before full load.
     // This is necessary because load_from_file() caches by path and may
     // return stale results for invalid files without this pre-check.
-    let _ = lib_header_from_path(&lib_path).map_err(&load_err)?;
+    let _ = lib_header_from_path(&lib_path).map_err(load_err)?;
 
     // Load the root module (performs ABI version + layout checking)
     let module = PluginMod_Ref::load_from_file(&lib_path).map_err(load_err)?;
