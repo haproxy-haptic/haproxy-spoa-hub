@@ -55,7 +55,7 @@ impl PluginRegistry {
                 messages,
                 depends_on,
                 timeout,
-                version: _,
+                ..
             } = plugin;
             for msg in messages {
                 message_to_plugins

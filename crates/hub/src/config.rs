@@ -81,6 +81,12 @@ impl HubConfig {
             ));
         }
 
+        if self.default_timeout_ms == 0 {
+            return Err(ConfigError::Validation(
+                "default_timeout_ms must be positive".into(),
+            ));
+        }
+
         if !self.plugin_dir.exists() {
             return Err(ConfigError::Validation(format!(
                 "plugin_dir '{}' does not exist",
@@ -130,12 +136,6 @@ impl HubConfig {
 
         // Check for circular dependencies via topological sort
         self.check_circular_dependencies()?;
-
-        if self.default_timeout_ms == 0 {
-            return Err(ConfigError::Validation(
-                "default_timeout_ms must be positive".into(),
-            ));
-        }
 
         Ok(())
     }
