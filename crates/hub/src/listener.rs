@@ -95,6 +95,63 @@ where
     });
 }
 
+/// Generic accept loop shared by Unix and TCP listeners.
+///
+/// Accepts connections until `shutdown` is cancelled, spawning each
+/// connection through `spawn_connection` with semaphore-gated concurrency.
+async fn accept_loop<L, S>(
+    listener: &L,
+    transport: &str,
+    registry: &SharedRegistry,
+    semaphore: Option<&Arc<Semaphore>>,
+    shutdown: &CancellationToken,
+) where
+    L: Accept<Stream = S>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    loop {
+        tokio::select! {
+            result = listener.accept_stream() => {
+                match result {
+                    Ok(stream) => spawn_connection(stream, registry, semaphore),
+                    Err(e) => tracing::error!(
+                        error = %e, %transport, "failed to accept connection"
+                    ),
+                }
+            }
+            () = shutdown.cancelled() => {
+                tracing::info!(%transport, "listener shutting down");
+                break;
+            }
+        }
+    }
+}
+
+/// Trait abstracting over `TcpListener` and `UnixListener` for the accept loop.
+trait Accept {
+    type Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static;
+    fn accept_stream(
+        &self,
+    ) -> impl std::future::Future<Output = std::io::Result<Self::Stream>> + Send;
+}
+
+impl Accept for TcpListener {
+    type Stream = tokio::net::TcpStream;
+    async fn accept_stream(&self) -> std::io::Result<Self::Stream> {
+        let (stream, peer_addr) = self.accept().await?;
+        tracing::debug!(%peer_addr, "TCP connection accepted");
+        Ok(stream)
+    }
+}
+
+impl Accept for UnixListener {
+    type Stream = tokio::net::UnixStream;
+    async fn accept_stream(&self) -> std::io::Result<Self::Stream> {
+        let (stream, _addr) = self.accept().await?;
+        Ok(stream)
+    }
+}
+
 async fn run_unix_listener(
     path: &str,
     registry: SharedRegistry,
@@ -114,21 +171,7 @@ async fn run_unix_listener(
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
 
     tracing::info!(transport = "unix", address = %path, "listening");
-
-    loop {
-        tokio::select! {
-            result = listener.accept() => {
-                match result {
-                    Ok((stream, _addr)) => spawn_connection(stream, &registry, semaphore.as_ref()),
-                    Err(e) => tracing::error!(error = %e, "failed to accept Unix connection"),
-                }
-            }
-            () = shutdown.cancelled() => {
-                tracing::info!(transport = "unix", "listener shutting down");
-                break;
-            }
-        }
-    }
+    accept_loop(&listener, "unix", &registry, semaphore.as_ref(), &shutdown).await;
     Ok(())
 }
 
@@ -140,25 +183,7 @@ async fn run_tcp_listener(
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(transport = "tcp", address = %addr, "listening");
-
-    loop {
-        tokio::select! {
-            result = listener.accept() => {
-                match result {
-                    Ok((stream, peer_addr)) => {
-                        tracing::debug!(%peer_addr, "TCP connection accepted");
-                        spawn_connection(stream, &registry, semaphore.as_ref());
-                    }
-                    Err(e) => tracing::error!(error = %e, "failed to accept TCP connection"),
-                }
-            }
-            () = shutdown.cancelled() => {
-                tracing::info!(transport = "tcp", "listener shutting down");
-                break;
-            }
-        }
-    }
-
+    accept_loop(&listener, "tcp", &registry, semaphore.as_ref(), &shutdown).await;
     Ok(())
 }
 

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
+use spop::SpopFrame;
 use spop::codec::SpopCodec;
 use spop::frame::{FramePayload, FrameType};
 use spop::frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities, HaproxyHello};
@@ -10,8 +11,6 @@ use tokio_util::codec::Framed;
 
 use crate::dispatch;
 use crate::registry::PluginRegistry;
-
-use spop::SpopFrame;
 
 /// Handle a single SPOP connection from `HAProxy`.
 ///
