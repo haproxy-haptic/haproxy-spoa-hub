@@ -35,7 +35,8 @@ pub struct PluginEntry {
 pub struct PluginRegistry {
     plugins: HashMap<String, PluginEntry>,
     message_plans: HashMap<String, ExecutionPlan>,
-    depends_on: HashMap<String, Vec<String>>,
+    /// Reverse dependency map: plugin name → plugins that depend on it.
+    reverse_deps: HashMap<String, Vec<String>>,
 }
 
 impl PluginRegistry {
@@ -67,6 +68,18 @@ impl PluginRegistry {
             plugins.insert(name, PluginEntry { instance, timeout });
         }
 
+        // Build reverse dependency map: for each plugin, record which
+        // plugins depend on it. Used by skip-cascade logic.
+        let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, deps) in &depends_on_map {
+            for dep in deps {
+                reverse_deps
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(name.clone());
+            }
+        }
+
         let mut message_plans = HashMap::new();
         for (msg, plugin_names) in message_to_plugins {
             let plan = build_execution_plan(&plugin_names, &depends_on_map).map_err(|e| {
@@ -81,7 +94,7 @@ impl PluginRegistry {
         Ok(Self {
             plugins,
             message_plans,
-            depends_on: depends_on_map,
+            reverse_deps,
         })
     }
 
@@ -97,10 +110,10 @@ impl PluginRegistry {
         self.plugins.get(name)
     }
 
-    /// Get all plugin dependency declarations.
+    /// Get plugins that directly depend on the given plugin.
     #[must_use]
-    pub fn all_dependencies(&self) -> &HashMap<String, Vec<String>> {
-        &self.depends_on
+    pub fn dependents_of(&self, name: &str) -> &[String] {
+        self.reverse_deps.get(name).map_or(&[], Vec::as_slice)
     }
 
     /// Call `shutdown()` on all loaded plugins.
