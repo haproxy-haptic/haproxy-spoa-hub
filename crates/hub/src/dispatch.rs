@@ -99,7 +99,7 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessa
         return (HashSet::new(), None);
     }
 
-    let mut skip_set = HashSet::new();
+    let mut plugins_to_skip = HashSet::new();
     let mut cleaned_args = RHashMap::new();
 
     for Tuple2(key, value) in &message.args {
@@ -111,7 +111,7 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessa
         // All hub.* args consumed regardless of whether they're recognized
         if suffix == "skip_plugins" {
             if let SpoeValue::String(s) = value {
-                skip_set = s
+                plugins_to_skip = s
                     .as_str()
                     .split(',')
                     .map(str::trim)
@@ -129,7 +129,7 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessa
         frame_id: message.frame_id,
     };
 
-    (skip_set, Some(cleaned))
+    (plugins_to_skip, Some(cleaned))
 }
 
 /// Expand the skip set by adding plugins that depend on any skipped plugin.
@@ -140,10 +140,10 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessa
 fn expand_skip_cascade(
     skipped_name: &str,
     registry: &PluginRegistry,
-    skip_set: &mut HashSet<String>,
+    plugins_to_skip: &mut HashSet<String>,
 ) {
     for name in registry.dependents_of(skipped_name) {
-        if skip_set.insert(name.clone()) {
+        if plugins_to_skip.insert(name.clone()) {
             tracing::debug!(
                 plugin = %name,
                 reason = %skipped_name,
@@ -171,7 +171,7 @@ pub async fn dispatch_message(
     plan: &ExecutionPlan,
     registry: &Arc<PluginRegistry>,
 ) -> DispatchResult {
-    let (mut skip_set, cleaned_message) = extract_hub_args(message);
+    let (mut plugins_to_skip, cleaned_message) = extract_hub_args(message);
     let effective_message = cleaned_message.as_ref().unwrap_or(message);
 
     let mut all_variables = Vec::new();
@@ -181,23 +181,28 @@ pub async fn dispatch_message(
         // Filter out skipped plugins and cascade to dependents in a single pass.
         // Cascade is safe here: plugins in the same group are independent
         // (topologically), so expanding the skip set cannot affect this group.
-        let mut active: Vec<&str> = Vec::with_capacity(group.len());
+        let mut active_plugins: Vec<&str> = Vec::with_capacity(group.len());
         for name in group {
-            if skip_set.contains(name) {
+            if plugins_to_skip.contains(name) {
                 tracing::debug!(plugin = %name, "plugin skipped");
                 metrics::record_plugin_skip(name);
-                expand_skip_cascade(name, registry, &mut skip_set);
+                expand_skip_cascade(name, registry, &mut plugins_to_skip);
             } else {
-                active.push(name);
+                active_plugins.push(name);
             }
         }
 
-        if active.is_empty() {
+        if active_plugins.is_empty() {
             continue;
         }
 
-        let group_results =
-            execute_group(&active, effective_message, extra_args.as_ref(), registry).await;
+        let group_results = execute_group(
+            &active_plugins,
+            effective_message,
+            extra_args.as_ref(),
+            registry,
+        )
+        .await;
 
         for (plugin_name, result) in group_results {
             for var in result.variables {
@@ -215,33 +220,21 @@ pub async fn dispatch_message(
     }
 }
 
-/// Execute a group of plugins. Uses the fastest path available:
-/// - Single plugin: `spawn_blocking` + timeout (no `tokio::spawn`)
-/// - Multiple plugins: `spawn_blocking` each, `join_all` with timeouts
+/// Execute a group of plugins in parallel via `spawn_blocking` + `join_all`.
+///
+/// All `spawn_blocking` calls are launched up front so plugins execute
+/// concurrently on the blocking thread pool. We then await all of
+/// them concurrently using `join_all` with per-plugin timeouts.
+///
+/// `spawn_blocking` is needed (rather than a direct call) because:
+/// 1. Plugins may block (sleep, I/O) which would prevent timeout from firing
+/// 2. True thread-level parallelism for CPU-bound plugins
 async fn execute_group(
     group: &[&str],
     message: &SpoeMessage,
     extra_args: Option<&ArgMap>,
     registry: &Arc<PluginRegistry>,
 ) -> Vec<(String, ProcessingResult)> {
-    if group.len() == 1 {
-        // Fast path: single plugin — one spawn_blocking, no tokio::spawn,
-        // no join_all. Timeout still enforced via spawn_blocking yield.
-        return call_single_plugin(group[0], message, extra_args, registry)
-            .await
-            .into_iter()
-            .collect();
-    }
-
-    // Parallel path: multiple plugins in this group.
-    //
-    // All spawn_blocking calls are launched up front so plugins execute
-    // concurrently on the blocking thread pool. We then await all of
-    // them concurrently using join_all with per-plugin timeouts.
-    //
-    // spawn_blocking is needed (rather than a direct call) because:
-    // 1. Plugins may block (sleep, I/O) which would prevent timeout from firing
-    // 2. True thread-level parallelism for CPU-bound plugins
     let mut futures = Vec::with_capacity(group.len());
 
     // Build the merged message once and clone per plugin to avoid
@@ -276,27 +269,6 @@ async fn execute_group(
         .into_iter()
         .flatten()
         .collect()
-}
-
-/// Single-plugin fast path: one `spawn_blocking` call with timeout.
-/// Avoids `tokio::spawn` and `join_all` overhead compared to the parallel path.
-async fn call_single_plugin(
-    plugin_name: &str,
-    message: &SpoeMessage,
-    extra_args: Option<&ArgMap>,
-    registry: &Arc<PluginRegistry>,
-) -> Option<(String, ProcessingResult)> {
-    let entry = registry.get_plugin(plugin_name)?;
-    let instance = Arc::clone(&entry.instance);
-    let timeout = entry.timeout;
-    let name = plugin_name.to_owned();
-
-    let msg = build_message(message, extra_args);
-
-    let start = Instant::now();
-    let handle = tokio::task::spawn_blocking(move || instance.process(&msg).into_result());
-    let result = tokio::time::timeout(timeout, handle).await;
-    handle_plugin_result(name, result, start, timeout)
 }
 
 /// Classify and log the outcome of a single plugin `spawn_blocking` + timeout call.
@@ -526,9 +498,9 @@ mod tests {
             "hub.skip_plugins",
             SpoeValue::String("a,b,c".into()),
         )]);
-        let (skip_set, _) = extract_hub_args(&msg);
+        let (plugins_to_skip, _) = extract_hub_args(&msg);
         assert_eq!(
-            skip_set,
+            plugins_to_skip,
             HashSet::from(["a".into(), "b".into(), "c".into()])
         );
     }
@@ -539,23 +511,23 @@ mod tests {
             "hub.skip_plugins",
             SpoeValue::String("a , b ".into()),
         )]);
-        let (skip_set, _) = extract_hub_args(&msg);
-        assert_eq!(skip_set, HashSet::from(["a".into(), "b".into()]));
+        let (plugins_to_skip, _) = extract_hub_args(&msg);
+        assert_eq!(plugins_to_skip, HashSet::from(["a".into(), "b".into()]));
     }
 
     #[test]
     fn test_extract_hub_args_empty_when_missing() {
         let msg = make_message_with_args(vec![("src", SpoeValue::String("1.2.3.4".into()))]);
-        let (skip_set, cleaned) = extract_hub_args(&msg);
-        assert!(skip_set.is_empty());
+        let (plugins_to_skip, cleaned) = extract_hub_args(&msg);
+        assert!(plugins_to_skip.is_empty());
         assert!(cleaned.is_none(), "no hub args means no cleaned message");
     }
 
     #[test]
     fn test_extract_hub_args_ignores_non_string() {
         let msg = make_message_with_args(vec![("hub.skip_plugins", SpoeValue::Bool(true))]);
-        let (skip_set, _) = extract_hub_args(&msg);
-        assert!(skip_set.is_empty());
+        let (plugins_to_skip, _) = extract_hub_args(&msg);
+        assert!(plugins_to_skip.is_empty());
     }
 
     #[test]
@@ -597,19 +569,19 @@ mod tests {
     fn test_expand_skip_cascade_skips_direct_dependent() {
         let plugins = vec![test_plugin("a", &[]), test_plugin("b", &["a"])];
         let registry = PluginRegistry::build(plugins).unwrap();
-        let mut skip_set = HashSet::from(["a".to_string()]);
-        expand_skip_cascade("a", &registry, &mut skip_set);
-        assert!(skip_set.contains("b"), "b should be cascaded from a");
+        let mut plugins_to_skip = HashSet::from(["a".to_string()]);
+        expand_skip_cascade("a", &registry, &mut plugins_to_skip);
+        assert!(plugins_to_skip.contains("b"), "b should be cascaded from a");
     }
 
     #[test]
     fn test_expand_skip_cascade_preserves_independent() {
         let plugins = vec![test_plugin("a", &[]), test_plugin("c", &[])];
         let registry = PluginRegistry::build(plugins).unwrap();
-        let mut skip_set = HashSet::from(["a".to_string()]);
-        expand_skip_cascade("a", &registry, &mut skip_set);
+        let mut plugins_to_skip = HashSet::from(["a".to_string()]);
+        expand_skip_cascade("a", &registry, &mut plugins_to_skip);
         assert!(
-            !skip_set.contains("c"),
+            !plugins_to_skip.contains("c"),
             "c should NOT be cascaded (independent)"
         );
     }

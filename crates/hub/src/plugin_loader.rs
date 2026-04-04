@@ -282,42 +282,45 @@ mod tests {
         assert!(loaded.is_empty());
     }
 
+    /// Validate TOML params against a JSON Schema, returning error messages.
+    fn schema_errors(schema: &str, params: &toml::Table) -> Vec<String> {
+        let schema_json: serde_json::Value = serde_json::from_str(schema).unwrap();
+        let validator = jsonschema::validator_for(&schema_json).unwrap();
+        let params_json = serde_json::to_value(params).unwrap();
+        validator
+            .iter_errors(&params_json)
+            .map(|e| e.to_string())
+            .collect()
+    }
+
     #[test]
     fn test_validate_schema_valid_config() {
         let schema =
             r#"{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}"#;
-        let schema_json: serde_json::Value = serde_json::from_str(schema).unwrap();
-        let validator = jsonschema::validator_for(&schema_json).unwrap();
         let mut params = toml::Table::new();
         params.insert("name".into(), toml::Value::String("test".into()));
-        let params_json = serde_json::to_value(&params).unwrap();
-        assert!(validator.validate(&params_json).is_ok());
+        assert!(schema_errors(schema, &params).is_empty());
     }
 
     #[test]
     fn test_validate_schema_missing_required_field() {
         let schema =
             r#"{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}"#;
-        let schema_json: serde_json::Value = serde_json::from_str(schema).unwrap();
-        let validator = jsonschema::validator_for(&schema_json).unwrap();
-        let params = toml::Table::new();
-        let params_json = serde_json::to_value(&params).unwrap();
-        let errors: Vec<_> = validator.iter_errors(&params_json).collect();
+        let errors = schema_errors(schema, &toml::Table::new());
         assert!(!errors.is_empty());
-        let msg = errors[0].to_string();
-        assert!(msg.contains("required"), "expected 'required' in: {msg}");
+        assert!(
+            errors[0].contains("required"),
+            "expected 'required' in: {}",
+            errors[0]
+        );
     }
 
     #[test]
     fn test_validate_schema_wrong_type() {
         let schema = r#"{"type":"object","properties":{"count":{"type":"integer"}}}"#;
-        let schema_json: serde_json::Value = serde_json::from_str(schema).unwrap();
-        let validator = jsonschema::validator_for(&schema_json).unwrap();
         let mut params = toml::Table::new();
         params.insert("count".into(), toml::Value::String("not-a-number".into()));
-        let params_json = serde_json::to_value(&params).unwrap();
-        let errors: Vec<_> = validator.iter_errors(&params_json).collect();
-        assert!(!errors.is_empty());
+        assert!(!schema_errors(schema, &params).is_empty());
     }
 
     #[test]
