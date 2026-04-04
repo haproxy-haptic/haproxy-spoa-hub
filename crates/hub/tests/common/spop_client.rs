@@ -101,6 +101,15 @@ fn assemble_frame(frame_type: u8, metadata: &[u8], payload: &[u8]) -> Vec<u8> {
     frame
 }
 
+/// Build SPOP frame metadata (FIN flag + stream/frame IDs).
+fn build_metadata(stream_id: u64, frame_id: u64) -> Vec<u8> {
+    let mut metadata = Vec::new();
+    metadata.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // flags: FIN
+    encode_varint(&mut metadata, stream_id);
+    encode_varint(&mut metadata, frame_id);
+    metadata
+}
+
 fn build_haproxy_hello() -> Vec<u8> {
     let mut payload = Vec::new();
 
@@ -124,12 +133,7 @@ fn build_haproxy_hello() -> Vec<u8> {
     payload.push(8);
     encode_spop_string(&mut payload, "test-engine");
 
-    let mut metadata = Vec::new();
-    metadata.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // flags: FIN
-    encode_varint(&mut metadata, 0); // stream_id
-    encode_varint(&mut metadata, 0); // frame_id
-
-    assemble_frame(1, &metadata, &payload)
+    assemble_frame(1, &build_metadata(0, 0), &payload)
 }
 
 fn build_notify_frame(
@@ -138,11 +142,6 @@ fn build_notify_frame(
     message_name: &str,
     args: &HashMap<String, TypedData>,
 ) -> Vec<u8> {
-    let mut metadata = Vec::new();
-    metadata.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // flags: FIN
-    encode_varint(&mut metadata, stream_id);
-    encode_varint(&mut metadata, frame_id);
-
     let mut payload = Vec::new();
     encode_spop_string(&mut payload, message_name);
     encode_varint(&mut payload, args.len() as u64);
@@ -151,7 +150,7 @@ fn build_notify_frame(
         encode_typed_data(&mut payload, value);
     }
 
-    assemble_frame(3, &metadata, &payload)
+    assemble_frame(3, &build_metadata(stream_id, frame_id), &payload)
 }
 
 fn build_haproxy_disconnect() -> Vec<u8> {
@@ -163,12 +162,7 @@ fn build_haproxy_disconnect() -> Vec<u8> {
     payload.push(8); // string
     encode_spop_string(&mut payload, "test complete");
 
-    let mut metadata = Vec::new();
-    metadata.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // FIN
-    encode_varint(&mut metadata, 0);
-    encode_varint(&mut metadata, 0);
-
-    assemble_frame(2, &metadata, &payload)
+    assemble_frame(2, &build_metadata(0, 0), &payload)
 }
 
 fn scope_to_name(scope: u8) -> &'static str {
