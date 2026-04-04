@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use abi_stable::library::{RootModule, lib_header_from_path};
 use abi_stable::std_types::{RHashMap, RString};
@@ -165,7 +166,7 @@ pub fn load_plugin(
         instance: Arc::new(instance),
         messages: config.messages.clone(),
         depends_on: config.depends_on.clone(),
-        timeout: std::time::Duration::from_millis(timeout_ms),
+        timeout: Duration::from_millis(timeout_ms),
     })
 }
 

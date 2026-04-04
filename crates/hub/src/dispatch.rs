@@ -128,15 +128,14 @@ fn expand_skip_cascade(
     registry: &PluginRegistry,
     skip_set: &mut HashSet<String>,
 ) {
-    for (name, deps) in registry.all_dependencies() {
-        if deps.iter().any(|d| d == skipped_name) && !skip_set.contains(name.as_str()) {
+    for name in registry.dependents_of(skipped_name) {
+        if skip_set.insert(name.clone()) {
             tracing::debug!(
                 plugin = %name,
                 reason = %skipped_name,
                 "plugin skipped (dependency cascade)"
             );
             crate::metrics::record_plugin_skip(name);
-            skip_set.insert(name.clone());
         }
     }
 }
