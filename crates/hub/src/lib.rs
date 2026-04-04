@@ -6,5 +6,10 @@ pub mod metrics;
 pub mod plugin_loader;
 pub mod registry;
 
-#[cfg(test)]
-pub(crate) mod test_support;
+/// Test helpers shared across unit tests, integration tests, and benchmarks.
+///
+/// Always compiled so that integration tests and benchmarks (which are
+/// separate crates and cannot see `#[cfg(test)]` items) can import
+/// `workspace_target_dir()` without duplicating it.
+#[doc(hidden)]
+pub mod test_support;

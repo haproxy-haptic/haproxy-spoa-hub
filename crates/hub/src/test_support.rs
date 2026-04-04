@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 
+#[cfg(test)]
 use crate::{
     config::PluginConfig,
     plugin_loader::{self, LoadedPlugin},
 };
 
 /// Path to the workspace `target/debug` directory where plugin `.so` files are built.
+#[must_use]
 pub fn workspace_target_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -17,6 +19,8 @@ pub fn workspace_target_dir() -> PathBuf {
 }
 
 /// Load the noop plugin from the workspace build output.
+#[cfg(test)]
+#[must_use]
 pub fn load_noop_plugin() -> LoadedPlugin {
     let dir = workspace_target_dir();
     let config = PluginConfig {

@@ -1,21 +1,11 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use abi_stable::std_types::RHashMap;
 use criterion::{Criterion, criterion_group, criterion_main};
 use haproxy_spoa_hub::dispatch::dispatch_message;
 use haproxy_spoa_hub::registry::PluginRegistry;
+use haproxy_spoa_hub::test_support::workspace_target_dir;
 use haproxy_spoa_hub_plugin_api::{SpoeMessage, SpoeValue};
-
-fn workspace_target_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug")
-}
 
 fn noop_bench_config(name: &str, message: &str) -> haproxy_spoa_hub::config::PluginConfig {
     haproxy_spoa_hub::config::PluginConfig {
@@ -64,7 +54,7 @@ fn bench_dispatch_single_plugin(c: &mut Criterion) {
     let plan = registry.plan_for_message("bench-msg").unwrap();
 
     c.bench_function("dispatch_1_plugin", |b| {
-        b.iter(|| rt.block_on(dispatch_message(&msg, &plan, &registry)));
+        b.iter(|| rt.block_on(dispatch_message(&msg, plan, &registry)));
     });
 }
 
@@ -80,7 +70,7 @@ fn bench_dispatch_two_plugins_parallel(c: &mut Criterion) {
     let plan = registry.plan_for_message("bench-parallel").unwrap();
 
     c.bench_function("dispatch_2_plugins_parallel", |b| {
-        b.iter(|| rt.block_on(dispatch_message(&msg, &plan, &registry)));
+        b.iter(|| rt.block_on(dispatch_message(&msg, plan, &registry)));
     });
 }
 
@@ -101,7 +91,7 @@ fn bench_dispatch_with_args(c: &mut Criterion) {
     let plan = registry.plan_for_message("bench-msg").unwrap();
 
     c.bench_function("dispatch_1_plugin_4_args", |b| {
-        b.iter(|| rt.block_on(dispatch_message(&msg, &plan, &registry)));
+        b.iter(|| rt.block_on(dispatch_message(&msg, plan, &registry)));
     });
 }
 

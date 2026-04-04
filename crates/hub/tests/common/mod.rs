@@ -10,7 +10,6 @@
 )]
 pub mod spop_client;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -30,18 +29,7 @@ pub fn unique_sock(prefix: &str) -> String {
     )
 }
 
-/// Path to `target/debug` where plugin `.so` files are built.
-/// (Duplicated from `test_support::workspace_target_dir` because
-/// integration tests cannot access `#[cfg(test)]` library modules.)
-pub fn workspace_target_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug")
-}
+use haproxy_spoa_hub::test_support::workspace_target_dir;
 
 /// Build a shared registry from a list of plugin configs.
 pub fn build_registry(
