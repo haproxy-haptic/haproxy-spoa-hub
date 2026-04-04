@@ -375,7 +375,7 @@ pub struct AckResponse {
 impl AckResponse {
     pub fn find_var(&self, name: &str) -> Option<&TypedData> {
         self.actions.iter().find_map(|a| match a {
-            AckAction::SetVar { name: n, value, .. } if n.contains(name) => Some(value),
+            AckAction::SetVar { name: n, value, .. } if n == name => Some(value),
             _ => None,
         })
     }
