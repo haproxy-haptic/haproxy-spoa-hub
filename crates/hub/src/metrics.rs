@@ -8,7 +8,7 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
         let builder = metrics_exporter_prometheus::PrometheusBuilder::new()
             .with_http_listener(addr)
             .set_buckets_for_metric(
-                metrics_exporter_prometheus::Matcher::Prefix("spoa_message_duration".to_string()),
+                metrics_exporter_prometheus::Matcher::Prefix("spoa_message_duration".into()),
                 &[0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
             )?
             .add_global_label("service", "haproxy-spoa-hub");

@@ -470,7 +470,7 @@ mod tests {
 
         let msg = SpoeMessage {
             name: "test-msg".into(),
-            args: abi_stable::std_types::RHashMap::new(),
+            args: RHashMap::new(),
             stream_id: 1,
             frame_id: 1,
         };
@@ -501,9 +501,9 @@ mod tests {
     // --- Hub control arg tests ---
 
     fn make_message_with_args(args: Vec<(&str, SpoeValue)>) -> SpoeMessage {
-        let mut rargs = abi_stable::std_types::RHashMap::new();
+        let mut rargs = RHashMap::new();
         for (k, v) in args {
-            rargs.insert(abi_stable::std_types::RString::from(k), v);
+            rargs.insert(RString::from(k), v);
         }
         SpoeMessage {
             name: "test".into(),

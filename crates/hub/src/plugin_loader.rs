@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use abi_stable::library::{RootModule, lib_header_from_path};
-use abi_stable::std_types::{RHashMap, RString};
+use abi_stable::std_types::{RHashMap, ROption, RString};
 use haproxy_spoa_hub_plugin_api::{ConfigValue, PluginBox, PluginContext, PluginMod_Ref};
 
 use crate::config::PluginConfig;
@@ -79,8 +79,6 @@ fn validate_config_schema(
     plugin_name: &str,
     params: &toml::Table,
 ) -> Result<(), LoadError> {
-    use abi_stable::std_types::ROption;
-
     let schema_str = match instance.config_schema() {
         ROption::RSome(s) => s,
         ROption::RNone => return Ok(()),
