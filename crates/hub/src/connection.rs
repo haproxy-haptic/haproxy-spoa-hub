@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
 
 use crate::dispatch;
+use crate::metrics;
 use crate::registry::{PluginRegistry, SharedRegistry};
 
 /// Handle a single SPOP connection from `HAProxy`.
@@ -169,7 +170,7 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &ArcSwap<Plugi
         }
 
         let elapsed = start.elapsed();
-        crate::metrics::record_message_processed(&msg.name, elapsed);
+        metrics::record_message_processed(&msg.name, elapsed);
         tracing::debug!(
             message_name = %msg.name,
             latency_us = elapsed.as_micros(),

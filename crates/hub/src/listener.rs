@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{ListenerConfig, ListenerType};
 use crate::connection::handle_connection;
+use crate::metrics;
 use crate::registry::SharedRegistry;
 
 static ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
@@ -82,7 +83,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
-    crate::metrics::update_active_connections(count);
+    metrics::update_active_connections(count);
 
     let registry = Arc::clone(registry);
     let permit = semaphore.map(Arc::clone);
@@ -93,7 +94,7 @@ where
         };
         handle_connection(stream, registry).await;
         let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
-        crate::metrics::update_active_connections(count);
+        metrics::update_active_connections(count);
     });
 }
 
