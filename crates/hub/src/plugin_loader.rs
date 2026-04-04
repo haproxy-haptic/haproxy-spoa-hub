@@ -74,16 +74,15 @@ fn validate_config_schema(
         ROption::RNone => return Ok(()),
     };
 
-    let schema_json: serde_json::Value =
-        serde_json::from_str(schema_str.as_str()).map_err(|e| LoadError::Validation {
-            name: plugin_name.to_string(),
-            errors: format!("invalid JSON Schema: {e}"),
-        })?;
-
-    let schema = jsonschema::validator_for(&schema_json).map_err(|e| LoadError::Validation {
+    let make_schema_err = |e: &dyn std::fmt::Display| LoadError::Validation {
         name: plugin_name.to_string(),
         errors: format!("invalid JSON Schema: {e}"),
-    })?;
+    };
+
+    let schema_json: serde_json::Value =
+        serde_json::from_str(schema_str.as_str()).map_err(|e| make_schema_err(&e))?;
+
+    let schema = jsonschema::validator_for(&schema_json).map_err(|e| make_schema_err(&e))?;
 
     // Convert TOML params to JSON for validation
     let params_json = toml_table_to_json(params);
@@ -213,17 +212,32 @@ mod tests {
 
     use crate::test_support::workspace_target_dir;
 
-    #[test]
-    fn test_load_valid_plugin() {
-        let plugin_dir = workspace_target_dir();
-        let config = PluginConfig {
-            name: "noop".into(),
+    fn noop_config(name: &str, timeout_ms: Option<u64>) -> PluginConfig {
+        PluginConfig {
+            name: name.into(),
             library: "libnoop_plugin.so".into(),
             messages: vec!["test".into()],
             depends_on: vec![],
-            timeout_ms: Some(500),
+            timeout_ms,
             params: toml::Table::default(),
-        };
+        }
+    }
+
+    fn fake_config(name: &str, library: &str) -> PluginConfig {
+        PluginConfig {
+            name: name.into(),
+            library: library.into(),
+            messages: vec![],
+            depends_on: vec![],
+            timeout_ms: None,
+            params: toml::Table::default(),
+        }
+    }
+
+    #[test]
+    fn test_load_valid_plugin() {
+        let plugin_dir = workspace_target_dir();
+        let config = noop_config("noop", Some(500));
         let loaded = load_plugin(&plugin_dir, &config, 100).unwrap();
         assert_eq!(loaded.name, "noop");
         assert!(!loaded.version.is_empty());
@@ -233,20 +247,14 @@ mod tests {
     #[test]
     fn test_load_plugin_with_params() {
         let plugin_dir = workspace_target_dir();
-        let mut params = toml::Table::new();
-        params.insert(
+        let mut config = noop_config("noop", None);
+        config.params.insert(
             "db_path".into(),
             toml::Value::String("/data/test.mmdb".into()),
         );
-        params.insert("locale".into(), toml::Value::String("de".into()));
-        let config = PluginConfig {
-            name: "noop".into(),
-            library: "libnoop_plugin.so".into(),
-            messages: vec!["test".into()],
-            depends_on: vec![],
-            timeout_ms: None,
-            params,
-        };
+        config
+            .params
+            .insert("locale".into(), toml::Value::String("de".into()));
         // Plugin loads and init succeeds even with params (noop ignores them)
         let loaded = load_plugin(&plugin_dir, &config, 100).unwrap();
         assert_eq!(loaded.name, "noop");
@@ -255,14 +263,7 @@ mod tests {
     #[test]
     fn test_load_uses_default_timeout() {
         let plugin_dir = workspace_target_dir();
-        let config = PluginConfig {
-            name: "noop".into(),
-            library: "libnoop_plugin.so".into(),
-            messages: vec!["test".into()],
-            depends_on: vec![],
-            timeout_ms: None,
-            params: toml::Table::default(),
-        };
+        let config = noop_config("noop", None);
         let loaded = load_plugin(&plugin_dir, &config, 200).unwrap();
         assert_eq!(loaded.timeout, std::time::Duration::from_millis(200));
     }
@@ -270,14 +271,7 @@ mod tests {
     #[test]
     fn test_load_nonexistent_so_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let config = PluginConfig {
-            name: "missing".into(),
-            library: "libmissing.so".into(),
-            messages: vec![],
-            depends_on: vec![],
-            timeout_ms: None,
-            params: toml::Table::default(),
-        };
+        let config = fake_config("missing", "libmissing.so");
         let err = load_plugin(dir.path(), &config, 100).unwrap_err();
         assert!(matches!(err, LoadError::Load { .. }));
         assert!(err.to_string().contains("missing"));
@@ -290,14 +284,7 @@ mod tests {
         let mut f = std::fs::File::create(&fake_path).unwrap();
         f.write_all(b"not a shared library").unwrap();
 
-        let config = PluginConfig {
-            name: "fake".into(),
-            library: "libfake.so".into(),
-            messages: vec![],
-            depends_on: vec![],
-            timeout_ms: None,
-            params: toml::Table::default(),
-        };
+        let config = fake_config("fake", "libfake.so");
         let err = load_plugin(dir.path(), &config, 100).unwrap_err();
         assert!(matches!(err, LoadError::Load { .. }));
     }
@@ -308,14 +295,7 @@ mod tests {
         let fake_path = dir.path().join("libfake.so");
         std::fs::write(&fake_path, b"bad").unwrap();
 
-        let configs = vec![PluginConfig {
-            name: "bad".into(),
-            library: "libfake.so".into(),
-            messages: vec![],
-            depends_on: vec![],
-            timeout_ms: None,
-            params: toml::Table::default(),
-        }];
+        let configs = vec![fake_config("bad", "libfake.so")];
         let loaded = load_all_plugins(dir.path(), &configs, 100);
         assert!(loaded.is_empty());
     }
@@ -441,22 +421,8 @@ mod tests {
         std::fs::write(dir.path().join("libbad2.so"), b"bad").unwrap();
 
         let configs = vec![
-            PluginConfig {
-                name: "bad1".into(),
-                library: "libbad1.so".into(),
-                messages: vec![],
-                depends_on: vec![],
-                timeout_ms: None,
-                params: toml::Table::default(),
-            },
-            PluginConfig {
-                name: "bad2".into(),
-                library: "libbad2.so".into(),
-                messages: vec![],
-                depends_on: vec![],
-                timeout_ms: None,
-                params: toml::Table::default(),
-            },
+            fake_config("bad1", "libbad1.so"),
+            fake_config("bad2", "libbad2.so"),
         ];
         // Both fail (invalid .so), but load_all_plugins doesn't panic
         let loaded = load_all_plugins(dir.path(), &configs, 100);
