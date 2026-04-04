@@ -24,18 +24,14 @@ cargo test -p haproxy-spoa-hub --test test_parallel       # Parallel execution
 cargo bench -p haproxy-spoa-hub --bench dispatch_bench    # Dispatch latency
 ```
 
-## Dispatch Fast Path
+## Dispatch
 
-`dispatch.rs` has two execution paths:
+`dispatch.rs` uses a single execution path for all group sizes: all
+`spawn_blocking` calls are launched up front, then
+`futures::future::join_all` with per-plugin timeouts. This gives true
+thread-level parallelism on the blocking thread pool.
 
-- **Single plugin**: `call_single_plugin()` — one `spawn_blocking` call,
-  no `tokio::spawn`, no `join_all`. Timeout via `tokio::time::timeout`
-  wrapping the `spawn_blocking` handle.
-- **Multiple plugins**: All `spawn_blocking` calls launched up front, then
-  `futures::future::join_all` with per-plugin timeouts. True thread-level
-  parallelism on the blocking thread pool.
-
-Both paths use `spawn_blocking` (not direct inline calls) so that
+`spawn_blocking` (not direct inline calls) is used so that
 `tokio::time::timeout` works even if a plugin blocks (e.g., `thread::sleep`).
 
 ## spop Crate Notes
