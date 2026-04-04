@@ -119,9 +119,10 @@ pub fn load_plugin(
     default_timeout_ms: u64,
 ) -> Result<LoadedPlugin, LoadError> {
     let lib_path = plugin_dir.join(&config.library);
+    let name = config.name.clone();
 
     let load_err = |source| LoadError::Load {
-        name: config.name.clone(),
+        name: name.clone(),
         path: lib_path.display().to_string(),
         source,
     };
@@ -133,8 +134,6 @@ pub fn load_plugin(
 
     // Load the root module (performs ABI version + layout checking)
     let module = PluginMod_Ref::load_from_file(&lib_path).map_err(load_err)?;
-
-    let name = config.name.clone();
 
     // Create plugin instance via factory function
     let mut instance = module.new()().into_result().map_err(|e| LoadError::Init {

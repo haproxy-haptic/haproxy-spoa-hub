@@ -35,23 +35,23 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn record_message_processed(message: impl Into<String>, duration: Duration) {
-    let message = message.into();
+pub fn record_message_processed(message: &str, duration: Duration) {
+    let message = message.to_owned();
     histogram!("spoa_message_duration_seconds", "message" => message.clone())
         .record(duration.as_secs_f64());
     counter!("spoa_messages_total", "message" => message).increment(1);
 }
 
-pub fn record_plugin_error(plugin: impl Into<String>) {
-    counter!("spoa_plugin_errors_total", "plugin" => plugin.into()).increment(1);
+pub fn record_plugin_error(plugin: &str) {
+    counter!("spoa_plugin_errors_total", "plugin" => plugin.to_owned()).increment(1);
 }
 
-pub fn record_plugin_timeout(plugin: impl Into<String>) {
-    counter!("spoa_plugin_timeouts_total", "plugin" => plugin.into()).increment(1);
+pub fn record_plugin_timeout(plugin: &str) {
+    counter!("spoa_plugin_timeouts_total", "plugin" => plugin.to_owned()).increment(1);
 }
 
-pub fn record_plugin_skip(plugin: impl Into<String>) {
-    counter!("spoa_plugin_skips_total", "plugin" => plugin.into()).increment(1);
+pub fn record_plugin_skip(plugin: &str) {
+    counter!("spoa_plugin_skips_total", "plugin" => plugin.to_owned()).increment(1);
 }
 
 pub fn update_active_connections(count: u64) {
