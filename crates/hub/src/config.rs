@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -60,7 +61,7 @@ fn default_log_level() -> String {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read config file: {0}")]
-    ReadFile(#[from] std::io::Error),
+    ReadFile(#[from] io::Error),
     #[error("failed to parse config: {0}")]
     Parse(#[from] toml::de::Error),
     #[error("validation error: {0}")]
@@ -95,7 +96,7 @@ impl HubConfig {
             )));
         }
 
-        let mut names = HashSet::new();
+        let mut names = HashSet::with_capacity(self.plugins.len());
         for plugin in &self.plugins {
             if !names.insert(&plugin.name) {
                 return Err(ConfigError::Validation(format!(

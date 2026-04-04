@@ -12,7 +12,7 @@ pub mod spop_client;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use spop_client::SpopClient;
 use tokio::net::UnixListener;
@@ -23,8 +23,8 @@ pub fn unique_sock(prefix: &str) -> String {
         "/tmp/spoa-hub-{}-{}-{}.sock",
         prefix,
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
             .subsec_nanos()
     )

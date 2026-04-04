@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use spop::types::TypedData;
@@ -341,12 +342,12 @@ fn decode_typed_data(data: &[u8]) -> (TypedData, usize) {
         6 => {
             let octets: [u8; 4] = data[pos..pos + 4].try_into().unwrap();
             pos += 4;
-            (TypedData::IPv4(std::net::Ipv4Addr::from(octets)), pos)
+            (TypedData::IPv4(Ipv4Addr::from(octets)), pos)
         }
         7 => {
             let octets: [u8; 16] = data[pos..pos + 16].try_into().unwrap();
             pos += 16;
-            (TypedData::IPv6(std::net::Ipv6Addr::from(octets)), pos)
+            (TypedData::IPv6(Ipv6Addr::from(octets)), pos)
         }
         8 => {
             let (s, bytes_read) = decode_spop_string(&data[pos..]);
