@@ -116,7 +116,7 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessa
                     .split(',')
                     .map(str::trim)
                     .filter(|name| !name.is_empty())
-                    .map(String::from)
+                    .map(Into::into)
                     .collect();
             }
         }

@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use abi_stable::std_types::RHashMap;
 use criterion::{Criterion, criterion_group, criterion_main};
+use haproxy_spoa_hub::config::PluginConfig;
 use haproxy_spoa_hub::dispatch::dispatch_message;
 use haproxy_spoa_hub::registry::PluginRegistry;
 use haproxy_spoa_hub::test_support::workspace_target_dir;
 use haproxy_spoa_hub_plugin_api::{SpoeMessage, SpoeValue};
 
-fn noop_bench_config(name: &str, message: &str) -> haproxy_spoa_hub::config::PluginConfig {
-    haproxy_spoa_hub::config::PluginConfig {
+fn noop_bench_config(name: &str, message: &str) -> PluginConfig {
+    PluginConfig {
         name: name.into(),
         library: "libnoop_plugin.so".into(),
         messages: vec![message.into()],

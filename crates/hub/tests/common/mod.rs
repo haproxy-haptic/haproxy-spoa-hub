@@ -18,7 +18,7 @@ use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
 
 pub fn unique_sock(prefix: &str) -> String {
-    format!(
+    let path = format!(
         "/tmp/spoa-hub-{}-{}-{}.sock",
         prefix,
         std::process::id(),
@@ -26,7 +26,10 @@ pub fn unique_sock(prefix: &str) -> String {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .subsec_nanos()
-    )
+    );
+    // Remove stale socket file from previous test runs
+    let _ = std::fs::remove_file(&path);
+    path
 }
 
 use haproxy_spoa_hub::test_support::workspace_target_dir;
@@ -49,15 +52,24 @@ pub fn build_registry(
     ))
 }
 
-pub fn noop_config() -> haproxy_spoa_hub::config::PluginConfig {
+pub fn plugin_config(
+    name: &str,
+    library: &str,
+    messages: &[&str],
+    timeout_ms: u64,
+) -> haproxy_spoa_hub::config::PluginConfig {
     haproxy_spoa_hub::config::PluginConfig {
-        name: "noop".into(),
-        library: "libnoop_plugin.so".into(),
-        messages: vec!["check-request".into()],
+        name: name.into(),
+        library: library.into(),
+        messages: messages.iter().map(|&m| m.into()).collect(),
         depends_on: vec![],
-        timeout_ms: Some(1000),
+        timeout_ms: Some(timeout_ms),
         params: toml::Table::default(),
     }
+}
+
+pub fn noop_config() -> haproxy_spoa_hub::config::PluginConfig {
+    plugin_config("noop", "libnoop_plugin.so", &["check-request"], 1000)
 }
 
 /// Bind a Unix listener, spawn a single-connection server, and return a
