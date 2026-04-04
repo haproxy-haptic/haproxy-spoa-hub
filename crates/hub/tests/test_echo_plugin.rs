@@ -7,16 +7,8 @@ use spop::types::TypedData;
 #[tokio::test]
 async fn test_echo_plugin_returns_all_types() {
     let socket_path = common::unique_sock("echo");
-    let _ = std::fs::remove_file(&socket_path);
 
-    let config = haproxy_spoa_hub::config::PluginConfig {
-        name: "echo".into(),
-        library: "libecho_plugin.so".into(),
-        messages: vec!["check-types".into()],
-        depends_on: vec![],
-        timeout_ms: Some(1000),
-        params: toml::Table::default(),
-    };
+    let config = common::plugin_config("echo", "libecho_plugin.so", &["check-types"], 1000);
 
     let registry = common::build_registry(&[config]);
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;

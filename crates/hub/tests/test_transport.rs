@@ -11,7 +11,6 @@ async fn test_dual_transport_identical_responses() {
 
     // --- Unix listener ---
     let socket_path = common::unique_sock("transport");
-    let _ = std::fs::remove_file(&socket_path);
 
     let (mut unix_client, unix_server) =
         common::start_server_and_connect(&socket_path, Arc::clone(&registry)).await;
@@ -89,7 +88,6 @@ async fn test_unix_notify_with_args() {
     let registry = common::build_registry(&[common::noop_config()]);
 
     let socket_path = common::unique_sock("unix-args");
-    let _ = std::fs::remove_file(&socket_path);
 
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 

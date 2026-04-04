@@ -10,20 +10,12 @@ fn delay_config(
     message: &str,
     timeout_ms: u64,
 ) -> haproxy_spoa_hub::config::PluginConfig {
-    haproxy_spoa_hub::config::PluginConfig {
-        name: name.into(),
-        library: "libdelay_plugin.so".into(),
-        messages: vec![message.into()],
-        depends_on: vec![],
-        timeout_ms: Some(timeout_ms),
-        params: toml::Table::default(),
-    }
+    common::plugin_config(name, "libdelay_plugin.so", &[message], timeout_ms)
 }
 
 #[tokio::test]
 async fn test_parallel_plugins_execute_concurrently() {
     let socket_path = common::unique_sock("parallel");
-    let _ = std::fs::remove_file(&socket_path);
 
     let registry = common::build_registry(&[
         delay_config("delay-a", "check-parallel", 2000),
@@ -64,7 +56,6 @@ async fn test_parallel_plugins_execute_concurrently() {
 #[tokio::test]
 async fn test_plugin_timeout_returns_partial_results() {
     let socket_path = common::unique_sock("timeout");
-    let _ = std::fs::remove_file(&socket_path);
 
     // fast plugin: 2000ms timeout (will complete)
     // slow plugin: 50ms timeout (will expire with 500ms delay)

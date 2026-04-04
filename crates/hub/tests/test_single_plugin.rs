@@ -7,7 +7,6 @@ use spop::types::TypedData;
 #[tokio::test]
 async fn test_noop_plugin_sets_variable() {
     let socket_path = common::unique_sock("noop");
-    let _ = std::fs::remove_file(&socket_path);
 
     let registry = common::build_registry(&[common::noop_config()]);
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
@@ -36,7 +35,6 @@ async fn test_noop_plugin_sets_variable() {
 #[tokio::test]
 async fn test_unregistered_message_returns_empty_ack() {
     let socket_path = common::unique_sock("unreg");
-    let _ = std::fs::remove_file(&socket_path);
 
     let registry = common::build_registry(&[common::noop_config()]);
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
