@@ -1,9 +1,11 @@
+use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     net::{TcpListener, UnixListener},
     sync::Semaphore,
 };
@@ -84,7 +86,7 @@ pub async fn start_listeners(
 /// Spawn a connection handler with semaphore-gated concurrency and metrics tracking.
 fn spawn_connection<S>(stream: S, registry: &SharedRegistry, semaphore: Option<&Arc<Semaphore>>)
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
     metrics::update_active_connections(count);
@@ -114,7 +116,7 @@ async fn accept_loop<L, S>(
     shutdown: &CancellationToken,
 ) where
     L: Accept<Stream = S>,
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     loop {
         tokio::select! {
@@ -136,10 +138,8 @@ async fn accept_loop<L, S>(
 
 /// Trait abstracting over `TcpListener` and `UnixListener` for the accept loop.
 trait Accept {
-    type Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static;
-    fn accept_stream(
-        &self,
-    ) -> impl std::future::Future<Output = std::io::Result<Self::Stream>> + Send;
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
+    fn accept_stream(&self) -> impl Future<Output = std::io::Result<Self::Stream>> + Send;
 }
 
 impl Accept for TcpListener {
