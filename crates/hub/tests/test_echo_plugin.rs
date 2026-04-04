@@ -10,9 +10,9 @@ async fn test_echo_plugin_returns_all_types() {
     let _ = std::fs::remove_file(&socket_path);
 
     let config = haproxy_spoa_hub::config::PluginConfig {
-        name: "echo".to_string(),
-        library: "libecho_plugin.so".to_string(),
-        messages: vec!["check-types".to_string()],
+        name: "echo".into(),
+        library: "libecho_plugin.so".into(),
+        messages: vec!["check-types".into()],
         depends_on: vec![],
         timeout_ms: Some(1000),
         params: toml::Table::default(),

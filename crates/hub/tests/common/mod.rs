@@ -63,9 +63,9 @@ pub fn build_registry(
 
 pub fn noop_config() -> haproxy_spoa_hub::config::PluginConfig {
     haproxy_spoa_hub::config::PluginConfig {
-        name: "noop".to_string(),
-        library: "libnoop_plugin.so".to_string(),
-        messages: vec!["check-request".to_string()],
+        name: "noop".into(),
+        library: "libnoop_plugin.so".into(),
+        messages: vec!["check-request".into()],
         depends_on: vec![],
         timeout_ms: Some(1000),
         params: toml::Table::default(),

@@ -11,9 +11,9 @@ fn delay_config(
     timeout_ms: u64,
 ) -> haproxy_spoa_hub::config::PluginConfig {
     haproxy_spoa_hub::config::PluginConfig {
-        name: name.to_string(),
-        library: "libdelay_plugin.so".to_string(),
-        messages: vec![message.to_string()],
+        name: name.into(),
+        library: "libdelay_plugin.so".into(),
+        messages: vec![message.into()],
         depends_on: vec![],
         timeout_ms: Some(timeout_ms),
         params: toml::Table::default(),
