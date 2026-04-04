@@ -213,22 +213,11 @@ mod tests {
 
     use crate::test_support::{self, workspace_target_dir};
 
-    fn noop_config(name: &str, timeout_ms: Option<u64>) -> PluginConfig {
-        let mut config = test_support::plugin_config(name, "libnoop_plugin.so", &["test"], 0);
-        config.timeout_ms = timeout_ms;
-        config
-    }
-
-    fn fake_config(name: &str, library: &str) -> PluginConfig {
-        let mut config = test_support::plugin_config(name, library, &[], 0);
-        config.timeout_ms = None;
-        config
-    }
-
     #[test]
     fn test_load_valid_plugin() {
         let plugin_dir = workspace_target_dir();
-        let config = noop_config("noop", Some(500));
+        let mut config = test_support::plugin_config("noop", "libnoop_plugin.so", &["test"], 0);
+        config.timeout_ms = Some(500);
         let loaded = load_plugin(&plugin_dir, &config, 100).unwrap();
         assert_eq!(loaded.name, "noop");
         assert!(!loaded.version.is_empty());
@@ -238,7 +227,8 @@ mod tests {
     #[test]
     fn test_load_plugin_with_params() {
         let plugin_dir = workspace_target_dir();
-        let mut config = noop_config("noop", None);
+        let mut config = test_support::plugin_config("noop", "libnoop_plugin.so", &["test"], 0);
+        config.timeout_ms = None;
         config.params.insert(
             "db_path".into(),
             toml::Value::String("/data/test.mmdb".into()),
@@ -254,7 +244,8 @@ mod tests {
     #[test]
     fn test_load_uses_default_timeout() {
         let plugin_dir = workspace_target_dir();
-        let config = noop_config("noop", None);
+        let mut config = test_support::plugin_config("noop", "libnoop_plugin.so", &["test"], 0);
+        config.timeout_ms = None;
         let loaded = load_plugin(&plugin_dir, &config, 200).unwrap();
         assert_eq!(loaded.timeout, Duration::from_millis(200));
     }
@@ -262,7 +253,7 @@ mod tests {
     #[test]
     fn test_load_nonexistent_so_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let config = fake_config("missing", "libmissing.so");
+        let config = test_support::plugin_config("missing", "libmissing.so", &[], 0);
         let err = load_plugin(dir.path(), &config, 100).unwrap_err();
         assert!(matches!(err, LoadError::Load { .. }));
         assert!(err.to_string().contains("missing"));
@@ -275,7 +266,7 @@ mod tests {
         let mut f = fs::File::create(&fake_path).unwrap();
         f.write_all(b"not a shared library").unwrap();
 
-        let config = fake_config("fake", "libfake.so");
+        let config = test_support::plugin_config("fake", "libfake.so", &[], 0);
         let err = load_plugin(dir.path(), &config, 100).unwrap_err();
         assert!(matches!(err, LoadError::Load { .. }));
     }
@@ -286,7 +277,7 @@ mod tests {
         let fake_path = dir.path().join("libfake.so");
         fs::write(&fake_path, b"bad").unwrap();
 
-        let configs = vec![fake_config("bad", "libfake.so")];
+        let configs = vec![test_support::plugin_config("bad", "libfake.so", &[], 0)];
         let loaded = load_all_plugins(dir.path(), &configs, 100);
         assert!(loaded.is_empty());
     }
@@ -405,8 +396,8 @@ mod tests {
         fs::write(dir.path().join("libbad2.so"), b"bad").unwrap();
 
         let configs = vec![
-            fake_config("bad1", "libbad1.so"),
-            fake_config("bad2", "libbad2.so"),
+            test_support::plugin_config("bad1", "libbad1.so", &[], 0),
+            test_support::plugin_config("bad2", "libbad2.so", &[], 0),
         ];
         // Both fail (invalid .so), but load_all_plugins doesn't panic
         let loaded = load_all_plugins(dir.path(), &configs, 100);
