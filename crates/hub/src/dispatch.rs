@@ -458,7 +458,7 @@ mod tests {
     async fn test_dispatch_single_plugin_returns_prefixed_vars() {
         let plugin = load_noop_plugin();
         let registry = Arc::new(crate::registry::PluginRegistry::build(vec![plugin]).unwrap());
-        let plan = registry.plan_for_message("test-msg").unwrap().clone();
+        let plan = registry.plan_for_message("test-msg").unwrap();
 
         let msg = SpoeMessage {
             name: "test-msg".into(),
@@ -467,7 +467,7 @@ mod tests {
             frame_id: 1,
         };
 
-        let result = dispatch_message(&msg, &plan, &registry).await;
+        let result = dispatch_message(&msg, plan, &registry).await;
         assert!(
             !result.variables.is_empty(),
             "expected at least one variable"
@@ -630,12 +630,12 @@ mod tests {
     async fn test_dispatch_skips_named_plugin() {
         let plugin = load_noop_plugin();
         let registry = Arc::new(crate::registry::PluginRegistry::build(vec![plugin]).unwrap());
-        let plan = registry.plan_for_message("test-msg").unwrap().clone();
+        let plan = registry.plan_for_message("test-msg").unwrap();
 
         let msg =
             make_message_with_args(vec![("hub.skip_plugins", SpoeValue::String("noop".into()))]);
 
-        let result = dispatch_message(&msg, &plan, &registry).await;
+        let result = dispatch_message(&msg, plan, &registry).await;
         assert!(
             result.variables.is_empty(),
             "expected no variables when plugin is skipped, got: {:?}",

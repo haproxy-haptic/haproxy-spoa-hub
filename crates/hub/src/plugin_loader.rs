@@ -45,7 +45,7 @@ fn toml_to_config_value(value: &toml::Value) -> ConfigValue {
             ConfigValue::Array(arr.iter().map(toml_to_config_value).collect())
         }
         toml::Value::Table(table) => ConfigValue::Table(toml_table_to_config(table)),
-        toml::Value::Datetime(dt) => ConfigValue::String(RString::from(dt.to_string().as_str())),
+        toml::Value::Datetime(dt) => ConfigValue::String(dt.to_string().into()),
     }
 }
 
