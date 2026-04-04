@@ -87,8 +87,10 @@ fn validate_config_schema(
         ROption::RNone => return Ok(()),
     };
 
+    let name = plugin_name.to_owned();
+
     let make_schema_err = |e: &dyn fmt::Display| LoadError::Validation {
-        name: plugin_name.to_string(),
+        name: name.clone(),
         errors: format!("invalid JSON Schema: {e}"),
     };
 
@@ -110,7 +112,7 @@ fn validate_config_schema(
         Ok(())
     } else {
         Err(LoadError::Validation {
-            name: plugin_name.to_string(),
+            name,
             errors: errors.join("; "),
         })
     }
@@ -122,10 +124,11 @@ pub fn load_plugin(
     config: &PluginConfig,
     default_timeout_ms: u64,
 ) -> Result<LoadedPlugin, LoadError> {
+    let name = config.name.clone();
     let lib_path = plugin_dir.join(&config.library);
 
     let load_err = |source| LoadError::Load {
-        name: config.name.clone(),
+        name: name.clone(),
         path: lib_path.display().to_string(),
         source,
     };
@@ -140,16 +143,16 @@ pub fn load_plugin(
 
     // Create plugin instance via factory function
     let mut instance = module.new()().into_result().map_err(|e| LoadError::Init {
-        name: config.name.clone(),
+        name: name.clone(),
         reason: e.to_string(),
     })?;
 
     // Validate config against plugin's schema (if declared)
-    validate_config_schema(&instance, &config.name, &config.params)?;
+    validate_config_schema(&instance, &name, &config.params)?;
 
     // Build plugin context from config
     let context = PluginContext {
-        name: config.name.as_str().into(),
+        name: name.as_str().into(),
         config: toml_table_to_config(&config.params),
     };
 
@@ -158,7 +161,7 @@ pub fn load_plugin(
         .init(&context)
         .into_result()
         .map_err(|e| LoadError::Init {
-            name: config.name.clone(),
+            name: name.clone(),
             reason: e.to_string(),
         })?;
 
@@ -166,7 +169,7 @@ pub fn load_plugin(
     let timeout_ms = config.timeout_ms.unwrap_or(default_timeout_ms);
 
     Ok(LoadedPlugin {
-        name: config.name.clone(),
+        name,
         version,
         instance: Arc::new(instance),
         messages: config.messages.clone(),
