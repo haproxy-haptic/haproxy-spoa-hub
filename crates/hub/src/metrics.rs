@@ -42,12 +42,12 @@ pub fn record_message_processed(message: &str, duration: Duration) {
     counter!("spoa_messages_total", "message" => message.to_owned()).increment(1);
 }
 
-pub fn record_plugin_error(plugin: &str) {
-    counter!("spoa_plugin_errors_total", "plugin" => plugin.to_owned()).increment(1);
+pub fn record_plugin_error(plugin: impl Into<String>) {
+    counter!("spoa_plugin_errors_total", "plugin" => plugin.into()).increment(1);
 }
 
-pub fn record_plugin_timeout(plugin: &str) {
-    counter!("spoa_plugin_timeouts_total", "plugin" => plugin.to_owned()).increment(1);
+pub fn record_plugin_timeout(plugin: impl Into<String>) {
+    counter!("spoa_plugin_timeouts_total", "plugin" => plugin.into()).increment(1);
 }
 
 pub fn record_plugin_skip(plugin: &str) {
