@@ -8,6 +8,7 @@ use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, VarS
 use spop::actions::VarScope as SpopVarScope;
 use spop::types::TypedData;
 
+use crate::metrics;
 use crate::registry::{ExecutionPlan, PluginRegistry};
 
 /// Result of `tokio::time::timeout(spawn_blocking(plugin.process()))`.
@@ -147,7 +148,7 @@ fn expand_skip_cascade(
                 reason = %skipped_name,
                 "plugin skipped (dependency cascade)"
             );
-            crate::metrics::record_plugin_skip(name);
+            metrics::record_plugin_skip(name);
         }
     }
 }
@@ -183,7 +184,7 @@ pub async fn dispatch_message(
         for name in group {
             if skip_set.contains(name) {
                 tracing::debug!(plugin = %name, "plugin skipped");
-                crate::metrics::record_plugin_skip(name);
+                metrics::record_plugin_skip(name);
                 expand_skip_cascade(name, registry, &mut skip_set);
             } else {
                 active.push(name);
@@ -317,7 +318,7 @@ fn handle_plugin_result(
                 latency_us = start.elapsed().as_micros(),
                 "plugin returned error"
             );
-            crate::metrics::record_plugin_error(&name);
+            metrics::record_plugin_error(&name);
             None
         }
         Ok(Err(join_err)) => {
@@ -326,7 +327,7 @@ fn handle_plugin_result(
                 error = %join_err,
                 "plugin task panicked"
             );
-            crate::metrics::record_plugin_error(&name);
+            metrics::record_plugin_error(&name);
             None
         }
         Err(_) => {
@@ -335,7 +336,7 @@ fn handle_plugin_result(
                 timeout_ms = %timeout.as_millis(),
                 "plugin timed out"
             );
-            crate::metrics::record_plugin_timeout(&name);
+            metrics::record_plugin_timeout(&name);
             None
         }
     }
@@ -460,12 +461,13 @@ mod tests {
     // The following tests exercise the async dispatch logic with real
     // plugin instances. They require the noop plugin .so to be built.
 
+    use crate::plugin_loader;
     use crate::test_support::load_noop_plugin;
 
     #[tokio::test]
     async fn test_dispatch_single_plugin_returns_prefixed_vars() {
         let plugin = load_noop_plugin();
-        let registry = Arc::new(crate::registry::PluginRegistry::build(vec![plugin]).unwrap());
+        let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
         let plan = registry.plan_for_message("test-msg").unwrap();
 
         let msg = SpoeMessage {
@@ -492,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_no_plan_returns_empty() {
         let plugin = load_noop_plugin();
-        let registry = Arc::new(crate::registry::PluginRegistry::build(vec![plugin]).unwrap());
+        let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
 
         // No plan for "nonexistent" message
         assert!(registry.plan_for_message("nonexistent").is_none());
@@ -575,8 +577,8 @@ mod tests {
         assert_eq!(cleaned.args.len(), 2);
     }
 
-    fn test_plugin(name: &str, depends_on: &[&str]) -> crate::plugin_loader::LoadedPlugin {
-        crate::plugin_loader::LoadedPlugin {
+    fn test_plugin(name: &str, depends_on: &[&str]) -> plugin_loader::LoadedPlugin {
+        plugin_loader::LoadedPlugin {
             name: name.into(),
             version: "0.1.0".into(),
             instance: load_noop_plugin().instance,
@@ -589,7 +591,7 @@ mod tests {
     #[test]
     fn test_expand_skip_cascade_skips_direct_dependent() {
         let plugins = vec![test_plugin("a", &[]), test_plugin("b", &["a"])];
-        let registry = crate::registry::PluginRegistry::build(plugins).unwrap();
+        let registry = PluginRegistry::build(plugins).unwrap();
         let mut skip_set = HashSet::from(["a".to_string()]);
         expand_skip_cascade("a", &registry, &mut skip_set);
         assert!(skip_set.contains("b"), "b should be cascaded from a");
@@ -598,7 +600,7 @@ mod tests {
     #[test]
     fn test_expand_skip_cascade_preserves_independent() {
         let plugins = vec![test_plugin("a", &[]), test_plugin("c", &[])];
-        let registry = crate::registry::PluginRegistry::build(plugins).unwrap();
+        let registry = PluginRegistry::build(plugins).unwrap();
         let mut skip_set = HashSet::from(["a".to_string()]);
         expand_skip_cascade("a", &registry, &mut skip_set);
         assert!(
@@ -610,7 +612,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_skips_named_plugin() {
         let plugin = load_noop_plugin();
-        let registry = Arc::new(crate::registry::PluginRegistry::build(vec![plugin]).unwrap());
+        let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
         let plan = registry.plan_for_message("test-msg").unwrap();
 
         let msg =
