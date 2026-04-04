@@ -124,19 +124,26 @@ pub async fn start_tcp_server_and_connect(
     (client, server)
 }
 
+/// Disconnect a client and wait for the server task to finish.
+async fn shutdown_client<S>(mut client: SpopClient<S>, server: JoinHandle<()>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    client.disconnect().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+}
+
 /// Disconnect the client, wait for the server task, and clean up the socket file.
 pub async fn cleanup(
-    mut client: SpopClient<tokio::net::UnixStream>,
+    client: SpopClient<tokio::net::UnixStream>,
     server: JoinHandle<()>,
     socket_path: &str,
 ) {
-    client.disconnect().await.ok();
-    let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+    shutdown_client(client, server).await;
     let _ = std::fs::remove_file(socket_path);
 }
 
 /// Disconnect a TCP client and wait for the server task.
-pub async fn cleanup_tcp(mut client: SpopClient<tokio::net::TcpStream>, server: JoinHandle<()>) {
-    client.disconnect().await.ok();
-    let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+pub async fn cleanup_tcp(client: SpopClient<tokio::net::TcpStream>, server: JoinHandle<()>) {
+    shutdown_client(client, server).await;
 }
