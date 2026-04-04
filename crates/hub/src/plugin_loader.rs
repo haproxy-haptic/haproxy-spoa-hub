@@ -58,6 +58,17 @@ fn toml_table_to_config(table: &toml::Table) -> RHashMap<RString, ConfigValue> {
         .collect()
 }
 
+/// Format a JSON Schema validation error, including the instance path
+/// when non-empty.
+fn format_schema_error(error: &jsonschema::ValidationError<'_>) -> String {
+    let path = error.instance_path().to_string();
+    if path.is_empty() {
+        error.to_string()
+    } else {
+        format!("{path}: {error}")
+    }
+}
+
 /// Validate plugin config against a JSON Schema declared by the plugin.
 ///
 /// If the plugin returns `RNone` from `config_schema()`, validation is
@@ -91,14 +102,7 @@ fn validate_config_schema(
 
     let errors: Vec<String> = schema
         .iter_errors(&params_json)
-        .map(|e| {
-            let path = e.instance_path().to_string();
-            if path.is_empty() {
-                e.to_string()
-            } else {
-                format!("{path}: {e}")
-            }
-        })
+        .map(|e| format_schema_error(&e))
         .collect();
 
     if errors.is_empty() {
@@ -235,7 +239,7 @@ mod tests {
         let loaded = load_plugin(&plugin_dir, &config, 100).unwrap();
         assert_eq!(loaded.name, "noop");
         assert!(!loaded.version.is_empty());
-        assert_eq!(loaded.timeout, std::time::Duration::from_millis(500));
+        assert_eq!(loaded.timeout, Duration::from_millis(500));
     }
 
     #[test]
@@ -259,7 +263,7 @@ mod tests {
         let plugin_dir = workspace_target_dir();
         let config = noop_config("noop", None);
         let loaded = load_plugin(&plugin_dir, &config, 200).unwrap();
-        assert_eq!(loaded.timeout, std::time::Duration::from_millis(200));
+        assert_eq!(loaded.timeout, Duration::from_millis(200));
     }
 
     #[test]
@@ -375,14 +379,7 @@ mod tests {
 
         let errors: Vec<String> = validator
             .iter_errors(&params_json)
-            .map(|e| {
-                let path = e.instance_path().to_string();
-                if path.is_empty() {
-                    e.to_string()
-                } else {
-                    format!("{path}: {e}")
-                }
-            })
+            .map(|e| format_schema_error(&e))
             .collect();
 
         assert!(!errors.is_empty());

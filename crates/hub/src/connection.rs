@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use abi_stable::std_types::RString;
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
@@ -128,7 +130,7 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &ArcSwap<Plugi
     let mut ack = Ack::new(stream_id, frame_id);
 
     for msg in messages {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
 
         // Convert spop message args to our SpoeMessage type
         let args = msg

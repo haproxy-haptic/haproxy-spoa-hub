@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -172,7 +172,7 @@ async fn wait_for_shutdown_signal() {
 /// Re-read the config file and rebuild the plugin registry.
 /// On success, returns a new `PluginRegistry` ready to be swapped in.
 fn reload_plugins(
-    config_path: &std::path::Path,
+    config_path: &Path,
     default_timeout_ms: u64,
 ) -> anyhow::Result<registry::PluginRegistry> {
     let hub_config = config::HubConfig::load(config_path)?;
