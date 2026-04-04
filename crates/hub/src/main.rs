@@ -90,7 +90,7 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     tracing::info!(count = loaded.len(), "all plugins loaded");
 
     // Build plugin registry with execution plans, wrapped in ArcSwap
-    // for future hot-reload support (e.g., SIGHUP)
+    // so SIGHUP can swap in a new registry without interrupting connections
     let registry = registry::shared_registry(loaded)?;
 
     // Set up graceful shutdown via CancellationToken
@@ -108,14 +108,13 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     {
         let registry = Arc::clone(&registry);
         let config_path = cli.config.clone();
-        let default_timeout = hub_config.default_timeout_ms;
         tokio::spawn(async move {
             let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
                 .expect("failed to listen for SIGHUP");
             loop {
                 sig.recv().await;
                 tracing::info!("received SIGHUP, reloading configuration");
-                match reload_plugins(&config_path, default_timeout) {
+                match reload_plugins(&config_path) {
                     Ok(new_registry) => {
                         let old_registry = registry.swap(Arc::new(new_registry));
                         old_registry.shutdown_all();
@@ -169,16 +168,13 @@ async fn wait_for_shutdown_signal() {
 
 /// Re-read the config file and rebuild the plugin registry.
 /// On success, returns a new `PluginRegistry` ready to be swapped in.
-fn reload_plugins(
-    config_path: &Path,
-    default_timeout_ms: u64,
-) -> anyhow::Result<registry::PluginRegistry> {
+fn reload_plugins(config_path: &Path) -> anyhow::Result<registry::PluginRegistry> {
     let hub_config = config::HubConfig::load(config_path)?;
 
     let loaded = plugin_loader::load_all_plugins(
         &hub_config.plugin_dir,
         &hub_config.plugins,
-        default_timeout_ms,
+        hub_config.default_timeout_ms,
     );
 
     if loaded.is_empty() {
