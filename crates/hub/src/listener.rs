@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::Semaphore;
@@ -53,8 +54,8 @@ pub async fn start_listeners(
     }
 
     // Wait for in-flight connections to drain (up to 30s)
-    let drain_timeout = std::time::Duration::from_secs(30);
-    let start = std::time::Instant::now();
+    let drain_timeout = Duration::from_secs(30);
+    let start = Instant::now();
     loop {
         let active = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
         if active == 0 {
@@ -68,7 +69,7 @@ pub async fn start_listeners(
             break;
         }
         tracing::info!(active_connections = active, "draining connections");
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     Ok(())

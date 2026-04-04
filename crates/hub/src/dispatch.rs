@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -71,8 +72,8 @@ pub fn spoe_value_into_typed_data(val: SpoeValue) -> TypedData {
         SpoeValue::Uint32(v) => TypedData::UInt32(v),
         SpoeValue::Int64(v) => TypedData::Int64(v),
         SpoeValue::Uint64(v) => TypedData::UInt64(v),
-        SpoeValue::Ipv4(octets) => TypedData::IPv4(std::net::Ipv4Addr::from(octets)),
-        SpoeValue::Ipv6(octets) => TypedData::IPv6(std::net::Ipv6Addr::from(octets)),
+        SpoeValue::Ipv4(octets) => TypedData::IPv4(Ipv4Addr::from(octets)),
+        SpoeValue::Ipv6(octets) => TypedData::IPv6(Ipv6Addr::from(octets)),
         SpoeValue::String(s) => TypedData::String(s.into_string()),
         SpoeValue::Binary(b) => TypedData::Binary(b.into_vec()),
         // Unknown value type — convert to Null to avoid data loss in ACK
@@ -385,14 +386,14 @@ mod tests {
 
     #[test]
     fn test_typed_data_ipv4_conversion() {
-        let addr = std::net::Ipv4Addr::LOCALHOST;
+        let addr = Ipv4Addr::LOCALHOST;
         let result = typed_data_to_spoe_value(&TypedData::IPv4(addr));
         assert!(matches!(result, SpoeValue::Ipv4([127, 0, 0, 1])));
     }
 
     #[test]
     fn test_typed_data_ipv6_conversion() {
-        let addr = std::net::Ipv6Addr::LOCALHOST;
+        let addr = Ipv6Addr::LOCALHOST;
         let result = typed_data_to_spoe_value(&TypedData::IPv6(addr));
         let SpoeValue::Ipv6(octets) = result else {
             panic!("expected Ipv6 variant");
@@ -449,7 +450,7 @@ mod tests {
         assert!(matches!(back, TypedData::UInt32(42)));
 
         // IPv4 roundtrip
-        let addr = std::net::Ipv4Addr::new(192, 168, 1, 1);
+        let addr = Ipv4Addr::new(192, 168, 1, 1);
         let original = TypedData::IPv4(addr);
         let spoe = typed_data_to_spoe_value(&original);
         let back = spoe_value_into_typed_data(spoe);
@@ -581,7 +582,7 @@ mod tests {
             instance: load_noop_plugin().instance,
             messages: vec!["msg".into()],
             depends_on: depends_on.iter().map(|&d| d.into()).collect(),
-            timeout: std::time::Duration::from_millis(100),
+            timeout: Duration::from_millis(100),
         }
     }
 

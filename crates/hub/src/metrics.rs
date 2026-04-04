@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 
@@ -35,7 +36,7 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn record_message_processed(message: &str, duration: std::time::Duration) {
+pub fn record_message_processed(message: &str, duration: Duration) {
     let message = message.to_owned();
     histogram!("spoa_message_duration_seconds", "message" => message.clone())
         .record(duration.as_secs_f64());
