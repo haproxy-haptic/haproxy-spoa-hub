@@ -2,29 +2,20 @@ use std::sync::Arc;
 
 use abi_stable::std_types::RHashMap;
 use criterion::{Criterion, criterion_group, criterion_main};
-use haproxy_spoa_hub::config::PluginConfig;
 use haproxy_spoa_hub::dispatch::dispatch_message;
 use haproxy_spoa_hub::registry::PluginRegistry;
-use haproxy_spoa_hub::test_support::{plugin_config, workspace_target_dir};
+use haproxy_spoa_hub::test_support::{load_test_plugins, plugin_config};
 use haproxy_spoa_hub_plugin_api::{SpoeMessage, SpoeValue};
-
-fn build_bench_registry(configs: &[PluginConfig]) -> Arc<PluginRegistry> {
-    let dir = workspace_target_dir();
-    let loaded: Vec<_> = configs
-        .iter()
-        .map(|c| haproxy_spoa_hub::plugin_loader::load_plugin(&dir, c, 5000).unwrap())
-        .collect();
-    Arc::new(PluginRegistry::build(loaded).unwrap())
-}
 
 fn bench_dispatch_single_plugin(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let registry = build_bench_registry(&[plugin_config(
+    let configs = [plugin_config(
         "noop",
         "libnoop_plugin.so",
         &["bench-msg"],
         5000,
-    )]);
+    )];
+    let registry = Arc::new(PluginRegistry::build(load_test_plugins(&configs, 5000)).unwrap());
     let msg = SpoeMessage {
         name: "bench-msg".into(),
         args: RHashMap::new(),
@@ -40,10 +31,11 @@ fn bench_dispatch_single_plugin(c: &mut Criterion) {
 
 fn bench_dispatch_two_plugins_parallel(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let registry = build_bench_registry(&[
+    let configs = [
         plugin_config("noop-a", "libnoop_plugin.so", &["bench-parallel"], 5000),
         plugin_config("noop-b", "libnoop_plugin.so", &["bench-parallel"], 5000),
-    ]);
+    ];
+    let registry = Arc::new(PluginRegistry::build(load_test_plugins(&configs, 5000)).unwrap());
     let msg = SpoeMessage {
         name: "bench-parallel".into(),
         args: RHashMap::new(),
@@ -59,12 +51,13 @@ fn bench_dispatch_two_plugins_parallel(c: &mut Criterion) {
 
 fn bench_dispatch_with_args(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let registry = build_bench_registry(&[plugin_config(
+    let configs = [plugin_config(
         "noop",
         "libnoop_plugin.so",
         &["bench-msg"],
         5000,
-    )]);
+    )];
+    let registry = Arc::new(PluginRegistry::build(load_test_plugins(&configs, 5000)).unwrap());
     let mut args = RHashMap::new();
     args.insert("src".into(), SpoeValue::String("10.0.0.1".into()));
     args.insert("dst".into(), SpoeValue::String("10.0.0.2".into()));
