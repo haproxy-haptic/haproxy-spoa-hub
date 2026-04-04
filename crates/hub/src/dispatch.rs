@@ -90,23 +90,17 @@ pub fn spoe_value_into_typed_data(val: SpoeValue) -> TypedData {
 /// Hub control args use the `hub.` prefix and are consumed by the hub
 /// dispatch layer. Plugins never see them.
 fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessage>) {
-    let has_hub_args = message
-        .args
-        .iter()
-        .any(|Tuple2(key, _)| key.starts_with(HUB_ARG_PREFIX));
-
-    if !has_hub_args {
-        return (HashSet::new(), None);
-    }
-
     let mut plugins_to_skip = HashSet::new();
     let mut cleaned_args = RHashMap::new();
+    let mut found_hub_args = false;
 
     for Tuple2(key, value) in &message.args {
         let Some(suffix) = key.strip_prefix(HUB_ARG_PREFIX) else {
             cleaned_args.insert(key.clone(), value.clone());
             continue;
         };
+
+        found_hub_args = true;
 
         // All hub.* args consumed regardless of whether they're recognized
         if suffix == "skip_plugins" {
@@ -120,6 +114,10 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessa
                     .collect();
             }
         }
+    }
+
+    if !found_hub_args {
+        return (plugins_to_skip, None);
     }
 
     let cleaned = SpoeMessage {
@@ -181,14 +179,14 @@ pub async fn dispatch_message(
         // Filter out skipped plugins and cascade to dependents in a single pass.
         // Cascade is safe here: plugins in the same group are independent
         // (topologically), so expanding the skip set cannot affect this group.
-        let mut active_plugins: Vec<&str> = Vec::with_capacity(group.len());
+        let mut active_plugins = Vec::with_capacity(group.len());
         for name in group {
-            if plugins_to_skip.contains(name) {
+            if plugins_to_skip.contains(name.as_str()) {
                 tracing::debug!(plugin = %name, "plugin skipped");
                 metrics::record_plugin_skip(name);
                 expand_skip_cascade(name, registry, &mut plugins_to_skip);
             } else {
-                active_plugins.push(name);
+                active_plugins.push(name.as_str());
             }
         }
 
