@@ -91,16 +91,17 @@ pub fn spoe_value_into_typed_data(val: SpoeValue) -> TypedData {
 /// dispatch layer. Plugins never see them.
 fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessage>) {
     let mut plugins_to_skip = HashSet::new();
-    let mut cleaned_args = RHashMap::new();
-    let mut found_hub_args = false;
+    let mut has_hub_args = false;
 
+    // First pass: extract hub control values without cloning any args.
+    // Most messages carry no hub.* args, so this avoids allocating a
+    // cleaned args map on the hot path.
     for Tuple2(key, value) in &message.args {
         let Some(suffix) = key.strip_prefix(HUB_ARG_PREFIX) else {
-            cleaned_args.insert(key.clone(), value.clone());
             continue;
         };
 
-        found_hub_args = true;
+        has_hub_args = true;
 
         // All hub.* args consumed regardless of whether they're recognized
         if suffix == "skip_plugins" {
@@ -116,9 +117,17 @@ fn extract_hub_args(message: &SpoeMessage) -> (HashSet<String>, Option<SpoeMessa
         }
     }
 
-    if !found_hub_args {
+    if !has_hub_args {
         return (plugins_to_skip, None);
     }
+
+    // Second pass: build cleaned message only when hub args are present.
+    let cleaned_args = message
+        .args
+        .iter()
+        .filter(|Tuple2(key, _)| !key.starts_with(HUB_ARG_PREFIX))
+        .map(|Tuple2(key, value)| (key.clone(), value.clone()))
+        .collect();
 
     let cleaned = SpoeMessage {
         name: message.name.clone(),

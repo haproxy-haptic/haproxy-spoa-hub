@@ -59,6 +59,7 @@ impl PluginRegistry {
         let mut plugins = HashMap::with_capacity(loaded.len());
         let mut message_to_plugins: HashMap<String, Vec<String>> = HashMap::new();
         let mut depends_on_map = HashMap::with_capacity(loaded.len());
+        let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
 
         for plugin in loaded {
             let LoadedPlugin {
@@ -75,20 +76,16 @@ impl PluginRegistry {
                     .or_default()
                     .push(name.clone());
             }
-            depends_on_map.insert(name.clone(), depends_on);
-            plugins.insert(name, PluginEntry { instance, timeout });
-        }
-
-        // Build reverse dependency map: for each plugin, record which
-        // plugins depend on it. Used by skip-cascade logic.
-        let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
-        for (name, deps) in &depends_on_map {
-            for dep in deps {
+            // Build reverse dependency map inline: for each plugin,
+            // record which plugins depend on it. Used by skip-cascade logic.
+            for dep in &depends_on {
                 reverse_deps
                     .entry(dep.clone())
                     .or_default()
                     .push(name.clone());
             }
+            depends_on_map.insert(name.clone(), depends_on);
+            plugins.insert(name, PluginEntry { instance, timeout });
         }
 
         let mut message_plans = HashMap::new();
