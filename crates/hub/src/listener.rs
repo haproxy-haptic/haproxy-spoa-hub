@@ -80,8 +80,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
-    #[allow(clippy::cast_precision_loss)]
-    crate::metrics::update_active_connections(count as f64);
+    crate::metrics::update_active_connections(count);
 
     let registry = Arc::clone(registry);
     let permit = semaphore.map(Arc::clone);
@@ -92,8 +91,7 @@ where
         };
         handle_connection(stream, registry).await;
         let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
-        #[allow(clippy::cast_precision_loss)]
-        crate::metrics::update_active_connections(count as f64);
+        crate::metrics::update_active_connections(count);
     });
 }
 
