@@ -3,14 +3,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::net::{TcpListener, UnixListener};
-use tokio::sync::Semaphore;
+use tokio::{
+    net::{TcpListener, UnixListener},
+    sync::Semaphore,
+};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{ListenerConfig, ListenerType};
-use crate::connection::handle_connection;
-use crate::metrics;
-use crate::registry::SharedRegistry;
+use crate::{
+    config::{ListenerConfig, ListenerType},
+    connection::handle_connection,
+    metrics,
+    registry::SharedRegistry,
+};
 
 static ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
