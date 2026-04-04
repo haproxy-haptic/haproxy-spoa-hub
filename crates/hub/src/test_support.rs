@@ -65,7 +65,6 @@ pub fn load_noop_plugin() -> LoadedPlugin {
         )],
         100,
     )
-    .into_iter()
-    .next()
+    .pop()
     .unwrap()
 }
