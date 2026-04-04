@@ -96,14 +96,12 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     // Set up graceful shutdown via CancellationToken
     let shutdown = CancellationToken::new();
 
-    {
-        let shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            wait_for_shutdown_signal().await;
-            tracing::info!("received shutdown signal, initiating graceful drain");
-            shutdown.cancel();
-        });
-    }
+    let shutdown_trigger = shutdown.clone();
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        tracing::info!("received shutdown signal, initiating graceful drain");
+        shutdown_trigger.cancel();
+    });
 
     // Set up SIGHUP handler for config reload
     #[cfg(unix)]

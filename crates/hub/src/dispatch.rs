@@ -302,7 +302,7 @@ fn handle_plugin_result(
                 latency_us = start.elapsed().as_micros(),
                 "plugin returned error"
             );
-            metrics::record_plugin_error(&name);
+            metrics::record_plugin_error(name);
             None
         }
         Ok(Err(join_err)) => {
@@ -311,7 +311,7 @@ fn handle_plugin_result(
                 error = %join_err,
                 "plugin task panicked"
             );
-            metrics::record_plugin_error(&name);
+            metrics::record_plugin_error(name);
             None
         }
         Err(_) => {
@@ -320,7 +320,7 @@ fn handle_plugin_result(
                 timeout_ms = %timeout.as_millis(),
                 "plugin timed out"
             );
-            metrics::record_plugin_timeout(&name);
+            metrics::record_plugin_timeout(name);
             None
         }
     }
