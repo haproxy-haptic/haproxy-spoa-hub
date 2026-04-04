@@ -197,23 +197,25 @@ fn parse_actions(data: &[u8]) -> Vec<AckAction> {
         let (name, consumed) = decode_spop_string(&data[pos..]);
         pos += consumed;
 
-        if action_type == 1 {
-            // set-var: also has a value
-            let (value, consumed) = decode_typed_data(&data[pos..]);
-            pos += consumed;
-            actions.push(AckAction::SetVar {
-                scope: scope_name,
-                name,
-                value,
-            });
-        } else if action_type == 2 {
-            // unset-var: no value
-            actions.push(AckAction::UnSetVar {
-                scope: scope_name,
-                name,
-            });
-        } else {
-            break;
+        match action_type {
+            1 => {
+                // set-var: also has a value
+                let (value, consumed) = decode_typed_data(&data[pos..]);
+                pos += consumed;
+                actions.push(AckAction::SetVar {
+                    scope: scope_name,
+                    name,
+                    value,
+                });
+            }
+            2 => {
+                // unset-var: no value
+                actions.push(AckAction::UnSetVar {
+                    scope: scope_name,
+                    name,
+                });
+            }
+            _ => break,
         }
     }
     actions
@@ -315,7 +317,6 @@ fn decode_typed_data(data: &[u8]) -> (TypedData, usize) {
     let mut pos = 1;
 
     match data_type {
-        0 => (TypedData::Null, pos),
         1 => (TypedData::Bool(flags & 1 != 0), pos),
         2 => {
             let (v, c) = decode_varint(&data[pos..]);

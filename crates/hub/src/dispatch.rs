@@ -73,18 +73,9 @@ pub fn spoe_value_to_typed_data(val: &SpoeValue) -> TypedData {
 #[must_use]
 pub fn spoe_value_into_typed_data(val: SpoeValue) -> TypedData {
     match val {
-        SpoeValue::Null => TypedData::Null,
-        SpoeValue::Bool(b) => TypedData::Bool(b),
-        SpoeValue::Int32(v) => TypedData::Int32(v),
-        SpoeValue::Uint32(v) => TypedData::UInt32(v),
-        SpoeValue::Int64(v) => TypedData::Int64(v),
-        SpoeValue::Uint64(v) => TypedData::UInt64(v),
-        SpoeValue::Ipv4(octets) => TypedData::IPv4(std::net::Ipv4Addr::from(octets)),
-        SpoeValue::Ipv6(octets) => TypedData::IPv6(std::net::Ipv6Addr::from(octets)),
         SpoeValue::String(s) => TypedData::String(s.into_string()),
         SpoeValue::Binary(b) => TypedData::Binary(b.into_vec()),
-        #[allow(clippy::match_same_arms)]
-        SpoeValue::__Other(_, _) => TypedData::Null,
+        ref other => spoe_value_to_typed_data(other),
     }
 }
 
