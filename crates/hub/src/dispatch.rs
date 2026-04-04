@@ -35,7 +35,7 @@ pub fn typed_data_to_spoe_value(td: &TypedData) -> SpoeValue {
 
 /// Convert our `VarScope` to spop's `VarScope`.
 #[must_use]
-pub fn var_scope_to_spop(scope: &VarScope) -> SpopVarScope {
+pub fn var_scope_to_spop(scope: VarScope) -> SpopVarScope {
     match scope {
         VarScope::Process => SpopVarScope::Process,
         VarScope::Session => SpopVarScope::Session,
@@ -408,23 +408,23 @@ mod tests {
     #[test]
     fn test_var_scope_roundtrip() {
         assert!(matches!(
-            var_scope_to_spop(&VarScope::Process),
+            var_scope_to_spop(VarScope::Process),
             SpopVarScope::Process
         ));
         assert!(matches!(
-            var_scope_to_spop(&VarScope::Session),
+            var_scope_to_spop(VarScope::Session),
             SpopVarScope::Session
         ));
         assert!(matches!(
-            var_scope_to_spop(&VarScope::Transaction),
+            var_scope_to_spop(VarScope::Transaction),
             SpopVarScope::Transaction
         ));
         assert!(matches!(
-            var_scope_to_spop(&VarScope::Request),
+            var_scope_to_spop(VarScope::Request),
             SpopVarScope::Request
         ));
         assert!(matches!(
-            var_scope_to_spop(&VarScope::Response),
+            var_scope_to_spop(VarScope::Response),
             SpopVarScope::Response
         ));
     }

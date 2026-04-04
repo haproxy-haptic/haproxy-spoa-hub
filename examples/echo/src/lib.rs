@@ -5,6 +5,7 @@
     clippy::wildcard_imports
 )]
 
+use abi_stable::std_types::Tuple2;
 use haproxy_spoa_hub_plugin_api::*;
 
 /// A test plugin that echoes all message arguments back as transaction
@@ -40,10 +41,10 @@ define_plugin!(EchoPlugin, {
         let variables: Vec<_> = message
             .args
             .iter()
-            .map(|pair| TxnVariable {
+            .map(|Tuple2(key, value)| TxnVariable {
                 scope: VarScope::Transaction,
-                name: pair.0.clone(),
-                value: pair.1.clone(),
+                name: key.clone(),
+                value: value.clone(),
             })
             .collect();
         Ok(ProcessingResult {
