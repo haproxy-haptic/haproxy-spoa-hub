@@ -1,8 +1,10 @@
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
 use haproxy_spoa_hub::{config, listener, metrics, plugin_loader, registry};
+use tokio::runtime;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -34,7 +36,7 @@ fn init_logging(log_level: &str) {
                 .flatten_event(true)
                 .with_current_span(true)
                 .with_target(true)
-                .with_writer(std::io::stderr),
+                .with_writer(io::stderr),
         )
         .init();
 }
@@ -46,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     let hub_config = config::HubConfig::load(&cli.config)?;
 
     // Build tokio runtime with configurable worker threads
-    let mut rt_builder = tokio::runtime::Builder::new_multi_thread();
+    let mut rt_builder = runtime::Builder::new_multi_thread();
     rt_builder.enable_all();
     if let Some(threads) = hub_config.worker_threads {
         rt_builder.worker_threads(threads);

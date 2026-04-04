@@ -1,5 +1,7 @@
+use std::fs;
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -166,14 +168,14 @@ async fn run_unix_listener(
     semaphore: Option<Arc<Semaphore>>,
 ) -> anyhow::Result<()> {
     // Clean up stale socket file
-    if std::path::Path::new(path).exists() {
-        std::fs::remove_file(path)?;
+    if Path::new(path).exists() {
+        fs::remove_file(path)?;
     }
 
     let listener = UnixListener::bind(path)?;
 
     // Set socket permissions to 0o660 (owner + group read/write)
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
 
     tracing::info!(transport = "unix", address = %path, "listening");
     accept_loop(&listener, "unix", &registry, semaphore.as_ref(), &shutdown).await;
@@ -201,13 +203,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stale.sock");
         // Create a stale file at the socket path
-        std::fs::write(&path, b"stale").unwrap();
+        fs::write(&path, b"stale").unwrap();
         assert!(path.exists());
 
         // run_unix_listener would remove the stale file and bind;
         // we verify the cleanup logic directly.
         if path.exists() {
-            std::fs::remove_file(&path).unwrap();
+            fs::remove_file(&path).unwrap();
         }
         assert!(!path.exists());
 

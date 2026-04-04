@@ -1,9 +1,12 @@
+use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use abi_stable::library::{RootModule, lib_header_from_path};
-use abi_stable::std_types::{RHashMap, ROption, RString};
+use abi_stable::{
+    library::{RootModule, lib_header_from_path},
+    std_types::{RHashMap, ROption, RString},
+};
 use haproxy_spoa_hub_plugin_api::{ConfigValue, PluginBox, PluginContext, PluginMod_Ref};
 
 use crate::config::PluginConfig;
@@ -84,7 +87,7 @@ fn validate_config_schema(
         ROption::RNone => return Ok(()),
     };
 
-    let make_schema_err = |e: &dyn std::fmt::Display| LoadError::Validation {
+    let make_schema_err = |e: &dyn fmt::Display| LoadError::Validation {
         name: plugin_name.to_string(),
         errors: format!("invalid JSON Schema: {e}"),
     };
@@ -203,8 +206,10 @@ pub fn load_all_plugins(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::fs;
     use std::io::Write;
+
+    use super::*;
 
     use crate::test_support::workspace_target_dir;
 
@@ -277,7 +282,7 @@ mod tests {
     fn test_load_invalid_so_fails() {
         let dir = tempfile::tempdir().unwrap();
         let fake_path = dir.path().join("libfake.so");
-        let mut f = std::fs::File::create(&fake_path).unwrap();
+        let mut f = fs::File::create(&fake_path).unwrap();
         f.write_all(b"not a shared library").unwrap();
 
         let config = fake_config("fake", "libfake.so");
@@ -289,7 +294,7 @@ mod tests {
     fn test_load_all_skips_failures() {
         let dir = tempfile::tempdir().unwrap();
         let fake_path = dir.path().join("libfake.so");
-        std::fs::write(&fake_path, b"bad").unwrap();
+        fs::write(&fake_path, b"bad").unwrap();
 
         let configs = vec![fake_config("bad", "libfake.so")];
         let loaded = load_all_plugins(dir.path(), &configs, 100);
@@ -406,8 +411,8 @@ mod tests {
         // This tests that load_all_plugins continues past failures.
         // We use two bad .so files to verify both are attempted.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("libbad1.so"), b"bad").unwrap();
-        std::fs::write(dir.path().join("libbad2.so"), b"bad").unwrap();
+        fs::write(dir.path().join("libbad1.so"), b"bad").unwrap();
+        fs::write(dir.path().join("libbad2.so"), b"bad").unwrap();
 
         let configs = vec![
             fake_config("bad1", "libbad1.so"),

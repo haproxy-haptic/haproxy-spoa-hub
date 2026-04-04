@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
-use crate::config::PluginConfig;
-use crate::plugin_loader::{self, LoadedPlugin};
+use crate::{
+    config::PluginConfig,
+    plugin_loader::{self, LoadedPlugin},
+};
 
 /// Path to the workspace `target/debug` directory where plugin `.so` files are built.
 pub fn workspace_target_dir() -> PathBuf {
