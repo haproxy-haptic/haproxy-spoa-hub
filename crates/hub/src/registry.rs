@@ -7,6 +7,16 @@ use haproxy_spoa_hub_plugin_api::PluginBox;
 
 use crate::plugin_loader::LoadedPlugin;
 
+/// Build a [`SharedRegistry`] from a list of loaded plugins.
+///
+/// Convenience constructor that combines [`PluginRegistry::build`] with
+/// the `Arc<ArcSwap<…>>` wrapping needed for runtime use.
+pub fn shared_registry(loaded: Vec<LoadedPlugin>) -> Result<SharedRegistry, RegistryError> {
+    Ok(Arc::new(ArcSwap::from_pointee(PluginRegistry::build(
+        loaded,
+    )?)))
+}
+
 /// A shared, atomically swappable plugin registry.
 ///
 /// Wraps the registry in `Arc<ArcSwap<PluginRegistry>>` so that the
