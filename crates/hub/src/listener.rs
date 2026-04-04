@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -66,21 +66,23 @@ pub async fn start_listeners(
 
     // Wait for in-flight connections to drain (up to 30s)
     let drain_timeout = Duration::from_secs(30);
-    let start = Instant::now();
-    loop {
-        let active = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
-        if active == 0 {
-            break;
+    if tokio::time::timeout(drain_timeout, async {
+        loop {
+            let active = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
+            if active == 0 {
+                break;
+            }
+            tracing::info!(active_connections = active, "draining connections");
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        if start.elapsed() > drain_timeout {
-            tracing::warn!(
-                active_connections = active,
-                "drain timeout reached, shutting down with active connections"
-            );
-            break;
-        }
-        tracing::info!(active_connections = active, "draining connections");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    })
+    .await
+    .is_err()
+    {
+        tracing::warn!(
+            active_connections = ACTIVE_CONNECTIONS.load(Ordering::Relaxed),
+            "drain timeout reached, shutting down with active connections"
+        );
     }
 
     Ok(())
