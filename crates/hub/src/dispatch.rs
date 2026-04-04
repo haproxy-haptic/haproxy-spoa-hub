@@ -175,7 +175,7 @@ pub async fn dispatch_message(
     let effective_message = cleaned_message.as_ref().unwrap_or(message);
 
     let mut all_variables = Vec::new();
-    let mut extra_args: Option<ArgMap> = None;
+    let mut extra_args = None;
 
     for group in &plan.groups {
         // Filter out skipped plugins and cascade to dependents in a single pass.
