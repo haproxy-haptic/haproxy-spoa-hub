@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use abi_stable::std_types::RString;
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
 use spop::SpopFrame;
@@ -140,7 +141,7 @@ async fn handle_notify_frame(
             .iter()
             .map(|(key, value)| {
                 (
-                    abi_stable::std_types::RString::from(key.as_str()),
+                    RString::from(key.as_str()),
                     dispatch::typed_data_to_spoe_value(value),
                 )
             })
