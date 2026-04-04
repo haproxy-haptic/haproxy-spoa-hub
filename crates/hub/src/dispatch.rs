@@ -369,11 +369,10 @@ mod tests {
     #[test]
     fn test_typed_data_string_conversion() {
         let result = typed_data_to_spoe_value(&TypedData::String("hello".to_string()));
-        if let SpoeValue::String(s) = result {
-            assert_eq!(s.as_str(), "hello");
-        } else {
+        let SpoeValue::String(s) = result else {
             panic!("expected String variant");
-        }
+        };
+        assert_eq!(s.as_str(), "hello");
     }
 
     #[test]
@@ -387,22 +386,20 @@ mod tests {
     fn test_typed_data_ipv6_conversion() {
         let addr = std::net::Ipv6Addr::LOCALHOST;
         let result = typed_data_to_spoe_value(&TypedData::IPv6(addr));
-        if let SpoeValue::Ipv6(octets) = result {
-            assert_eq!(octets, addr.octets());
-        } else {
+        let SpoeValue::Ipv6(octets) = result else {
             panic!("expected Ipv6 variant");
-        }
+        };
+        assert_eq!(octets, addr.octets());
     }
 
     #[test]
     fn test_typed_data_binary_conversion() {
         let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let result = typed_data_to_spoe_value(&TypedData::Binary(data.clone()));
-        if let SpoeValue::Binary(b) = result {
-            assert_eq!(b.as_slice(), &data);
-        } else {
+        let SpoeValue::Binary(b) = result else {
             panic!("expected Binary variant");
-        }
+        };
+        assert_eq!(b.as_slice(), &data);
     }
 
     #[test]

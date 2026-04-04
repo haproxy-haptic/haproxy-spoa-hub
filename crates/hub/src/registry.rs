@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -124,8 +124,7 @@ fn build_execution_plan(
     plugin_names: &[String],
     depends_on: &HashMap<String, Vec<String>>,
 ) -> Result<ExecutionPlan, String> {
-    let name_set: std::collections::HashSet<&str> =
-        plugin_names.iter().map(String::as_str).collect();
+    let name_set: HashSet<&str> = plugin_names.iter().map(String::as_str).collect();
 
     // Filter dependencies to only those relevant to this message's plugins
     let mut in_degree: HashMap<&str, usize> = HashMap::with_capacity(plugin_names.len());
