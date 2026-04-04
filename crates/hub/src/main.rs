@@ -95,32 +95,38 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
 
     // Set up graceful shutdown via CancellationToken
     let shutdown = CancellationToken::new();
-    let shutdown_trigger = shutdown.clone();
 
     #[cfg(unix)]
-    tokio::spawn(async move {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to listen for SIGTERM");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = sigterm.recv() => {},
-        }
-        tracing::info!("received shutdown signal, initiating graceful drain");
-        shutdown_trigger.cancel();
-    });
+    {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to listen for SIGTERM");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+            tracing::info!("received shutdown signal, initiating graceful drain");
+            shutdown.cancel();
+        });
+    }
     #[cfg(not(unix))]
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for ctrl-c");
-        tracing::info!("received shutdown signal, initiating graceful drain");
-        shutdown_trigger.cancel();
-    });
+    {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for ctrl-c");
+            tracing::info!("received shutdown signal, initiating graceful drain");
+            shutdown.cancel();
+        });
+    }
 
     // Set up SIGHUP handler for config reload
     #[cfg(unix)]
     {
-        let reload_registry = Arc::clone(&registry);
+        let registry = Arc::clone(&registry);
         let config_path = cli.config.clone();
         let default_timeout = hub_config.default_timeout_ms;
         tokio::spawn(async move {
@@ -131,7 +137,7 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
                 tracing::info!("received SIGHUP, reloading configuration");
                 match reload_plugins(&config_path, default_timeout) {
                     Ok(new_registry) => {
-                        let old_registry = reload_registry.swap(Arc::new(new_registry));
+                        let old_registry = registry.swap(Arc::new(new_registry));
                         old_registry.shutdown_all();
                         tracing::info!("configuration reloaded successfully");
                     }
