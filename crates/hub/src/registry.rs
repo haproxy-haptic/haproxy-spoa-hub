@@ -166,8 +166,7 @@ fn build_execution_plan(
         // Collect all plugins with zero in-degree
         let ready: Vec<&str> = remaining
             .iter()
-            .filter(|(_, deg)| **deg == 0)
-            .map(|(name, _)| *name)
+            .filter_map(|(&name, &deg)| (deg == 0).then_some(name))
             .collect();
 
         if ready.is_empty() {

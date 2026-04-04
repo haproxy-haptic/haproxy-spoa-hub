@@ -70,8 +70,7 @@ async fn test_tcp_notify_with_args() {
 
     let (mut client, server) = common::start_tcp_server_and_connect(registry).await;
 
-    let mut args = HashMap::new();
-    args.insert("key".to_string(), TypedData::String("value".to_string()));
+    let args = HashMap::from([("key".to_string(), TypedData::String("value".to_string()))]);
 
     let ack = client
         .send_notify("check-request", args)
@@ -94,8 +93,7 @@ async fn test_unix_notify_with_args() {
 
     let (mut client, server) = common::start_server_and_connect(&socket_path, registry).await;
 
-    let mut args = HashMap::new();
-    args.insert("payload".to_string(), TypedData::Binary(vec![0xDE, 0xAD]));
+    let args = HashMap::from([("payload".to_string(), TypedData::Binary(vec![0xDE, 0xAD]))]);
 
     let ack = client
         .send_notify("check-request", args)
