@@ -157,7 +157,7 @@ macro_rules! __define_plugin_impl {
                         std::panic::AssertUnwindSafe(|| self.__process(message)),
                     ) {
                         Ok(res) => res.map_err(RBoxError::from_box).into(),
-                        Err(_panic) => {
+                        Err(_) => {
                             RResult::RErr(RBoxError::new(
                                 $crate::PluginPanicError,
                             ))
