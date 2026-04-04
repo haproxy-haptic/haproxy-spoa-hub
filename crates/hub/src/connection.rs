@@ -3,16 +3,19 @@ use std::time::Instant;
 use abi_stable::std_types::RString;
 use arc_swap::ArcSwap;
 use futures::{SinkExt, StreamExt};
-use spop::SpopFrame;
-use spop::codec::SpopCodec;
-use spop::frame::{FramePayload, FrameType};
-use spop::frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities, HaproxyHello};
+use spop::{
+    SpopFrame,
+    codec::SpopCodec,
+    frame::{FramePayload, FrameType},
+    frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities, HaproxyHello},
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
 
-use crate::dispatch;
-use crate::metrics;
-use crate::registry::{PluginRegistry, SharedRegistry};
+use crate::{
+    dispatch, metrics,
+    registry::{PluginRegistry, SharedRegistry},
+};
 
 /// Handle a single SPOP connection from `HAProxy`.
 ///

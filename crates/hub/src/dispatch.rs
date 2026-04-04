@@ -5,11 +5,12 @@ use std::time::{Duration, Instant};
 
 use abi_stable::std_types::{RHashMap, RString, Tuple2};
 use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, VarScope};
-use spop::actions::VarScope as SpopVarScope;
-use spop::types::TypedData;
+use spop::{actions::VarScope as SpopVarScope, types::TypedData};
 
-use crate::metrics;
-use crate::registry::{ExecutionPlan, PluginRegistry};
+use crate::{
+    metrics,
+    registry::{ExecutionPlan, PluginRegistry},
+};
 
 /// Result of `tokio::time::timeout(spawn_blocking(plugin.process()))`.
 ///
