@@ -38,17 +38,16 @@ define_plugin!(EchoPlugin, {
         &self,
         message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
-        let variables: Vec<_> = message
-            .args
-            .iter()
-            .map(|Tuple2(key, value)| TxnVariable {
-                scope: VarScope::Transaction,
-                name: key.clone(),
-                value: value.clone(),
-            })
-            .collect();
         Ok(ProcessingResult {
-            variables: variables.into(),
+            variables: message
+                .args
+                .iter()
+                .map(|Tuple2(key, value)| TxnVariable {
+                    scope: VarScope::Transaction,
+                    name: key.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
         })
     }
 });
