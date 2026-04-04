@@ -446,8 +446,7 @@ mod tests {
     // The following tests exercise the async dispatch logic with real
     // plugin instances. They require the noop plugin .so to be built.
 
-    use crate::plugin_loader::LoadedPlugin;
-    use crate::test_support::load_noop_plugin;
+    use crate::{plugin_loader::LoadedPlugin, test_support::load_noop_plugin};
 
     #[tokio::test]
     async fn test_dispatch_single_plugin_returns_prefixed_vars() {

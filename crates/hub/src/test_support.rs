@@ -32,7 +32,7 @@ pub fn plugin_config(
         messages: messages.iter().map(|&m| m.into()).collect(),
         depends_on: vec![],
         timeout_ms: Some(timeout_ms),
-        params: toml::Table::default(),
+        params: toml::Table::new(),
     }
 }
 

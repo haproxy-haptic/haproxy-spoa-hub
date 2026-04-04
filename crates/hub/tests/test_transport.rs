@@ -1,7 +1,6 @@
 mod common;
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use spop::types::TypedData;
 

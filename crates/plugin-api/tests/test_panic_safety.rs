@@ -20,7 +20,7 @@ impl SpoePlugin for PanickingPlugin {
         match result {
             Ok(Ok(res)) => RResult::ROk(res),
             Ok(Err(e)) => RResult::RErr(RBoxError::from_box(e)),
-            Err(_panic) => RResult::RErr(RBoxError::new(PluginPanicError)),
+            Err(_) => RResult::RErr(RBoxError::new(PluginPanicError)),
         }
     }
 
@@ -44,7 +44,7 @@ fn test_panicking_plugin_returns_rerr() {
 
     let msg = SpoeMessage {
         name: "test".into(),
-        args: RHashMap::default(),
+        args: RHashMap::new(),
         stream_id: 1,
         frame_id: 1,
     };
@@ -94,7 +94,7 @@ fn test_error_plugin_returns_rerr_without_panic() {
 
     let msg = SpoeMessage {
         name: "test".into(),
-        args: RHashMap::default(),
+        args: RHashMap::new(),
         stream_id: 1,
         frame_id: 1,
     };
