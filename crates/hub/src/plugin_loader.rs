@@ -136,10 +136,11 @@ pub fn load_plugin(
     let module = PluginMod_Ref::load_from_file(&lib_path).map_err(load_err)?;
 
     // Create plugin instance via factory function
-    let mut instance = module.new()().into_result().map_err(|e| LoadError::Init {
+    let init_err = |e: &dyn fmt::Display| LoadError::Init {
         name: name.clone(),
         reason: e.to_string(),
-    })?;
+    };
+    let mut instance = module.new()().into_result().map_err(|e| init_err(&e))?;
 
     // Validate config against plugin's schema (if declared)
     validate_config_schema(&instance, &name, &config.params)?;
@@ -154,10 +155,7 @@ pub fn load_plugin(
     instance
         .init(&context)
         .into_result()
-        .map_err(|e| LoadError::Init {
-            name: name.clone(),
-            reason: e.to_string(),
-        })?;
+        .map_err(|e| init_err(&e))?;
 
     let version = instance.version().to_string();
     let timeout_ms = config.timeout_ms.unwrap_or(default_timeout_ms);

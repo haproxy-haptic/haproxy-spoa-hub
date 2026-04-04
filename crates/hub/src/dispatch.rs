@@ -158,7 +158,7 @@ fn expand_skip_cascade(
                 reason = %skipped_name,
                 "plugin skipped (dependency cascade)"
             );
-            metrics::record_plugin_skip(name.as_str());
+            metrics::record_plugin_skip(name);
         }
     }
 }
