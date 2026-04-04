@@ -49,17 +49,14 @@ fn test_panicking_plugin_returns_rerr() {
         frame_id: 1,
     };
 
-    let result = plugin.process(&msg);
-    match result {
-        RResult::RErr(e) => {
-            let err_msg = e.to_string();
-            assert!(
-                err_msg.contains("plugin panicked"),
-                "expected panic error message, got: {err_msg}"
-            );
-        }
-        RResult::ROk(_) => panic!("expected RErr from panicking plugin, got ROk"),
-    }
+    let Err(e) = plugin.process(&msg).into_result() else {
+        panic!("expected RErr from panicking plugin, got ROk");
+    };
+    let err_msg = e.to_string();
+    assert!(
+        err_msg.contains("plugin panicked"),
+        "expected panic error message, got: {err_msg}"
+    );
 }
 
 /// A plugin whose `process()` returns a normal error (not a panic).
@@ -74,10 +71,7 @@ impl SpoePlugin for ErrorPlugin {
     fn process(&self, _message: &SpoeMessage) -> RResult<ProcessingResult, RBoxError> {
         let result: Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> =
             Err("something went wrong".into());
-        match result {
-            Ok(res) => RResult::ROk(res),
-            Err(e) => RResult::RErr(RBoxError::from_box(e)),
-        }
+        result.map_err(RBoxError::from_box).into()
     }
 
     fn name(&self) -> RStr<'_> {
@@ -105,17 +99,14 @@ fn test_error_plugin_returns_rerr_without_panic() {
         frame_id: 1,
     };
 
-    let result = plugin.process(&msg);
-    match result {
-        RResult::RErr(e) => {
-            let err_msg = e.to_string();
-            assert!(
-                err_msg.contains("something went wrong"),
-                "expected error message, got: {err_msg}"
-            );
-        }
-        RResult::ROk(_) => panic!("expected RErr from error plugin, got ROk"),
-    }
+    let Err(e) = plugin.process(&msg).into_result() else {
+        panic!("expected RErr from error plugin, got ROk");
+    };
+    let err_msg = e.to_string();
+    assert!(
+        err_msg.contains("something went wrong"),
+        "expected error message, got: {err_msg}"
+    );
 }
 
 #[test]

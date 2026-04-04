@@ -5,8 +5,7 @@
     clippy::wildcard_imports
 )]
 
-use std::thread;
-use std::time::Duration;
+use std::{thread, time::Duration};
 
 use haproxy_spoa_hub_plugin_api::*;
 

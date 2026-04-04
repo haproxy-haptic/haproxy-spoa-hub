@@ -30,28 +30,20 @@ async fn test_dual_transport_identical_responses() {
         .expect("tcp send_notify failed");
 
     // --- Verify identical responses ---
-    let unix_var = unix_ack.find_var("noop.result");
-    let tcp_var = tcp_ack.find_var("noop.result");
-
-    assert!(
-        unix_var.is_some(),
-        "expected noop.result in Unix ACK, got: {:?}",
-        unix_ack.actions
-    );
-    assert!(
-        tcp_var.is_some(),
-        "expected noop.result in TCP ACK, got: {:?}",
-        tcp_ack.actions
-    );
-
-    match (unix_var.unwrap(), tcp_var.unwrap()) {
-        (TypedData::String(u), TypedData::String(t)) => {
-            assert_eq!(u, t, "Unix and TCP responses differ");
-            assert_eq!(u, "ok");
-        }
-        (u, t) => panic!("expected String variants, got Unix={u:?} TCP={t:?}"),
-    }
-
+    let Some(TypedData::String(unix_val)) = unix_ack.find_var("noop.result") else {
+        panic!(
+            "expected noop.result = String in Unix ACK, got: {:?}",
+            unix_ack.actions
+        );
+    };
+    let Some(TypedData::String(tcp_val)) = tcp_ack.find_var("noop.result") else {
+        panic!(
+            "expected noop.result = String in TCP ACK, got: {:?}",
+            tcp_ack.actions
+        );
+    };
+    assert_eq!(unix_val, tcp_val, "Unix and TCP responses differ");
+    assert_eq!(unix_val, "ok");
     assert_eq!(
         unix_ack.actions.len(),
         tcp_ack.actions.len(),

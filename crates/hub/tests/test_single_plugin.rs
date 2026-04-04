@@ -18,16 +18,13 @@ async fn test_noop_plugin_sets_variable() {
         .expect("send_notify failed");
 
     // Verify the noop plugin set "noop.result" = "ok"
-    let result_var = ack.find_var("noop.result");
-    assert!(
-        result_var.is_some(),
-        "expected noop.result variable in ACK, got actions: {:?}",
-        ack.actions
-    );
-    match result_var.unwrap() {
-        TypedData::String(s) => assert_eq!(s, "ok"),
-        other => panic!("expected String(\"ok\"), got {other:?}"),
-    }
+    let Some(TypedData::String(s)) = ack.find_var("noop.result") else {
+        panic!(
+            "expected noop.result = String in ACK, got actions: {:?}",
+            ack.actions
+        );
+    };
+    assert_eq!(s, "ok");
 
     common::cleanup(client, server, Some(&socket_path)).await;
 }

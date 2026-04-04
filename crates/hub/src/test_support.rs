@@ -56,15 +56,7 @@ pub fn load_test_plugins(configs: &[PluginConfig], default_timeout_ms: u64) -> V
 #[cfg(test)]
 #[must_use]
 pub fn load_noop_plugin() -> LoadedPlugin {
-    load_test_plugins(
-        &[plugin_config(
-            "noop",
-            "libnoop_plugin.so",
-            &["test-msg"],
-            1000,
-        )],
-        100,
-    )
-    .pop()
-    .unwrap()
+    let config = plugin_config("noop", "libnoop_plugin.so", &["test-msg"], 1000);
+    plugin_loader::load_plugin(&workspace_target_dir(), &config, 100)
+        .unwrap_or_else(|e| panic!("failed to load noop plugin: {e}"))
 }
