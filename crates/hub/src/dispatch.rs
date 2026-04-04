@@ -49,27 +49,8 @@ pub fn var_scope_to_spop(scope: &VarScope) -> SpopVarScope {
 }
 
 /// Convert a `SpoeValue` to a spop `TypedData` for ACK building.
-#[must_use]
-pub fn spoe_value_to_typed_data(val: &SpoeValue) -> TypedData {
-    match val {
-        SpoeValue::Null => TypedData::Null,
-        SpoeValue::Bool(b) => TypedData::Bool(*b),
-        SpoeValue::Int32(v) => TypedData::Int32(*v),
-        SpoeValue::Uint32(v) => TypedData::UInt32(*v),
-        SpoeValue::Int64(v) => TypedData::Int64(*v),
-        SpoeValue::Uint64(v) => TypedData::UInt64(*v),
-        SpoeValue::Ipv4(octets) => TypedData::IPv4(std::net::Ipv4Addr::from(*octets)),
-        SpoeValue::Ipv6(octets) => TypedData::IPv6(std::net::Ipv6Addr::from(*octets)),
-        SpoeValue::String(s) => TypedData::String(s.to_string()),
-        SpoeValue::Binary(b) => TypedData::Binary(b.to_vec()),
-        // Unknown value type — convert to Null to avoid data loss in ACK
-        #[allow(clippy::match_same_arms)]
-        SpoeValue::__Other(_, _) => TypedData::Null,
-    }
-}
-
-/// Consuming variant of [`spoe_value_to_typed_data`] that moves String and
-/// Binary contents instead of cloning them.
+///
+/// Consumes the value to move String and Binary contents without cloning.
 #[must_use]
 pub fn spoe_value_into_typed_data(val: SpoeValue) -> TypedData {
     match val {
@@ -453,20 +434,20 @@ mod tests {
         // String roundtrip
         let original = TypedData::String("test".to_string());
         let spoe = typed_data_to_spoe_value(&original);
-        let back = spoe_value_to_typed_data(&spoe);
+        let back = spoe_value_into_typed_data(spoe);
         assert!(matches!(back, TypedData::String(s) if s == "test"));
 
         // UInt32 roundtrip
         let original = TypedData::UInt32(42);
         let spoe = typed_data_to_spoe_value(&original);
-        let back = spoe_value_to_typed_data(&spoe);
+        let back = spoe_value_into_typed_data(spoe);
         assert!(matches!(back, TypedData::UInt32(42)));
 
         // IPv4 roundtrip
         let addr = std::net::Ipv4Addr::new(192, 168, 1, 1);
         let original = TypedData::IPv4(addr);
         let spoe = typed_data_to_spoe_value(&original);
-        let back = spoe_value_to_typed_data(&spoe);
+        let back = spoe_value_into_typed_data(spoe);
         assert!(matches!(back, TypedData::IPv4(a) if a == addr));
     }
 
