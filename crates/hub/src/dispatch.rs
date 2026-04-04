@@ -566,28 +566,20 @@ mod tests {
         assert_eq!(cleaned.args.len(), 2);
     }
 
+    fn test_plugin(name: &str, depends_on: &[&str]) -> crate::plugin_loader::LoadedPlugin {
+        crate::plugin_loader::LoadedPlugin {
+            name: name.into(),
+            version: "0.1.0".into(),
+            instance: load_noop_plugin().instance,
+            messages: vec!["msg".into()],
+            depends_on: depends_on.iter().map(|&d| d.into()).collect(),
+            timeout: std::time::Duration::from_millis(100),
+        }
+    }
+
     #[test]
     fn test_expand_skip_cascade_skips_direct_dependent() {
-        use crate::plugin_loader::LoadedPlugin;
-
-        let plugins = vec![
-            LoadedPlugin {
-                name: "a".into(),
-                version: "0.1.0".into(),
-                instance: load_noop_plugin().instance,
-                messages: vec!["msg".into()],
-                depends_on: vec![],
-                timeout: std::time::Duration::from_millis(100),
-            },
-            LoadedPlugin {
-                name: "b".into(),
-                version: "0.1.0".into(),
-                instance: load_noop_plugin().instance,
-                messages: vec!["msg".into()],
-                depends_on: vec!["a".into()],
-                timeout: std::time::Duration::from_millis(100),
-            },
-        ];
+        let plugins = vec![test_plugin("a", &[]), test_plugin("b", &["a"])];
         let registry = crate::registry::PluginRegistry::build(plugins).unwrap();
         let mut skip_set = HashSet::from(["a".to_string()]);
         expand_skip_cascade("a", &registry, &mut skip_set);
@@ -596,26 +588,7 @@ mod tests {
 
     #[test]
     fn test_expand_skip_cascade_preserves_independent() {
-        use crate::plugin_loader::LoadedPlugin;
-
-        let plugins = vec![
-            LoadedPlugin {
-                name: "a".into(),
-                version: "0.1.0".into(),
-                instance: load_noop_plugin().instance,
-                messages: vec!["msg".into()],
-                depends_on: vec![],
-                timeout: std::time::Duration::from_millis(100),
-            },
-            LoadedPlugin {
-                name: "c".into(),
-                version: "0.1.0".into(),
-                instance: load_noop_plugin().instance,
-                messages: vec!["msg".into()],
-                depends_on: vec![],
-                timeout: std::time::Duration::from_millis(100),
-            },
-        ];
+        let plugins = vec![test_plugin("a", &[]), test_plugin("c", &[])];
         let registry = crate::registry::PluginRegistry::build(plugins).unwrap();
         let mut skip_set = HashSet::from(["a".to_string()]);
         expand_skip_cascade("a", &registry, &mut skip_set);
