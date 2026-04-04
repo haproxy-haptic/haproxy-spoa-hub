@@ -190,52 +190,6 @@ async fn run_tcp_listener(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ListenerType;
-
-    #[test]
-    fn test_listener_config_unix() {
-        let config = ListenerConfig {
-            listener_type: ListenerType::Unix,
-            address: "/tmp/test.sock".to_string(),
-        };
-        assert_eq!(config.listener_type, ListenerType::Unix);
-        assert_eq!(config.address, "/tmp/test.sock");
-    }
-
-    #[test]
-    fn test_listener_config_tcp() {
-        let config = ListenerConfig {
-            listener_type: ListenerType::Tcp,
-            address: "127.0.0.1:12345".to_string(),
-        };
-        assert_eq!(config.listener_type, ListenerType::Tcp);
-        assert_eq!(config.address, "127.0.0.1:12345");
-    }
-
-    #[test]
-    fn test_listener_configs_dispatches_by_type() {
-        let configs = vec![
-            ListenerConfig {
-                listener_type: ListenerType::Unix,
-                address: "/tmp/a.sock".to_string(),
-            },
-            ListenerConfig {
-                listener_type: ListenerType::Tcp,
-                address: "0.0.0.0:9000".to_string(),
-            },
-        ];
-
-        let mut unix_count = 0;
-        let mut tcp_count = 0;
-        for c in &configs {
-            match c.listener_type {
-                ListenerType::Unix => unix_count += 1,
-                ListenerType::Tcp => tcp_count += 1,
-            }
-        }
-        assert_eq!(unix_count, 1);
-        assert_eq!(tcp_count, 1);
-    }
 
     #[tokio::test]
     async fn test_unix_listener_cleans_stale_socket() {

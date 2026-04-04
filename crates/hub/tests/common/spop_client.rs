@@ -55,10 +55,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SpopClient<S> {
         // Parse ACK: skip frame_type(1) + flags(4) + stream_id(varint) + frame_id(varint)
         let mut pos = 1;
         pos += 4; // flags
-        let (stream_id, consumed) = decode_varint(&frame[pos..]);
-        pos += consumed;
-        let (frame_id, consumed) = decode_varint(&frame[pos..]);
-        pos += consumed;
+        let (stream_id, bytes_read) = decode_varint(&frame[pos..]);
+        pos += bytes_read;
+        let (frame_id, bytes_read) = decode_varint(&frame[pos..]);
+        pos += bytes_read;
 
         // Parse actions
         let actions = parse_actions(&frame[pos..]);
@@ -194,14 +194,14 @@ fn parse_actions(data: &[u8]) -> Vec<AckAction> {
             _ => "Unknown",
         };
 
-        let (name, consumed) = decode_spop_string(&data[pos..]);
-        pos += consumed;
+        let (name, bytes_read) = decode_spop_string(&data[pos..]);
+        pos += bytes_read;
 
         match action_type {
             1 => {
                 // set-var: also has a value
-                let (value, consumed) = decode_typed_data(&data[pos..]);
-                pos += consumed;
+                let (value, bytes_read) = decode_typed_data(&data[pos..]);
+                pos += bytes_read;
                 actions.push(AckAction::SetVar {
                     scope: scope_name,
                     name,
@@ -264,9 +264,9 @@ fn encode_spop_string(buf: &mut Vec<u8>, s: &str) {
 }
 
 fn decode_spop_string(data: &[u8]) -> (String, usize) {
-    let (len, consumed) = decode_varint(data);
-    let s = String::from_utf8_lossy(&data[consumed..consumed + len as usize]).into_owned();
-    (s, consumed + len as usize)
+    let (len, bytes_read) = decode_varint(data);
+    let s = String::from_utf8_lossy(&data[bytes_read..bytes_read + len as usize]).into_owned();
+    (s, bytes_read + len as usize)
 }
 
 fn encode_typed_data(buf: &mut Vec<u8>, td: &TypedData) {
@@ -319,23 +319,23 @@ fn decode_typed_data(data: &[u8]) -> (TypedData, usize) {
     match data_type {
         1 => (TypedData::Bool(flags & 1 != 0), pos),
         2 => {
-            let (v, c) = decode_varint(&data[pos..]);
-            pos += c;
+            let (v, bytes_read) = decode_varint(&data[pos..]);
+            pos += bytes_read;
             (TypedData::Int32(v as i32), pos)
         }
         3 => {
-            let (v, c) = decode_varint(&data[pos..]);
-            pos += c;
+            let (v, bytes_read) = decode_varint(&data[pos..]);
+            pos += bytes_read;
             (TypedData::UInt32(v as u32), pos)
         }
         4 => {
-            let (v, c) = decode_varint(&data[pos..]);
-            pos += c;
+            let (v, bytes_read) = decode_varint(&data[pos..]);
+            pos += bytes_read;
             (TypedData::Int64(v as i64), pos)
         }
         5 => {
-            let (v, c) = decode_varint(&data[pos..]);
-            pos += c;
+            let (v, bytes_read) = decode_varint(&data[pos..]);
+            pos += bytes_read;
             (TypedData::UInt64(v), pos)
         }
         6 => {
@@ -349,13 +349,13 @@ fn decode_typed_data(data: &[u8]) -> (TypedData, usize) {
             (TypedData::IPv6(std::net::Ipv6Addr::from(octets)), pos)
         }
         8 => {
-            let (s, c) = decode_spop_string(&data[pos..]);
-            pos += c;
+            let (s, bytes_read) = decode_spop_string(&data[pos..]);
+            pos += bytes_read;
             (TypedData::String(s), pos)
         }
         9 => {
-            let (len, c) = decode_varint(&data[pos..]);
-            pos += c;
+            let (len, bytes_read) = decode_varint(&data[pos..]);
+            pos += bytes_read;
             let bytes = data[pos..pos + len as usize].to_vec();
             pos += len as usize;
             (TypedData::Binary(bytes), pos)
