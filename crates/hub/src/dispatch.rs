@@ -158,7 +158,7 @@ fn expand_skip_cascade(
                 reason = %skipped_name,
                 "plugin skipped (dependency cascade)"
             );
-            metrics::record_plugin_skip(name);
+            metrics::record_plugin_skip(name.as_str());
         }
     }
 }
@@ -217,7 +217,7 @@ pub async fn dispatch_message(
         let is_last_group = group_idx + 1 == num_groups;
         for (plugin_name, result) in group_results {
             for var in result.variables {
-                let prefixed_name = format!("{}.{}", plugin_name, var.name);
+                let prefixed_name = format!("{plugin_name}.{}", var.name);
                 if !is_last_group {
                     extra_args
                         .get_or_insert_with(RHashMap::new)
@@ -308,7 +308,7 @@ fn handle_plugin_result(
                 latency_us = start.elapsed().as_micros(),
                 "plugin returned error"
             );
-            metrics::record_plugin_error(name);
+            metrics::record_plugin_error(&name);
             None
         }
         Ok(Err(join_err)) => {
@@ -317,7 +317,7 @@ fn handle_plugin_result(
                 error = %join_err,
                 "plugin task panicked"
             );
-            metrics::record_plugin_error(name);
+            metrics::record_plugin_error(&name);
             None
         }
         Err(_) => {
@@ -326,7 +326,7 @@ fn handle_plugin_result(
                 timeout_ms = %timeout.as_millis(),
                 "plugin timed out"
             );
-            metrics::record_plugin_timeout(name);
+            metrics::record_plugin_timeout(&name);
             None
         }
     }
