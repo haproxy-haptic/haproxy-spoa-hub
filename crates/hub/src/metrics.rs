@@ -36,10 +36,9 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
 }
 
 pub fn record_message_processed(message: &str, duration: std::time::Duration) {
-    let message = message.to_owned();
-    histogram!("spoa_message_duration_seconds", "message" => message.clone())
+    histogram!("spoa_message_duration_seconds", "message" => message.to_owned())
         .record(duration.as_secs_f64());
-    counter!("spoa_messages_total", "message" => message).increment(1);
+    counter!("spoa_messages_total", "message" => message.to_owned()).increment(1);
 }
 
 pub fn record_plugin_error(plugin: &str) {
@@ -54,6 +53,7 @@ pub fn record_plugin_skip(plugin: &str) {
     counter!("spoa_plugin_skips_total", "plugin" => plugin.to_owned()).increment(1);
 }
 
-pub fn update_active_connections(count: f64) {
-    gauge!("spoa_active_connections").set(count);
+pub fn update_active_connections(count: u64) {
+    #[allow(clippy::cast_precision_loss)]
+    gauge!("spoa_active_connections").set(count as f64);
 }
