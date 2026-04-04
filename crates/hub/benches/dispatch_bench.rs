@@ -61,7 +61,7 @@ fn bench_dispatch_single_plugin(c: &mut Criterion) {
         stream_id: 1,
         frame_id: 1,
     };
-    let plan = registry.plan_for_message("bench-msg").unwrap().clone();
+    let plan = registry.plan_for_message("bench-msg").unwrap();
 
     c.bench_function("dispatch_1_plugin", |b| {
         b.iter(|| rt.block_on(dispatch_message(&msg, &plan, &registry)));
@@ -77,7 +77,7 @@ fn bench_dispatch_two_plugins_parallel(c: &mut Criterion) {
         stream_id: 1,
         frame_id: 1,
     };
-    let plan = registry.plan_for_message("bench-parallel").unwrap().clone();
+    let plan = registry.plan_for_message("bench-parallel").unwrap();
 
     c.bench_function("dispatch_2_plugins_parallel", |b| {
         b.iter(|| rt.block_on(dispatch_message(&msg, &plan, &registry)));
@@ -98,7 +98,7 @@ fn bench_dispatch_with_args(c: &mut Criterion) {
         stream_id: 1,
         frame_id: 1,
     };
-    let plan = registry.plan_for_message("bench-msg").unwrap().clone();
+    let plan = registry.plan_for_message("bench-msg").unwrap();
 
     c.bench_function("dispatch_1_plugin_4_args", |b| {
         b.iter(|| rt.block_on(dispatch_message(&msg, &plan, &registry)));

@@ -41,7 +41,7 @@ pub struct LoadedPlugin {
 /// corresponding `ConfigValue` variant.
 fn toml_to_config_value(value: &toml::Value) -> ConfigValue {
     match value {
-        toml::Value::String(s) => ConfigValue::String(RString::from(s.as_str())),
+        toml::Value::String(s) => ConfigValue::String(s.as_str().into()),
         toml::Value::Integer(i) => ConfigValue::Integer(*i),
         toml::Value::Float(f) => ConfigValue::Float(*f),
         toml::Value::Boolean(b) => ConfigValue::Bool(*b),
@@ -57,7 +57,7 @@ fn toml_to_config_value(value: &toml::Value) -> ConfigValue {
 fn toml_table_to_config(table: &toml::Table) -> RHashMap<RString, ConfigValue> {
     table
         .iter()
-        .map(|(k, v)| (RString::from(k.as_str()), toml_to_config_value(v)))
+        .map(|(k, v)| (k.as_str().into(), toml_to_config_value(v)))
         .collect()
 }
 
@@ -149,7 +149,7 @@ pub fn load_plugin(
 
     // Build plugin context from config
     let context = PluginContext {
-        name: RString::from(config.name.as_str()),
+        name: config.name.as_str().into(),
         config: toml_table_to_config(&config.params),
     };
 
