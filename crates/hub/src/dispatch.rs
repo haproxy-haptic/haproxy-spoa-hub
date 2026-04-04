@@ -168,14 +168,14 @@ pub async fn dispatch_message(
         // Filter out skipped plugins and cascade to dependents in a single pass.
         // Cascade is safe here: plugins in the same group are independent
         // (topologically), so expanding the skip set cannot affect this group.
-        let mut active: Vec<String> = Vec::with_capacity(group.len());
+        let mut active: Vec<&str> = Vec::with_capacity(group.len());
         for name in group {
-            if skip_set.contains(name.as_str()) {
+            if skip_set.contains(name) {
                 tracing::debug!(plugin = %name, "plugin skipped");
                 crate::metrics::record_plugin_skip(name);
                 expand_skip_cascade(name, registry, &mut skip_set);
             } else {
-                active.push(name.clone());
+                active.push(name);
             }
         }
 
@@ -206,7 +206,7 @@ pub async fn dispatch_message(
 /// - Single plugin: `spawn_blocking` + timeout (no `tokio::spawn`)
 /// - Multiple plugins: `spawn_blocking` each, `join_all` with timeouts
 async fn execute_group(
-    group: &[String],
+    group: &[&str],
     message: &SpoeMessage,
     extra_args: Option<&ArgMap>,
     registry: &Arc<PluginRegistry>,
@@ -214,7 +214,7 @@ async fn execute_group(
     if group.len() == 1 {
         // Fast path: single plugin — one spawn_blocking, no tokio::spawn,
         // no join_all. Timeout still enforced via spawn_blocking yield.
-        return call_single_plugin(&group[0], message, extra_args, registry)
+        return call_single_plugin(group[0], message, extra_args, registry)
             .await
             .into_iter()
             .collect();
@@ -231,7 +231,7 @@ async fn execute_group(
     // 2. True thread-level parallelism for CPU-bound plugins
     let mut futures = Vec::with_capacity(group.len());
 
-    for plugin_name in group {
+    for &plugin_name in group {
         let Some(entry) = registry.get_plugin(plugin_name) else {
             tracing::error!(plugin = %plugin_name, "plugin not found in registry");
             continue;
