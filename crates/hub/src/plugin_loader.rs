@@ -126,21 +126,19 @@ pub fn load_plugin(
     let name = config.name.clone();
     let lib_path = plugin_dir.join(&config.library);
 
+    let load_err = |source| LoadError::Load {
+        name: name.clone(),
+        path: lib_path.display().to_string(),
+        source,
+    };
+
     // Verify the library has a valid abi_stable header before full load.
     // This is necessary because load_from_file() caches by path and may
     // return stale results for invalid files without this pre-check.
-    let _header = lib_header_from_path(&lib_path).map_err(|e| LoadError::Load {
-        name: name.clone(),
-        path: lib_path.display().to_string(),
-        source: e,
-    })?;
+    let _header = lib_header_from_path(&lib_path).map_err(&load_err)?;
 
     // Load the root module (performs ABI version + layout checking)
-    let module = PluginMod_Ref::load_from_file(&lib_path).map_err(|e| LoadError::Load {
-        name: name.clone(),
-        path: lib_path.display().to_string(),
-        source: e,
-    })?;
+    let module = PluginMod_Ref::load_from_file(&lib_path).map_err(load_err)?;
 
     // Create plugin instance via factory function
     let mut instance = module.new()().into_result().map_err(|e| LoadError::Init {
