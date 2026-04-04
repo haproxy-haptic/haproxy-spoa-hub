@@ -123,23 +123,22 @@ pub fn load_plugin(
     config: &PluginConfig,
     default_timeout_ms: u64,
 ) -> Result<LoadedPlugin, LoadError> {
-    let name = &config.name;
+    let name = config.name.clone();
     let lib_path = plugin_dir.join(&config.library);
-    let lib_path_display = lib_path.display().to_string();
 
     // Verify the library has a valid abi_stable header before full load.
     // This is necessary because load_from_file() caches by path and may
     // return stale results for invalid files without this pre-check.
     let _header = lib_header_from_path(&lib_path).map_err(|e| LoadError::Load {
         name: name.clone(),
-        path: lib_path_display.clone(),
+        path: lib_path.display().to_string(),
         source: e,
     })?;
 
     // Load the root module (performs ABI version + layout checking)
     let module = PluginMod_Ref::load_from_file(&lib_path).map_err(|e| LoadError::Load {
         name: name.clone(),
-        path: lib_path_display,
+        path: lib_path.display().to_string(),
         source: e,
     })?;
 
@@ -150,7 +149,7 @@ pub fn load_plugin(
     })?;
 
     // Validate config against plugin's schema (if declared)
-    validate_config_schema(&instance, name, &config.params)?;
+    validate_config_schema(&instance, &name, &config.params)?;
 
     // Build plugin context from config
     let context = PluginContext {
@@ -171,7 +170,7 @@ pub fn load_plugin(
     let timeout_ms = config.timeout_ms.unwrap_or(default_timeout_ms);
 
     Ok(LoadedPlugin {
-        name: name.clone(),
+        name,
         version,
         instance: Arc::new(instance),
         messages: config.messages.clone(),
