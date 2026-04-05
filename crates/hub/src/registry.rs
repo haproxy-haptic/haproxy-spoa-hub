@@ -180,10 +180,7 @@ fn build_execution_plan(
             if remaining.is_empty() {
                 break;
             }
-            return Err(format!(
-                "circular dependency among: {:?}",
-                remaining.keys().collect::<Vec<_>>()
-            ));
+            return Err(format!("circular dependency among: {:?}", remaining.keys()));
         }
 
         // Remove ready plugins and decrement dependents

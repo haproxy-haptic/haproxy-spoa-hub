@@ -178,7 +178,7 @@ pub struct DispatchResult {
 pub async fn dispatch_message(
     message: &SpoeMessage,
     plan: &ExecutionPlan,
-    registry: &Arc<PluginRegistry>,
+    registry: &PluginRegistry,
 ) -> DispatchResult {
     let (mut plugins_to_skip, cleaned_message) = extract_hub_args(message);
     let effective_message = cleaned_message.as_ref().unwrap_or(message);
@@ -243,7 +243,7 @@ async fn execute_group(
     group: &[&str],
     message: &SpoeMessage,
     extra_args: Option<&ArgMap>,
-    registry: &Arc<PluginRegistry>,
+    registry: &PluginRegistry,
 ) -> Vec<(String, ProcessingResult)> {
     let mut futures = Vec::with_capacity(group.len());
 
