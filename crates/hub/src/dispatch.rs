@@ -217,7 +217,8 @@ pub async fn dispatch_message(
         let is_last_group = group_idx + 1 == num_groups;
         for (plugin_name, result) in group_results {
             for var in result.variables {
-                let prefixed_name = format!("{plugin_name}.{}", var.name);
+                let var_name = var.name.as_str();
+                let prefixed_name = format!("{plugin_name}.{var_name}");
                 if !is_last_group {
                     extra_args
                         .get_or_insert_with(RHashMap::new)
