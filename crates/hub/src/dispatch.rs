@@ -291,11 +291,12 @@ fn handle_plugin_result(
     start: Instant,
     timeout: Duration,
 ) -> Option<(String, ProcessingResult)> {
+    let elapsed_us = start.elapsed().as_micros();
     match result {
         Ok(Ok(Ok(processing_result))) => {
             tracing::debug!(
                 plugin = %name,
-                latency_us = start.elapsed().as_micros(),
+                latency_us = elapsed_us,
                 variables = processing_result.variables.len(),
                 "plugin completed"
             );
@@ -305,7 +306,7 @@ fn handle_plugin_result(
             tracing::error!(
                 plugin = %name,
                 error = %e,
-                latency_us = start.elapsed().as_micros(),
+                latency_us = elapsed_us,
                 "plugin returned error"
             );
             metrics::record_plugin_error(&name);
