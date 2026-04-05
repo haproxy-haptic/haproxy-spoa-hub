@@ -40,7 +40,7 @@ pub async fn start_listeners(
         Arc::new(Semaphore::new(n))
     });
 
-    let mut handles = Vec::new();
+    let mut handles = Vec::with_capacity(configs.len());
 
     for config in configs {
         let registry = Arc::clone(&registry);

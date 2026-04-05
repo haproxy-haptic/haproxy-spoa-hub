@@ -167,7 +167,7 @@ fn build_execution_plan(
         }
     }
 
-    let mut groups = Vec::new();
+    let mut groups = Vec::with_capacity(plugin_names.len());
     let mut remaining = in_degree;
 
     loop {
