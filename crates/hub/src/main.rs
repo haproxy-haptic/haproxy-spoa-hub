@@ -106,7 +106,7 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     #[cfg(unix)]
     {
         let registry = Arc::clone(&registry);
-        let config_path = cli.config.clone();
+        let config_path = cli.config;
         tokio::spawn(async move {
             let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
                 .expect("failed to listen for SIGHUP");
