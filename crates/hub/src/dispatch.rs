@@ -458,12 +458,7 @@ mod tests {
         let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
         let plan = registry.plan_for_message("test-msg").unwrap();
 
-        let msg = SpoeMessage {
-            name: "test-msg".into(),
-            args: RHashMap::new(),
-            stream_id: 1,
-            frame_id: 1,
-        };
+        let msg = make_message("test-msg", vec![]);
 
         let result = dispatch_message(&msg, plan, &registry).await;
         assert!(
@@ -479,8 +474,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_dispatch_no_plan_returns_empty() {
+    #[test]
+    fn test_dispatch_no_plan_returns_empty() {
         let plugin = load_noop_plugin();
         let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
 
@@ -490,9 +485,9 @@ mod tests {
 
     // --- Hub control arg tests ---
 
-    fn make_message_with_args(args: Vec<(&str, SpoeValue)>) -> SpoeMessage {
+    fn make_message(name: &str, args: Vec<(&str, SpoeValue)>) -> SpoeMessage {
         SpoeMessage {
-            name: "test".into(),
+            name: name.into(),
             args: args
                 .into_iter()
                 .map(|(k, v)| (RString::from(k), v))
@@ -504,10 +499,10 @@ mod tests {
 
     #[test]
     fn test_extract_hub_args_parses_skip_plugins() {
-        let msg = make_message_with_args(vec![(
-            "hub.skip_plugins",
-            SpoeValue::String("a,b,c".into()),
-        )]);
+        let msg = make_message(
+            "test-msg",
+            vec![("hub.skip_plugins", SpoeValue::String("a,b,c".into()))],
+        );
         let (plugins_to_skip, _) = extract_hub_args(&msg);
         assert_eq!(
             plugins_to_skip,
@@ -517,17 +512,20 @@ mod tests {
 
     #[test]
     fn test_extract_hub_args_trims_whitespace() {
-        let msg = make_message_with_args(vec![(
-            "hub.skip_plugins",
-            SpoeValue::String("a , b ".into()),
-        )]);
+        let msg = make_message(
+            "test-msg",
+            vec![("hub.skip_plugins", SpoeValue::String("a , b ".into()))],
+        );
         let (plugins_to_skip, _) = extract_hub_args(&msg);
         assert_eq!(plugins_to_skip, HashSet::from(["a".into(), "b".into()]));
     }
 
     #[test]
     fn test_extract_hub_args_empty_when_missing() {
-        let msg = make_message_with_args(vec![("src", SpoeValue::String("1.2.3.4".into()))]);
+        let msg = make_message(
+            "test-msg",
+            vec![("src", SpoeValue::String("1.2.3.4".into()))],
+        );
         let (plugins_to_skip, cleaned) = extract_hub_args(&msg);
         assert!(plugins_to_skip.is_empty());
         assert!(cleaned.is_none(), "no hub args means no cleaned message");
@@ -535,19 +533,25 @@ mod tests {
 
     #[test]
     fn test_extract_hub_args_ignores_non_string() {
-        let msg = make_message_with_args(vec![("hub.skip_plugins", SpoeValue::Bool(true))]);
+        let msg = make_message(
+            "test-msg",
+            vec![("hub.skip_plugins", SpoeValue::Bool(true))],
+        );
         let (plugins_to_skip, _) = extract_hub_args(&msg);
         assert!(plugins_to_skip.is_empty());
     }
 
     #[test]
     fn test_extract_hub_args_strips_hub_prefix() {
-        let msg = make_message_with_args(vec![
-            ("src", SpoeValue::String("1.2.3.4".into())),
-            ("hub.skip_plugins", SpoeValue::String("noop".into())),
-            ("hub.future_arg", SpoeValue::Int32(42)),
-            ("method", SpoeValue::String("GET".into())),
-        ]);
+        let msg = make_message(
+            "test-msg",
+            vec![
+                ("src", SpoeValue::String("1.2.3.4".into())),
+                ("hub.skip_plugins", SpoeValue::String("noop".into())),
+                ("hub.future_arg", SpoeValue::Int32(42)),
+                ("method", SpoeValue::String("GET".into())),
+            ],
+        );
         let (_, cleaned) = extract_hub_args(&msg);
         let cleaned = cleaned.expect("hub args present, should return cleaned message");
         // Regular args kept
@@ -602,8 +606,10 @@ mod tests {
         let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
         let plan = registry.plan_for_message("test-msg").unwrap();
 
-        let msg =
-            make_message_with_args(vec![("hub.skip_plugins", SpoeValue::String("noop".into()))]);
+        let msg = make_message(
+            "test-msg",
+            vec![("hub.skip_plugins", SpoeValue::String("noop".into()))],
+        );
 
         let result = dispatch_message(&msg, plan, &registry).await;
         assert!(
