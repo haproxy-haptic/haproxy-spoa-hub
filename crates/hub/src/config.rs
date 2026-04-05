@@ -90,9 +90,9 @@ impl HubConfig {
             ));
         }
 
-        if !self.plugin_dir.exists() {
+        if !self.plugin_dir.is_dir() {
             return Err(ConfigError::Validation(format!(
-                "plugin_dir '{}' does not exist",
+                "plugin_dir '{}' is not a directory",
                 self.plugin_dir.display()
             )));
         }
@@ -107,9 +107,9 @@ impl HubConfig {
             }
 
             let lib_path = self.plugin_dir.join(&plugin.library);
-            if !lib_path.exists() {
+            if !lib_path.is_file() {
                 return Err(ConfigError::Validation(format!(
-                    "plugin '{}': library '{}' not found in '{}'",
+                    "plugin '{}': library '{}' is not a file in '{}'",
                     plugin.name,
                     plugin.library,
                     self.plugin_dir.display()
@@ -272,7 +272,7 @@ mod tests {
                    address = \"/tmp/test.sock\"\n";
         let (_f, path) = write_config(cfg);
         let err = HubConfig::load(&path).unwrap_err();
-        assert!(err.to_string().contains("does not exist"));
+        assert!(err.to_string().contains("is not a directory"));
     }
 
     #[test]

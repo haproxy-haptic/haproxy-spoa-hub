@@ -36,7 +36,7 @@ where
 
     // Step 1: Wait for HAPROXY-HELLO
     let hello_frame = match framed.next().await {
-        Some(Ok(frame)) if *frame.frame_type() == FrameType::HaproxyHello => frame,
+        Some(Ok(frame)) if frame.frame_type() == &FrameType::HaproxyHello => frame,
         Some(Ok(frame)) => {
             tracing::error!(
                 frame_type = ?frame.frame_type(),
