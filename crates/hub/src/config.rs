@@ -116,7 +116,7 @@ impl HubConfig {
                 )));
             }
 
-            if plugin.timeout_ms.is_some_and(|t| t == 0) {
+            if plugin.timeout_ms == Some(0) {
                 return Err(ConfigError::Validation(format!(
                     "plugin '{}': timeout_ms must be positive",
                     plugin.name

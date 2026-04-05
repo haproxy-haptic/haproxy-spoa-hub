@@ -55,9 +55,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SpopClient<S> {
         let frame_type = frame[0];
         anyhow::ensure!(frame_type == 103, "expected ACK (103), got {frame_type}");
 
-        // Parse ACK: skip frame_type(1) + flags(4) + stream_id(varint) + frame_id(varint)
-        let mut pos = 1;
-        pos += 4; // flags
+        // Parse ACK: skip frame_type(1) + flags(4), then decode stream/frame IDs
+        let mut pos = 5;
         let (stream_id, bytes_read) = decode_varint(&frame[pos..]);
         pos += bytes_read;
         let (frame_id, bytes_read) = decode_varint(&frame[pos..]);
