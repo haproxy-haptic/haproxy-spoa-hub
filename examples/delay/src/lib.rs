@@ -1,13 +1,10 @@
-#![allow(
-    non_camel_case_types,
-    non_local_definitions,
-    clippy::unnecessary_wraps,
-    clippy::wildcard_imports
-)]
+#![allow(non_camel_case_types, non_local_definitions)]
 
 use std::{thread, time::Duration};
 
-use haproxy_spoa_hub_plugin_api::*;
+use haproxy_spoa_hub_plugin_api::{
+    ProcessingResult, SpoeValue, TxnVariable, VarScope, define_plugin,
+};
 
 /// A test plugin that sleeps for a configurable duration (default 5ms)
 /// and sets a `done` variable. Used for parallel execution timing tests.

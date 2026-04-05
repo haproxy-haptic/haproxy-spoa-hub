@@ -370,7 +370,7 @@ mod tests {
     fn test_typed_data_string_conversion() {
         let result = typed_data_to_spoe_value(&TypedData::String("hello".to_string()));
         let SpoeValue::String(s) = result else {
-            panic!("expected String variant");
+            panic!("expected String variant, got: {result:?}");
         };
         assert_eq!(s.as_str(), "hello");
     }
@@ -387,7 +387,7 @@ mod tests {
         let addr = Ipv6Addr::LOCALHOST;
         let result = typed_data_to_spoe_value(&TypedData::IPv6(addr));
         let SpoeValue::Ipv6(octets) = result else {
-            panic!("expected Ipv6 variant");
+            panic!("expected Ipv6 variant, got: {result:?}");
         };
         assert_eq!(octets, addr.octets());
     }
@@ -396,7 +396,7 @@ mod tests {
     fn test_typed_data_binary_conversion() {
         let result = typed_data_to_spoe_value(&TypedData::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]));
         let SpoeValue::Binary(b) = result else {
-            panic!("expected Binary variant");
+            panic!("expected Binary variant, got: {result:?}");
         };
         assert_eq!(b.as_slice(), &[0xDE, 0xAD, 0xBE, 0xEF]);
     }
