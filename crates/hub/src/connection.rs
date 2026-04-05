@@ -13,7 +13,9 @@ use tokio_util::codec::Framed;
 use haproxy_spoa_hub_plugin_api::SpoeMessage;
 
 use crate::{
-    dispatch::{self, typed_data_to_spoe_value},
+    dispatch::{
+        dispatch_message, spoe_value_into_typed_data, typed_data_to_spoe_value, var_scope_to_spop,
+    },
     metrics,
     registry::SharedRegistry,
 };
@@ -151,12 +153,12 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
 
         // Look up execution plan for this message
         if let Some(plan) = current_registry.plan_for_message(msg_name) {
-            let result = dispatch::dispatch_message(&spoe_msg, plan, &current_registry).await;
+            let result = dispatch_message(&spoe_msg, plan, &current_registry).await;
 
             // Add all variables to the ACK response
             for (scope, name, value) in result.variables {
-                let spop_scope = dispatch::var_scope_to_spop(scope);
-                let typed_data = dispatch::spoe_value_into_typed_data(value);
+                let spop_scope = var_scope_to_spop(scope);
+                let typed_data = spoe_value_into_typed_data(value);
                 ack = ack.set_var(spop_scope, &name, typed_data);
             }
         } else {

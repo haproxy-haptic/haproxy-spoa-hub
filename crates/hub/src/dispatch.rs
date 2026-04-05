@@ -184,7 +184,7 @@ pub async fn dispatch_message(
     let effective_message = cleaned_message.as_ref().unwrap_or(message);
 
     let estimated_vars = plan.groups.iter().map(Vec::len).sum::<usize>();
-    let mut all_variables = Vec::with_capacity(estimated_vars);
+    let mut variables = Vec::with_capacity(estimated_vars);
     let mut extra_args = None;
     let num_groups = plan.groups.len();
 
@@ -225,14 +225,12 @@ pub async fn dispatch_message(
                         .get_or_insert_with(RHashMap::new)
                         .insert(prefixed_name.as_str().into(), var.value.clone());
                 }
-                all_variables.push((var.scope, prefixed_name, var.value));
+                variables.push((var.scope, prefixed_name, var.value));
             }
         }
     }
 
-    DispatchResult {
-        variables: all_variables,
-    }
+    DispatchResult { variables }
 }
 
 /// Execute a group of plugins in parallel via `spawn_blocking` + `join_all`.
@@ -254,10 +252,10 @@ async fn execute_group(
 
     // Build the merged message once (only allocates when extra_args is Some)
     // and share via Arc to avoid cloning the full message per plugin.
-    let base_msg: Arc<SpoeMessage> = match extra_args {
-        Some(extras) => Arc::new(build_message(message, extras)),
-        None => Arc::new(message.clone()),
-    };
+    let base_msg = Arc::new(match extra_args {
+        Some(extras) => build_message(message, extras),
+        None => message.clone(),
+    });
 
     for &plugin_name in group {
         let Some(entry) = registry.get_plugin(plugin_name) else {
