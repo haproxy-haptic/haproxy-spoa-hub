@@ -183,10 +183,8 @@ pub async fn dispatch_message(
     let (mut plugins_to_skip, cleaned_message) = extract_hub_args(message);
     let effective_message = cleaned_message.as_ref().unwrap_or(message);
 
-    let plugin_count = plan.groups.iter().map(Vec::len).sum::<usize>();
-    let mut variables = Vec::with_capacity(plugin_count);
+    let mut variables = Vec::with_capacity(plan.groups.iter().map(Vec::len).sum::<usize>());
     let mut extra_args = None;
-    let num_groups = plan.groups.len();
 
     for (group_idx, group) in plan.groups.iter().enumerate() {
         // Filter out skipped plugins and cascade to dependents in a single pass.
@@ -215,7 +213,7 @@ pub async fn dispatch_message(
         )
         .await;
 
-        let is_last_group = group_idx + 1 == num_groups;
+        let is_last_group = group_idx + 1 == plan.groups.len();
         for (plugin_name, result) in group_results {
             for var in result.variables {
                 let var_name = var.name.as_str();

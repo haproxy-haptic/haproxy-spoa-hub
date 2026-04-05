@@ -118,10 +118,7 @@ where
 /// and build the ACK response with all collected variables.
 async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistry) -> Ack {
     let metadata = frame.metadata();
-    let stream_id = metadata.stream_id;
-    let frame_id = metadata.frame_id;
-
-    let mut ack = Ack::new(stream_id, frame_id);
+    let mut ack = Ack::new(metadata.stream_id, metadata.frame_id);
 
     let FramePayload::ListOfMessages(messages) = frame.payload() else {
         tracing::error!(payload = ?frame.payload(), "unexpected NOTIFY payload type");
@@ -147,8 +144,8 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
         let spoe_msg = SpoeMessage {
             name: msg_name.into(),
             args,
-            stream_id,
-            frame_id,
+            stream_id: metadata.stream_id,
+            frame_id: metadata.frame_id,
         };
 
         // Look up execution plan for this message
