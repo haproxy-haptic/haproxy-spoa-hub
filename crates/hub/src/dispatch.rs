@@ -183,7 +183,8 @@ pub async fn dispatch_message(
     let (mut plugins_to_skip, cleaned_message) = extract_hub_args(message);
     let effective_message = cleaned_message.as_ref().unwrap_or(message);
 
-    let mut all_variables = Vec::new();
+    let estimated_vars = plan.groups.iter().map(Vec::len).sum::<usize>();
+    let mut all_variables = Vec::with_capacity(estimated_vars);
     let mut extra_args = None;
     let num_groups = plan.groups.len();
 
@@ -252,14 +253,10 @@ async fn execute_group(
     let mut futures = Vec::with_capacity(group.len());
 
     // Build the merged message once (only allocates when extra_args is Some)
-    // and clone per plugin to avoid re-merging for each plugin in the group.
-    let merged;
-    let base_msg = match extra_args {
-        Some(extras) => {
-            merged = build_message(message, extras);
-            &merged
-        }
-        None => message,
+    // and share via Arc to avoid cloning the full message per plugin.
+    let base_msg: Arc<SpoeMessage> = match extra_args {
+        Some(extras) => Arc::new(build_message(message, extras)),
+        None => Arc::new(message.clone()),
     };
 
     for &plugin_name in group {
@@ -270,7 +267,7 @@ async fn execute_group(
 
         let instance = Arc::clone(&entry.instance);
         let name = plugin_name.to_owned();
-        let msg = base_msg.clone();
+        let msg = Arc::clone(&base_msg);
         let timeout = entry.timeout;
 
         // Launch on blocking thread pool immediately

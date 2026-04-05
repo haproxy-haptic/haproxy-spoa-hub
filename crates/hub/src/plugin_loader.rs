@@ -119,7 +119,7 @@ pub fn load_plugin(
     default_timeout_ms: u64,
 ) -> Result<LoadedPlugin, LoadError> {
     let lib_path = plugin_dir.join(&config.library);
-    let name = config.name.clone();
+    let name = &config.name;
 
     let load_err = |source| LoadError::Load {
         name: name.clone(),
@@ -143,7 +143,7 @@ pub fn load_plugin(
     let mut instance = module.new()().into_result().map_err(|e| init_err(&e))?;
 
     // Validate config against plugin's schema (if declared)
-    validate_config_schema(&instance, &name, &config.params)?;
+    validate_config_schema(&instance, name, &config.params)?;
 
     // Build plugin context from config
     let context = PluginContext {
@@ -161,7 +161,7 @@ pub fn load_plugin(
     let timeout_ms = config.timeout_ms.unwrap_or(default_timeout_ms);
 
     Ok(LoadedPlugin {
-        name,
+        name: name.clone(),
         version,
         instance: Arc::new(instance),
         messages: config.messages.clone(),
