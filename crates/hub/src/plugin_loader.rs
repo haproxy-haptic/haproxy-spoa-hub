@@ -158,7 +158,6 @@ pub fn load_plugin(
         .map_err(|e| init_err(&e))?;
 
     let version = instance.version().to_string();
-    let timeout_ms = config.timeout_ms.unwrap_or(default_timeout_ms);
 
     Ok(LoadedPlugin {
         name: name.clone(),
@@ -166,7 +165,7 @@ pub fn load_plugin(
         instance: Arc::new(instance),
         messages: config.messages.clone(),
         depends_on: config.depends_on.clone(),
-        timeout: Duration::from_millis(timeout_ms),
+        timeout: Duration::from_millis(config.timeout_ms.unwrap_or(default_timeout_ms)),
     })
 }
 

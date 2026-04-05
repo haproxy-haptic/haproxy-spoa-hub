@@ -154,9 +154,11 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
 
             // Add all variables to the ACK response
             for (scope, name, value) in result.variables {
-                let spop_scope = var_scope_to_spop(scope);
-                let typed_data = spoe_value_into_typed_data(value);
-                ack = ack.set_var(spop_scope, &name, typed_data);
+                ack = ack.set_var(
+                    var_scope_to_spop(scope),
+                    &name,
+                    spoe_value_into_typed_data(value),
+                );
             }
         } else {
             tracing::debug!(
