@@ -128,16 +128,19 @@ macro_rules! __define_plugin_impl {
 
             impl $plugin_ty {
                 pub fn __new() -> Self $new_body
+                #[allow(clippy::unnecessary_wraps)]
                 pub fn __init(
                     &mut self,
                     $ctx_param: &$crate::PluginContext,
                 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body
                 pub fn __name(&self) -> &str $name_body
                 pub fn __version(&self) -> &str $version_body
+                #[allow(clippy::unnecessary_wraps)]
                 pub fn __process(
                     &self,
                     $msg_param: &$crate::SpoeMessage,
                 ) -> Result<$crate::ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body
+                #[allow(clippy::unnecessary_wraps)]
                 pub fn __config_schema(&self) -> Option<&str> $schema_body
             }
 
