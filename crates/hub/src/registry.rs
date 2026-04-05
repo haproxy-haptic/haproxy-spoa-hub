@@ -154,14 +154,13 @@ fn build_execution_plan(
     let mut dependents: HashMap<&str, Vec<&str>> = HashMap::with_capacity(plugin_names.len());
 
     for name in plugin_names {
-        let name_str = name.as_str();
-        let degree = in_degree.entry(name_str).or_insert(0);
-        if let Some(deps) = depends_on.get(name_str) {
+        let degree = in_degree.entry(name.as_str()).or_insert(0);
+        if let Some(deps) = depends_on.get(name.as_str()) {
             for dep in deps {
                 let dep_str = dep.as_str();
                 if name_set.contains(dep_str) {
                     *degree += 1;
-                    dependents.entry(dep_str).or_default().push(name_str);
+                    dependents.entry(dep_str).or_default().push(name.as_str());
                 }
             }
         }

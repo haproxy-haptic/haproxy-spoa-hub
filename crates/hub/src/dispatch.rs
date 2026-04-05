@@ -183,8 +183,8 @@ pub async fn dispatch_message(
     let (mut plugins_to_skip, cleaned_message) = extract_hub_args(message);
     let effective_message = cleaned_message.as_ref().unwrap_or(message);
 
-    let estimated_vars = plan.groups.iter().map(Vec::len).sum::<usize>();
-    let mut variables = Vec::with_capacity(estimated_vars);
+    let plugin_count = plan.groups.iter().map(Vec::len).sum::<usize>();
+    let mut variables = Vec::with_capacity(plugin_count);
     let mut extra_args = None;
     let num_groups = plan.groups.len();
 
