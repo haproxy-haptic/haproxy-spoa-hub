@@ -10,7 +10,13 @@ use spop::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
 
-use crate::{dispatch, metrics, registry::SharedRegistry};
+use haproxy_spoa_hub_plugin_api::SpoeMessage;
+
+use crate::{
+    dispatch::{self, typed_data_to_spoe_value},
+    metrics,
+    registry::SharedRegistry,
+};
 
 /// Handle a single SPOP connection from `HAProxy`.
 ///
@@ -127,28 +133,24 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
 
     for msg in messages {
         let start = Instant::now();
+        let msg_name = msg.name.as_str();
 
         // Convert spop message args to our SpoeMessage type
         let args = msg
             .args
             .iter()
-            .map(|(key, value)| {
-                (
-                    key.as_str().into(),
-                    dispatch::typed_data_to_spoe_value(value),
-                )
-            })
+            .map(|(key, value)| (key.as_str().into(), typed_data_to_spoe_value(value)))
             .collect();
 
-        let spoe_msg = haproxy_spoa_hub_plugin_api::SpoeMessage {
-            name: msg.name.as_str().into(),
+        let spoe_msg = SpoeMessage {
+            name: msg_name.into(),
             args,
             stream_id,
             frame_id,
         };
 
         // Look up execution plan for this message
-        if let Some(plan) = current_registry.plan_for_message(&msg.name) {
+        if let Some(plan) = current_registry.plan_for_message(msg_name) {
             let result = dispatch::dispatch_message(&spoe_msg, plan, &current_registry).await;
 
             // Add all variables to the ACK response
@@ -159,15 +161,15 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
             }
         } else {
             tracing::debug!(
-                message_name = %msg.name,
+                message_name = %msg_name,
                 "no plugins registered for message"
             );
         }
 
         let elapsed = start.elapsed();
-        metrics::record_message_processed(&msg.name, elapsed);
+        metrics::record_message_processed(msg_name, elapsed);
         tracing::debug!(
-            message_name = %msg.name,
+            message_name = %msg_name,
             latency_us = elapsed.as_micros(),
             "message processed"
         );
