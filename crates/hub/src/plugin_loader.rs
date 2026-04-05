@@ -157,11 +157,9 @@ pub fn load_plugin(
         .into_result()
         .map_err(|e| init_err(&e))?;
 
-    let version = instance.version().to_string();
-
     Ok(LoadedPlugin {
         name: name.clone(),
-        version,
+        version: instance.version().to_string(),
         instance: Arc::new(instance),
         messages: config.messages.clone(),
         depends_on: config.depends_on.clone(),

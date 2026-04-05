@@ -106,8 +106,7 @@ impl HubConfig {
                 )));
             }
 
-            let lib_path = self.plugin_dir.join(&plugin.library);
-            if !lib_path.is_file() {
+            if !self.plugin_dir.join(&plugin.library).is_file() {
                 return Err(ConfigError::Validation(format!(
                     "plugin '{}': library '{}' is not a file in '{}'",
                     plugin.name,
