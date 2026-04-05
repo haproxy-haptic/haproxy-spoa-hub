@@ -261,7 +261,6 @@ async fn execute_group(
         };
 
         let instance = Arc::clone(&entry.instance);
-        let name = plugin_name.to_owned();
         let msg = Arc::clone(&base_msg);
         let timeout = entry.timeout;
 
@@ -269,6 +268,7 @@ async fn execute_group(
         let handle = tokio::task::spawn_blocking(move || instance.process(&msg).into_result());
 
         // Create a future that wraps the handle with a timeout
+        let name = plugin_name.to_owned();
         futures.push(async move {
             let start = Instant::now();
             let result = tokio::time::timeout(timeout, handle).await;
