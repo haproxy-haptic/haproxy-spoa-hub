@@ -106,6 +106,12 @@ where
                     tracing::error!(error = %e, "failed to send ACK");
                     break;
                 }
+                // Flush immediately so HAProxy receives the ACK without
+                // waiting for the next read to trigger an implicit flush.
+                if let Err(e) = framed.flush().await {
+                    tracing::error!(error = %e, "failed to flush ACK");
+                    break;
+                }
             }
             other => {
                 tracing::warn!(frame_type = ?other, "unexpected frame type, ignoring");

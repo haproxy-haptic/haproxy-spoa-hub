@@ -46,9 +46,16 @@ fn main() -> anyhow::Result<()> {
     // Load and validate configuration
     let hub_config = config::HubConfig::load(&cli.config)?;
 
-    // Build tokio runtime with configurable worker threads
+    // Build tokio runtime with configurable worker threads.
+    // thread_keep_alive is configurable to avoid cold-start thread creation
+    // overhead (~10-50µs) when blocking pool threads are reaped between
+    // traffic bursts. Default: 300s (tokio default is 10s).
     let mut rt_builder = runtime::Builder::new_multi_thread();
-    rt_builder.enable_all();
+    rt_builder
+        .enable_all()
+        .thread_keep_alive(std::time::Duration::from_secs(
+            hub_config.blocking_thread_keep_alive_secs,
+        ));
     if let Some(threads) = hub_config.worker_threads {
         rt_builder.worker_threads(threads);
     }
@@ -87,6 +94,18 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     }
 
     tracing::info!(count = loaded.len(), "all plugins loaded");
+
+    // Pre-warm the blocking thread pool so threads are parked and ready
+    // before the first SPOP message arrives. The count matches the number
+    // of async worker threads, since each worker can submit one
+    // spawn_blocking call concurrently.
+    let prewarm_count = hub_config
+        .worker_threads
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, std::num::NonZero::get));
+    let handles: Vec<_> = (0..prewarm_count)
+        .map(|_| tokio::task::spawn_blocking(|| {}))
+        .collect();
+    futures::future::join_all(handles).await;
 
     // Build plugin registry with execution plans, wrapped in ArcSwap
     // so SIGHUP can swap in a new registry without interrupting connections
