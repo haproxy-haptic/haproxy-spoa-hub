@@ -20,6 +20,11 @@ pub struct HubConfig {
     pub worker_threads: Option<usize>,
     /// Maximum concurrent SPOP connections. Defaults to unlimited.
     pub max_connections: Option<usize>,
+    /// How long idle blocking pool threads are kept alive (seconds).
+    /// Longer values avoid thread re-creation overhead on bursty traffic.
+    /// Defaults to 300 (5 minutes). Tokio's default is 10 seconds.
+    #[serde(default = "default_blocking_keep_alive")]
+    pub blocking_thread_keep_alive_secs: u64,
     pub plugins: Vec<PluginConfig>,
 }
 
@@ -53,6 +58,10 @@ pub struct PluginConfig {
 
 fn default_timeout() -> u64 {
     100
+}
+
+fn default_blocking_keep_alive() -> u64 {
+    300
 }
 
 fn default_log_level() -> String {

@@ -147,6 +147,7 @@ depends_on = ["ja3"]  # runs after ja3, receives ja3.hash in message args
 | `metrics_addr` | string | no | disabled | Prometheus endpoint bind address (e.g., `"0.0.0.0:9090"`) |
 | `worker_threads` | integer | no | num CPUs | Tokio runtime worker threads |
 | `max_connections` | integer | no | unlimited | Maximum concurrent SPOP connections |
+| `blocking_thread_keep_alive_secs` | integer | no | 300 | How long idle blocking pool threads stay alive before being reaped. Higher values avoid thread re-creation overhead (~10-50µs) on bursty traffic. Tokio's built-in default is 10 seconds. |
 
 ### `[[listeners]]`
 
