@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Plugin API for haproxy-spoa-hub — define SPOE agent plugins as shared libraries"
+repository.workspace = true
+readme = "README.md"
+keywords = ["haproxy", "spoe", "spoa", "plugin"]
+categories = ["development-tools::ffi"]
 
 [lib]
 name = "haproxy_spoa_hub_plugin_api"

@@ -400,6 +400,29 @@ integration:
 # Release Stage (triggered by v* tags)
 # =============================================================================
 
+publish-crate:
+  stage: release
+  image: rust:${RUST_VERSION}-bookworm
+  tags:
+    - saas-linux-small-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v.*/
+  script:
+    - |
+      LOCAL_VERSION=$(cargo metadata --no-deps --format-version=1 \
+        | python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; print(next(p['version'] for p in pkgs if p['name']=='haproxy-spoa-hub-plugin-api'))")
+      PUBLISHED=$(curl -sf "https://crates.io/api/v1/crates/haproxy-spoa-hub-plugin-api" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['crate']['max_version'])" 2>/dev/null || echo "0.0.0")
+      echo "Local: ${LOCAL_VERSION}, Published: ${PUBLISHED}"
+      if [ "${LOCAL_VERSION}" = "${PUBLISHED}" ]; then
+        echo "Version ${LOCAL_VERSION} already published, skipping"
+      else
+        cargo publish -p haproxy-spoa-hub-plugin-api
+      fi
+  variables:
+    CARGO_REGISTRY_TOKEN: $CARGO_REGISTRY_TOKEN
+
 release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
