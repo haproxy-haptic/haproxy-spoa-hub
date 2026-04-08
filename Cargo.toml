@@ -12,6 +12,7 @@ members = [
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.86"
+repository = "https://gitlab.com/haproxy-haptic/haproxy-spoa-hub"
 
 [workspace.lints.rust]
 dead_code = "warn"
