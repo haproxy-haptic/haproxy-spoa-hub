@@ -23,6 +23,9 @@ Thumbs.db
 # Claude Code worktrees
 .claude/worktrees/
 
+# Cross-compiled binaries staged for Docker multiarch builds
+binaries/
+
 # Example plugin build artifacts (compiled .so files)
 # Note: do NOT ignore examples/ source code
 examples/*/target/
