@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Release builds now use LTO and single codegen unit for 6-30% better
+  performance on type conversion and dispatch hot paths
+
 ## [0.1.0] - 2026-04-08
 
 ### Added

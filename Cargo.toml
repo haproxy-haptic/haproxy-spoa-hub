@@ -26,3 +26,7 @@ missing_panics_doc = "allow"
 # elidable_lifetime_names was split from needless_lifetimes in Rust 1.94;
 # we suppress both in plugin_trait.rs but need this for workspace consistency
 elidable_lifetime_names = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
