@@ -189,28 +189,66 @@ doc:
 # Build Stage — starts immediately alongside checks (DAG)
 # =============================================================================
 
-build:
+# Shared template for multiarch cross-compilation jobs
+.build-arch:
   stage: build
   image: rust:${RUST_VERSION}-bookworm
-  tags:
-    - saas-linux-xlarge-amd64
   needs: []
   rules:
-    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_TAG =~ /^v.*/
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - !reference [.rules-code, rules]
   interruptible: true
-  script:
-    - cargo build --release --workspace
-    - ls -lh target/release/haproxy-spoa-hub
-    - ls -lh target/release/lib*.so
   artifacts:
     paths:
-      - target/release/haproxy-spoa-hub
-      - target/release/libnoop_plugin.so
-      - target/release/libdelay_plugin.so
-      - target/release/libecho_plugin.so
+      - binaries/
     expire_in: 1 week
+
+build-amd64:
+  extends: .build-arch
+  tags:
+    - saas-linux-xlarge-amd64
+  script:
+    - cargo build --release --workspace
+    - mkdir -p binaries/amd64
+    - cp target/release/haproxy-spoa-hub binaries/amd64/
+    - cp target/release/libnoop_plugin.so binaries/amd64/
+    - cp target/release/libecho_plugin.so binaries/amd64/
+    - cp target/release/libdelay_plugin.so binaries/amd64/
+
+build-arm64:
+  extends: .build-arch
+  tags:
+    - saas-linux-xlarge-amd64
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+    - rustup target add aarch64-unknown-linux-gnu
+  variables:
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+  script:
+    - cargo build --release --workspace --target aarch64-unknown-linux-gnu
+    - mkdir -p binaries/arm64
+    - cp target/aarch64-unknown-linux-gnu/release/haproxy-spoa-hub binaries/arm64/
+    - cp target/aarch64-unknown-linux-gnu/release/libnoop_plugin.so binaries/arm64/
+    - cp target/aarch64-unknown-linux-gnu/release/libecho_plugin.so binaries/arm64/
+    - cp target/aarch64-unknown-linux-gnu/release/libdelay_plugin.so binaries/arm64/
+
+build-armv7:
+  extends: .build-arch
+  tags:
+    - saas-linux-xlarge-amd64
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+    - rustup target add armv7-unknown-linux-gnueabihf
+  variables:
+    CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+  script:
+    - cargo build --release --workspace --target armv7-unknown-linux-gnueabihf
+    - mkdir -p binaries/armv7
+    - cp target/armv7-unknown-linux-gnueabihf/release/haproxy-spoa-hub binaries/armv7/
+    - cp target/armv7-unknown-linux-gnueabihf/release/libnoop_plugin.so binaries/armv7/
+    - cp target/armv7-unknown-linux-gnueabihf/release/libecho_plugin.so binaries/armv7/
+    - cp target/armv7-unknown-linux-gnueabihf/release/libdelay_plugin.so binaries/armv7/
 
 build-docker:
   stage: build
@@ -218,34 +256,120 @@ build-docker:
   extends: .docker-dind
   tags:
     - saas-linux-xlarge-amd64
-  needs: []
+  needs:
+    - build-amd64
+    - build-arm64
+    - build-armv7
   rules:
     - if: $CI_COMMIT_TAG =~ /^v.*/
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker context create tls-env --docker "host=${DOCKER_HOST},ca=${DOCKER_CERT_PATH}/ca.pem,cert=${DOCKER_CERT_PATH}/cert.pem,key=${DOCKER_CERT_PATH}/key.pem"
+    - docker buildx create --use --name multiarch --driver docker-container tls-env
+    - docker run --rm --privileged tonistiigi/binfmt --install arm64,arm
+  script:
+    # Determine image tags: release versions for tags, main-{sha} for main,
+    # ci-{pipeline_id} for branch pipelines (consumed by smoke tests, then cleaned up)
+    - |
+      TAGS="--tag ${CI_REGISTRY_IMAGE}:ci-${CI_PIPELINE_ID}"
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        IMAGE_TAG="${CI_COMMIT_TAG#v}"
+        TAGS="${TAGS} --tag ${CI_REGISTRY_IMAGE}:${IMAGE_TAG}"
+        if ! echo "$CI_COMMIT_TAG" | grep -qE -- '-(alpha|beta|rc)'; then
+          TAGS="${TAGS} --tag ${CI_REGISTRY_IMAGE}:latest"
+        fi
+      elif [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        TAGS="${TAGS} --tag ${CI_REGISTRY_IMAGE}:main-${CI_COMMIT_SHORT_SHA}"
+      fi
+    - |
+      docker buildx build \
+        --platform linux/amd64,linux/arm64,linux/arm/v7 \
+        ${TAGS} \
+        --label "org.opencontainers.image.source=${CI_PROJECT_URL}" \
+        --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+        --label "org.opencontainers.image.version=${IMAGE_TAG:-ci-${CI_PIPELINE_ID}}" \
+        --push \
+        -f Dockerfile \
+        .
+
+# Smoke tests: pull the multiarch image from the registry on native runners
+# and verify the hub starts, loads plugins, and binds a TCP listener.
+.smoke-test:
+  stage: build
+  image: docker:${DOCKER_VERSION}
+  extends: .docker-dind
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v.*/
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - !reference [.rules-code, rules]
+  needs:
+    - build-docker
+  interruptible: true
+  timeout: 5 minutes
   before_script:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
+    - docker pull "${CI_REGISTRY_IMAGE}:ci-${CI_PIPELINE_ID}"
+    # Verify --help works (catches missing libraries / wrong arch)
+    - docker run --rm "${CI_REGISTRY_IMAGE}:ci-${CI_PIPELINE_ID}" --help
+    # Build a derived image with a minimal TCP config baked in
     - |
-      if [ -n "$CI_COMMIT_TAG" ]; then
-        IMAGE_TAG="${CI_COMMIT_TAG#v}"
-      else
-        IMAGE_TAG="main-${CI_COMMIT_SHORT_SHA}"
-      fi
+      docker build -t smoke-hub - <<DOCKERFILE
+      FROM ${CI_REGISTRY_IMAGE}:ci-${CI_PIPELINE_ID}
+      RUN printf '%s\n' \
+        'plugin_dir = "/etc/haproxy-spoa-hub/plugins"' \
+        'default_timeout_ms = 500' \
+        'log_level = "debug"' \
+        '[[listeners]]' \
+        'type = "tcp"' \
+        'address = "0.0.0.0:12345"' \
+        '[[plugins]]' \
+        'name = "noop"' \
+        'library = "libnoop_plugin.so"' \
+        'messages = ["check-request"]' \
+        > /etc/haproxy-spoa-hub/config.toml
+      DOCKERFILE
+    - docker run -d --name smoke-hub smoke-hub
+    # Wait for the TCP listener to be ready
     - |
-      docker build \
-        --tag "${CI_REGISTRY_IMAGE}:${IMAGE_TAG}" \
-        --label "org.opencontainers.image.source=${CI_PROJECT_URL}" \
-        --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
-        --label "org.opencontainers.image.version=${IMAGE_TAG}" \
-        -f tests/integration/Dockerfile.hub \
-        .
-    - docker push "${CI_REGISTRY_IMAGE}:${IMAGE_TAG}"
-    # Tag as latest for stable releases
-    - |
-      if [ -n "$CI_COMMIT_TAG" ] && ! echo "$CI_COMMIT_TAG" | grep -qE -- '-(alpha|beta|rc)'; then
-        docker tag "${CI_REGISTRY_IMAGE}:${IMAGE_TAG}" "${CI_REGISTRY_IMAGE}:latest"
-        docker push "${CI_REGISTRY_IMAGE}:latest"
-      fi
+      for i in $(seq 1 15); do
+        if [ "$(docker inspect -f '{{.State.Running}}' smoke-hub 2>/dev/null)" != "true" ]; then
+          echo "FAIL: container exited unexpectedly"
+          docker logs smoke-hub
+          exit 1
+        fi
+        if docker logs smoke-hub 2>&1 | grep -q "listening"; then
+          echo "Hub is listening"
+          break
+        fi
+        if [ "$i" -eq 15 ]; then
+          echo "FAIL: hub did not start listening within 15s"
+          docker logs smoke-hub
+          exit 1
+        fi
+        sleep 1
+      done
+    # Verify plugin was loaded
+    - docker logs smoke-hub 2>&1 | grep "plugin loaded"
+    - echo "PASS - smoke test"
+    - docker stop smoke-hub
+
+smoke-amd64:
+  extends: .smoke-test
+  tags:
+    - saas-linux-small-amd64
+
+smoke-arm64:
+  extends: .smoke-test
+  tags:
+    - saas-linux-small-arm64
+  # Workaround for MTU mismatch on GitLab hosted arm64 runners
+  services:
+    - name: docker:${DOCKER_VERSION}-dind
+      alias: docker
+      command: ["--mtu=1400"]
 
 integration:
   stage: build
@@ -282,7 +406,9 @@ release:
   tags:
     - saas-linux-small-amd64
   needs:
-    - build
+    - build-amd64
+    - build-arm64
+    - build-armv7
     - build-docker
   rules:
     - if: $CI_COMMIT_TAG =~ /^v.*/
