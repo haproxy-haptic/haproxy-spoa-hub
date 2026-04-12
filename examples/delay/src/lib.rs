@@ -2,9 +2,7 @@
 
 use std::{thread, time::Duration};
 
-use haproxy_spoa_hub_plugin_api::{
-    ProcessingResult, SpoeValue, TxnVariable, VarScope, define_plugin,
-};
+use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeValue, TxnVariable, define_plugin};
 
 /// A test plugin that sleeps for a configurable duration (default 5ms)
 /// and sets a `done` variable. Used for parallel execution timing tests.
@@ -39,24 +37,15 @@ define_plugin!(DelayPlugin, {
         message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
         let delay_ms = message
-            .args
-            .get(&RString::from("delay_ms"))
-            .and_then(|v| match v {
-                SpoeValue::Int32(ms) => u64::try_from(*ms).ok(),
-                SpoeValue::Uint32(ms) => Some(u64::from(*ms)),
-                _ => None,
-            })
+            .get_int("delay_ms")
+            .and_then(|v| u64::try_from(v).ok())
             .unwrap_or(5);
 
         thread::sleep(Duration::from_millis(delay_ms));
 
-        Ok(ProcessingResult {
-            variables: vec![TxnVariable {
-                scope: VarScope::Session,
-                name: "done".into(),
-                value: SpoeValue::Bool(true),
-            }]
-            .into(),
-        })
+        Ok(ProcessingResult::single(TxnVariable::session(
+            "done",
+            SpoeValue::Bool(true),
+        )))
     }
 });

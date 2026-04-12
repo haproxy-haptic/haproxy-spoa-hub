@@ -38,20 +38,40 @@ struct MyPlugin;
 
 define_plugin!(MyPlugin, {
     fn new() -> Self { MyPlugin }
-    fn init(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+    fn init(&mut self, _context: &PluginContext)
+        -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
     fn name(&self) -> &str { "my-plugin" }
     fn version(&self) -> &str { env!("CARGO_PKG_VERSION") }
     fn process(
         &self,
         message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(ProcessingResult { variables: vec![].into() })
+        let src = message.get_string("src").unwrap_or("unknown");
+        Ok(ProcessingResult::single(
+            TxnVariable::session("result", SpoeValue::String(src.into())),
+        ))
     }
 });
 ```
 
 Plugin Cargo.toml must have `crate-type = ["cdylib"]` (add `"rlib"` too
-for unit testing).
+for unit testing). The `abi_stable` crate is also required as a direct
+dependency (the `#[export_root_module]` proc macro generates code that
+references `::abi_stable` at the crate root).
+
+## Convenience Helpers (v0.2.0)
+
+- **`SpoeMessage`**: `get()`, `get_string()`, `get_int()`, `get_bool()`,
+  `get_ipv4()`, `get_ipv6()`, `get_binary()` — O(1) argument lookup
+  accepting `&str` directly (`RString` implements `Borrow<str>`).
+- **`TxnVariable`**: `new()`, `transaction()`, `session()` — scope-specific
+  constructors that accept `impl Into<RString>`.
+- **`ProcessingResult`**: `empty()`, `single()`, `from_vars()` — result
+  constructors replacing verbose struct literals.
+- **`PluginContext`**: `get_config()` — config key lookup accepting `&str`.
+- **Re-exports**: `RString`, `RVec`, `RHashMap`, `Tuple2` are re-exported
+  from the plugin API crate, so plugins can import them without reaching
+  into `abi_stable::std_types` directly.
 
 ## Panic Safety
 

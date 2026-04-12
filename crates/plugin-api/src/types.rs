@@ -279,6 +279,138 @@ pub enum VarScope {
     __Other(u8),
 }
 
+impl PluginContext {
+    /// Look up a config value by key name.
+    ///
+    /// This is a convenience wrapper around `self.config.get(key)` that
+    /// accepts `&str` directly.
+    #[must_use]
+    pub fn get_config(&self, key: &str) -> Option<&ConfigValue> {
+        self.config.get(key)
+    }
+}
+
+impl SpoeMessage {
+    /// Look up a message argument by name.
+    ///
+    /// Uses the underlying `RHashMap` for O(1) lookup without allocation,
+    /// since `RString` implements `Borrow<str>`.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&SpoeValue> {
+        self.args.get(name)
+    }
+
+    /// Get an argument as a string slice, or `None` if missing or wrong type.
+    #[must_use]
+    pub fn get_string(&self, name: &str) -> Option<&str> {
+        match self.get(name)? {
+            SpoeValue::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Get an argument as an `i64`, coercing from any SPOE integer type.
+    ///
+    /// Returns `None` if the argument is missing, not an integer type,
+    /// or if a `Uint64` value exceeds `i64::MAX`.
+    #[must_use]
+    pub fn get_int(&self, name: &str) -> Option<i64> {
+        match self.get(name)? {
+            SpoeValue::Int32(v) => Some(i64::from(*v)),
+            SpoeValue::Uint32(v) => Some(i64::from(*v)),
+            SpoeValue::Int64(v) => Some(*v),
+            SpoeValue::Uint64(v) => i64::try_from(*v).ok(),
+            _ => None,
+        }
+    }
+
+    /// Get an argument as a boolean, or `None` if missing or wrong type.
+    #[must_use]
+    pub fn get_bool(&self, name: &str) -> Option<bool> {
+        match self.get(name)? {
+            SpoeValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Get an argument as an IPv4 address (4 octets), or `None` if missing or wrong type.
+    #[must_use]
+    pub fn get_ipv4(&self, name: &str) -> Option<[u8; 4]> {
+        match self.get(name)? {
+            SpoeValue::Ipv4(ip) => Some(*ip),
+            _ => None,
+        }
+    }
+
+    /// Get an argument as an IPv6 address (16 octets), or `None` if missing or wrong type.
+    #[must_use]
+    pub fn get_ipv6(&self, name: &str) -> Option<[u8; 16]> {
+        match self.get(name)? {
+            SpoeValue::Ipv6(ip) => Some(*ip),
+            _ => None,
+        }
+    }
+
+    /// Get an argument as a byte slice, or `None` if missing or wrong type.
+    #[must_use]
+    pub fn get_binary(&self, name: &str) -> Option<&[u8]> {
+        match self.get(name)? {
+            SpoeValue::Binary(b) => Some(b.as_slice()),
+            _ => None,
+        }
+    }
+}
+
+impl TxnVariable {
+    /// Create a variable with the given scope.
+    #[must_use]
+    pub fn new(scope: VarScope, name: impl Into<RString>, value: SpoeValue) -> Self {
+        Self {
+            scope,
+            name: name.into(),
+            value,
+        }
+    }
+
+    /// Create a transaction-scoped variable.
+    #[must_use]
+    pub fn transaction(name: impl Into<RString>, value: SpoeValue) -> Self {
+        Self::new(VarScope::Transaction, name, value)
+    }
+
+    /// Create a session-scoped variable.
+    #[must_use]
+    pub fn session(name: impl Into<RString>, value: SpoeValue) -> Self {
+        Self::new(VarScope::Session, name, value)
+    }
+}
+
+impl ProcessingResult {
+    /// Create an empty result (no variables to set).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            variables: RVec::new(),
+        }
+    }
+
+    /// Create a result from a `Vec` of variables.
+    #[must_use]
+    pub fn from_vars(vars: Vec<TxnVariable>) -> Self {
+        Self {
+            variables: vars.into(),
+        }
+    }
+
+    /// Create a result with a single variable.
+    #[must_use]
+    pub fn single(var: TxnVariable) -> Self {
+        Self {
+            variables: vec![var].into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +458,128 @@ mod tests {
         let v = ConfigValue::Table(map.clone());
         assert!(v.as_table().is_some());
         assert_eq!(ConfigValue::Integer(1).as_table(), None);
+    }
+
+    fn make_message(args: Vec<(&str, SpoeValue)>) -> SpoeMessage {
+        let mut map = RHashMap::new();
+        for (k, v) in args {
+            map.insert(RString::from(k), v);
+        }
+        SpoeMessage {
+            name: RString::from("test"),
+            args: map,
+            stream_id: 1,
+            frame_id: 1,
+        }
+    }
+
+    #[test]
+    fn spoe_message_get() {
+        let msg = make_message(vec![("key", SpoeValue::String("val".into()))]);
+        assert!(msg.get("key").is_some());
+        assert!(msg.get("missing").is_none());
+    }
+
+    #[test]
+    fn spoe_message_get_string() {
+        let msg = make_message(vec![
+            ("s", SpoeValue::String("hello".into())),
+            ("n", SpoeValue::Int32(42)),
+        ]);
+        assert_eq!(msg.get_string("s"), Some("hello"));
+        assert_eq!(msg.get_string("n"), None);
+        assert_eq!(msg.get_string("missing"), None);
+    }
+
+    #[test]
+    fn spoe_message_get_int_coerces() {
+        let msg = make_message(vec![
+            ("i32", SpoeValue::Int32(-1)),
+            ("u32", SpoeValue::Uint32(100)),
+            ("i64", SpoeValue::Int64(i64::MIN)),
+            ("u64", SpoeValue::Uint64(999)),
+            ("u64_overflow", SpoeValue::Uint64(u64::MAX)),
+            ("s", SpoeValue::String("nope".into())),
+        ]);
+        assert_eq!(msg.get_int("i32"), Some(-1));
+        assert_eq!(msg.get_int("u32"), Some(100));
+        assert_eq!(msg.get_int("i64"), Some(i64::MIN));
+        assert_eq!(msg.get_int("u64"), Some(999));
+        assert_eq!(msg.get_int("u64_overflow"), None);
+        assert_eq!(msg.get_int("s"), None);
+    }
+
+    #[test]
+    fn spoe_message_get_bool() {
+        let msg = make_message(vec![("b", SpoeValue::Bool(true))]);
+        assert_eq!(msg.get_bool("b"), Some(true));
+        assert_eq!(msg.get_bool("missing"), None);
+    }
+
+    #[test]
+    fn spoe_message_get_ipv4() {
+        let msg = make_message(vec![("ip", SpoeValue::Ipv4([10, 0, 0, 1]))]);
+        assert_eq!(msg.get_ipv4("ip"), Some([10, 0, 0, 1]));
+        assert_eq!(msg.get_ipv4("missing"), None);
+    }
+
+    #[test]
+    fn spoe_message_get_ipv6() {
+        let addr = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let msg = make_message(vec![("ip", SpoeValue::Ipv6(addr))]);
+        assert_eq!(msg.get_ipv6("ip"), Some(addr));
+    }
+
+    #[test]
+    fn spoe_message_get_binary() {
+        let msg = make_message(vec![("b", SpoeValue::Binary(vec![1, 2, 3].into()))]);
+        assert_eq!(msg.get_binary("b"), Some([1, 2, 3].as_slice()));
+        assert_eq!(msg.get_binary("missing"), None);
+    }
+
+    #[test]
+    fn txn_variable_constructors() {
+        let t = TxnVariable::transaction("x", SpoeValue::Bool(true));
+        assert_eq!(t.scope, VarScope::Transaction);
+        assert_eq!(t.name.as_str(), "x");
+
+        let s = TxnVariable::session("y", SpoeValue::Int32(1));
+        assert_eq!(s.scope, VarScope::Session);
+        assert_eq!(s.name.as_str(), "y");
+
+        let n = TxnVariable::new(VarScope::Process, "z", SpoeValue::Null);
+        assert_eq!(n.scope, VarScope::Process);
+    }
+
+    #[test]
+    fn processing_result_constructors() {
+        let empty = ProcessingResult::empty();
+        assert!(empty.variables.is_empty());
+
+        let single =
+            ProcessingResult::single(TxnVariable::transaction("a", SpoeValue::Bool(false)));
+        assert_eq!(single.variables.len(), 1);
+
+        let multi = ProcessingResult::from_vars(vec![
+            TxnVariable::transaction("a", SpoeValue::Null),
+            TxnVariable::transaction("b", SpoeValue::Null),
+        ]);
+        assert_eq!(multi.variables.len(), 2);
+    }
+
+    #[test]
+    fn plugin_context_get_config() {
+        let mut config = RHashMap::new();
+        config.insert(RString::from("timeout"), ConfigValue::Integer(5000));
+        let ctx = PluginContext {
+            name: RString::from("test"),
+            config,
+        };
+        assert_eq!(
+            ctx.get_config("timeout").and_then(|v| v.as_integer()),
+            Some(5000)
+        );
+        assert!(ctx.get_config("missing").is_none());
     }
 
     #[test]

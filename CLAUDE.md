@@ -19,7 +19,7 @@ tests/integration/   Docker-based integration tests (HAProxy + hub)
 
 ```sh
 cargo build --workspace              # Build everything
-cargo test --workspace               # Unit + integration tests (42 tests)
+cargo test --workspace               # Unit + integration tests (83 tests)
 cargo clippy --workspace             # Lint (pedantic)
 cargo bench -p haproxy-spoa-hub      # Criterion benchmarks
 cargo doc --workspace --no-deps      # Build rustdoc
