@@ -418,12 +418,8 @@ publish-crate:
       if [ "${LOCAL_VERSION}" = "${PUBLISHED}" ]; then
         echo "Version ${LOCAL_VERSION} already published, skipping"
       else
-        echo "Token length: ${#CARGO_REGISTRY_TOKEN}"
-        echo "Token prefix: ${CARGO_REGISTRY_TOKEN:0:3}"
         cargo publish -p haproxy-spoa-hub-plugin-api
       fi
-  variables:
-    CARGO_REGISTRY_TOKEN: $CARGO_REGISTRY_TOKEN
 
 release:
   stage: release
