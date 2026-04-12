@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-12
+
+### Added
+
+- Plugin API convenience helpers: `SpoeMessage::get()`, `get_string()`,
+  `get_int()`, `get_bool()`, `get_ipv4()`, `get_ipv6()`, `get_binary()`
+  for O(1) typed argument lookup
+- `TxnVariable::transaction()`, `session()`, `new()` scope-specific
+  constructors
+- `ProcessingResult::empty()`, `single()`, `from_vars()` result constructors
+- `PluginContext::get_config()` for config key lookup accepting `&str`
+- Re-exports of `RString`, `RVec`, `RHashMap`, `Tuple2` from the plugin
+  API crate
+
+### Changed
+
+- Plugin API crate bumped to 0.2.0 (fully backward compatible with 0.1.0
+  plugins)
+- Updated example plugins to use the new convenience helpers
+
+### Fixed
+
+- README "Writing a Plugin" section now matches the actual current API
+
 ## [0.1.1] - 2026-04-08
 
 ### Changed
