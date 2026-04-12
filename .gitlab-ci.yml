@@ -420,8 +420,6 @@ publish-crate:
       else
         cargo publish -p haproxy-spoa-hub-plugin-api
       fi
-  variables:
-    CARGO_REGISTRY_TOKEN: $CARGO_REGISTRY_TOKEN
 
 release:
   stage: release
