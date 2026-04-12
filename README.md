@@ -188,44 +188,35 @@ Set up `Cargo.toml`:
 crate-type = ["cdylib"]
 
 [dependencies]
-haproxy-spoa-hub-plugin-api = "0.1"
+haproxy-spoa-hub-plugin-api = "0.2"
 abi_stable = "0.11"
 ```
 
 ### 2. Implement the plugin
 
-Define your plugin as a struct with regular methods, then register it with `define_plugin!`:
+Define your plugin struct, then register it with `define_plugin!`. The macro generates the FFI trait implementation and wraps `process()` in `catch_unwind` so a panic doesn't crash the hub:
 
 ```rust
-#![allow(non_camel_case_types, non_local_definitions, clippy::unnecessary_wraps)]
+#![allow(non_camel_case_types, non_local_definitions)]
 
 use haproxy_spoa_hub_plugin_api::*;
 
 #[derive(Debug)]
-struct MyPlugin {
-    log: LogFn,
-}
+struct MyPlugin;
 
-impl MyPlugin {
+define_plugin!(MyPlugin, {
     fn new() -> Self {
-        // Provide a no-op log until init() sets the real callback
-        extern "C" fn noop(
-            _: LogLevel,
-            _: &abi_stable::std_types::RStr<'_>,
-            _: &abi_stable::std_types::RStr<'_>,
-        ) {}
-        MyPlugin { log: noop }
+        MyPlugin
     }
 
     fn init(
         &mut self,
         context: &PluginContext,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Store callbacks for use in process()
-        self.log = context.log;
         // Access per-plugin configuration from [plugins.params]
-        // e.g.: let db_path = context.config.get(&"db_path".into());
-        (self.log)(LogLevel::Info, &"my-plugin".into(), &"initialized".into());
+        let db_path = context.get_config("db_path")
+            .and_then(|v| v.as_str())
+            .ok_or("missing required config: db_path")?;
         Ok(())
     }
 
@@ -236,29 +227,15 @@ impl MyPlugin {
         &self,
         message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
-        let src = message.args.get(&"src".into());
+        // Typed argument lookup (O(1), no allocation)
+        let src = message.get_string("src").unwrap_or("unknown");
 
-        Ok(ProcessingResult {
-            variables: vec![TxnVariable {
-                scope: VarScope::Session,
-                name: "result".into(),
-                value: SpoeValue::String("processed".into()),
-            }]
-            .into(),
-        })
+        Ok(ProcessingResult::single(
+            TxnVariable::session("result", SpoeValue::String("processed".into())),
+        ))
     }
-}
-
-define_plugin!(MyPlugin);
+});
 ```
-
-`define_plugin!` generates the FFI trait impl and wraps `process()` in `catch_unwind` so a panic doesn't crash the hub. Errors returned as `Box<dyn Error>` are classified as permanent by default. To signal a transient error (e.g., upstream timeout), return a `PluginError` directly:
-
-```rust
-return Err(Box::new(PluginError::transient("upstream timed out")));
-```
-
-The hub logs transient errors at WARN and permanent errors at ERROR, and includes the error kind in the `spoa_plugin_errors_total` metric label.
 
 ### 3. Available types
 
@@ -277,7 +254,9 @@ Message arguments and return values use `SpoeValue`:
 | `String(RString)` | FFI-safe string | UTF-8 string |
 | `Binary(RVec<u8>)` | FFI-safe byte vec | Raw bytes |
 
-Variable scopes control lifetime in HAProxy: `Process`, `Session`, `Transaction`, `Request`, `Response`.
+`SpoeMessage` provides typed accessors for extracting arguments without manual pattern matching: `get()`, `get_string()`, `get_int()`, `get_bool()`, `get_ipv4()`, `get_ipv6()`, `get_binary()`. All return `Option` and perform O(1) lookup.
+
+Variable scopes control lifetime in HAProxy: `Process`, `Session`, `Transaction`, `Request`, `Response`. Use `TxnVariable::transaction()` or `TxnVariable::session()` as shorthand constructors.
 
 ### 4. Variable namespacing
 
@@ -304,25 +283,25 @@ enabled = true
 ttl_seconds = 300
 ```
 
-These are passed to `init()` as a `PluginContext` with a typed config map. Use the `ConfigValue` accessor methods to extract values:
+These are passed to `init()` as a `PluginContext` with a typed config map. Use `get_config()` to look up keys and `ConfigValue` accessor methods to extract typed values:
 
 ```rust
 fn init(&mut self, context: &PluginContext) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let db_path = context.config.get(&"db_path".into())
+    let db_path = context.get_config("db_path")
         .and_then(|v| v.as_str())
         .ok_or("missing required config: db_path")?;
     self.db = MaxMindDB::open(db_path)?;
 
     // Integer parameters
-    self.max_results = context.config.get(&"max_results".into())
+    self.max_results = context.get_config("max_results")
         .and_then(|v| v.as_integer())
         .unwrap_or(5) as usize;
 
     // Nested table access
-    if let Some(cache) = context.config.get(&"cache".into())
+    if let Some(cache) = context.get_config("cache")
         .and_then(|v| v.as_table())
     {
-        self.cache_enabled = cache.get(&"enabled".into())
+        self.cache_enabled = cache.get("enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
     }
@@ -336,16 +315,9 @@ fn init(&mut self, context: &PluginContext) -> Result<(), Box<dyn std::error::Er
 
 Plugins can declare a [JSON Schema](https://json-schema.org/) to validate their configuration at startup. If the user-provided config doesn't match the schema, the hub rejects the plugin with a clear error message before `init()` is called.
 
-Add an optional `config_schema` block to `define_plugin!`:
+Add an optional `config_schema` block at the end of `define_plugin!`:
 
 ```rust
-define_plugin!(MyPlugin, {
-    fn new() -> Self { /* ... */ }
-    fn init(&mut self, context: &PluginContext) -> /* ... */ { /* ... */ }
-    fn name(&self) -> &str { "my-plugin" }
-    fn version(&self) -> &str { env!("CARGO_PKG_VERSION") }
-    fn process(&self, message: &SpoeMessage) -> /* ... */ { /* ... */ }
-
     fn config_schema(&self) -> Option<&str> {
         Some(r#"{
             "type": "object",
@@ -363,7 +335,6 @@ define_plugin!(MyPlugin, {
             }
         }"#)
     }
-});
 ```
 
 If the config is invalid, the hub logs an error like:
@@ -421,37 +392,14 @@ Add a `[[plugins]]` entry to the hub config and either restart the hub or send S
 
 ### 10. Plugin logging
 
-Plugins can emit structured logs through the hub's logging infrastructure via the `LogFn` callback in `PluginContext`. Store it during `init()`:
+Plugins can use the standard `log` crate for structured logging. Add `log = "0.4"` to your plugin's dependencies and use the standard macros:
 
 ```rust
-(self.log)(LogLevel::Info, &"my-plugin".into(), &"request processed".into());
+log::info!("request processed: path={}", path);
+log::warn!("lookup failed for IP: {}", addr);
 ```
 
-Log lines appear in the hub's JSON output with the plugin name as context. Available levels: `Trace`, `Debug`, `Info`, `Warn`, `Error`.
-
-### 11. Plugin metrics
-
-Plugins can emit Prometheus metrics via callbacks in `PluginContext`:
-
-```rust
-// Increment a counter
-(self.counter)(&"myplugin_requests_total".into(), [].as_slice().into(), 1);
-
-// Record a histogram observation
-(self.histogram)(&"myplugin_latency_seconds".into(), [].as_slice().into(), 0.042);
-
-// Set a gauge
-(self.gauge)(&"myplugin_cache_size".into(), [].as_slice().into(), 1024.0);
-```
-
-Metrics appear on the hub's `/metrics` Prometheus endpoint automatically. Use labels for dimensions:
-
-```rust
-use haproxy_spoa_hub_plugin_api::abi_stable::std_types::Tuple2;
-
-let labels = [Tuple2("status".into(), "hit".into())];
-(self.counter)(&"myplugin_cache_total".into(), labels.as_slice().into(), 1);
-```
+Log lines appear in the hub's structured JSON output. Available levels: `trace`, `debug`, `info`, `warn`, `error`.
 
 ## Observability
 
@@ -501,7 +449,7 @@ All metrics carry a `service="haproxy-spoa-hub"` global label.
 
 ```bash
 cargo build --workspace              # Build everything
-cargo test --workspace               # Unit + integration tests (42 tests)
+cargo test --workspace               # Unit + integration tests (83 tests)
 cargo clippy --workspace             # Lint (pedantic)
 cargo bench -p haproxy-spoa-hub      # Criterion benchmarks
 cargo doc --workspace --no-deps      # Build rustdoc

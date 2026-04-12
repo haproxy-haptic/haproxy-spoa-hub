@@ -1,7 +1,6 @@
 #![allow(non_camel_case_types, non_local_definitions)]
 
-use abi_stable::std_types::Tuple2;
-use haproxy_spoa_hub_plugin_api::{ProcessingResult, TxnVariable, VarScope, define_plugin};
+use haproxy_spoa_hub_plugin_api::{ProcessingResult, Tuple2, TxnVariable, VarScope, define_plugin};
 
 /// A test plugin that echoes all message arguments back as transaction
 /// variables. Used to verify that all `SpoeValue` type variants arrive

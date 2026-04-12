@@ -5,6 +5,7 @@ pub mod plugin_trait;
 pub mod types;
 
 pub use abi_stable;
+pub use abi_stable::std_types::{RHashMap, RString, RVec, Tuple2};
 pub use plugin_trait::{PluginBox, PluginMod, PluginMod_Ref, SpoePlugin, SpoePlugin_TO};
 pub use types::{
     ConfigValue, PluginContext, ProcessingResult, SpoeMessage, SpoeValue, TxnVariable, VarScope,
