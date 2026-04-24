@@ -37,6 +37,7 @@ variables:
         - deny.toml
         - .cargo/**
         - .gitlab-ci.yml
+        - renovate.json
 
 # Docker-in-Docker base configuration
 .docker-dind:
