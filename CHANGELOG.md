@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Release artifacts (hub binary and example plugin `.so` files) published to
+  the GitLab Generic Package Registry under
+  `packages/generic/spoa-hub/<tag>/` with stable URLs
+- Per-file `<artifact>.sha256` sidecars and a combined `SHA256SUMS` for
+  batch verification with `sha256sum -c SHA256SUMS`
+- Cosign keyless signatures (`<artifact>.cosign.bundle`) for every release
+  artifact, signed via the GitLab OIDC id token (Sigstore Fulcio + Rekor)
+- Cosign signature on the published multi-arch container image (signed by
+  digest, never by mutable tag)
+- CycloneDX SBOM attestation on the container image, generated with syft
+  and signed via the same keyless flow
+- `make verify-release VERSION=vX.Y.Z` target plus `scripts/verify-release.sh`
+  for end-to-end consumer verification (downloads `SHA256SUMS`, checks all
+  hashes, runs `cosign verify-blob` against the project's tag identity)
+- Unsigned SLSA v0.2 provenance metadata emitted next to build artifacts
+  via `RUNNER_GENERATE_ARTIFACTS_METADATA` (free SLSA-L1)
+
+### Changed
+
+- Release builds now use `cargo auditable build --release`, embedding a
+  compressed `Cargo.lock`-equivalent in every binary so SBOM tools can
+  enumerate Rust dependencies without source access
+
 ## [0.2.0] - 2026-04-12
 
 ### Added
