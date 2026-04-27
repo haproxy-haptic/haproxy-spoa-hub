@@ -1,14 +1,25 @@
 # Releasing
 
-This project produces two artifacts: a Docker image for the hub binary and
-a Rust crate (`haproxy-spoa-hub-plugin-api`) on crates.io. Both are
-published automatically by CI when you push a version tag.
+This project produces three artifacts on every version tag:
+
+- A multi-arch Docker image for the hub binary (cosign-signed, with a
+  CycloneDX SBOM attestation).
+- The hub binary and example plugin `.so` files for amd64, arm64, and armv7,
+  uploaded to the GitLab Generic Package Registry alongside per-file
+  `.sha256` sidecars and `.cosign.bundle` signatures.
+- A Rust crate (`haproxy-spoa-hub-plugin-api`) on crates.io.
+
+All three are published automatically by CI when you push a version tag.
 
 ## Prerequisites
 
 - A crates.io API token stored as the `CARGO_REGISTRY_TOKEN` CI/CD variable
   (Settings > CI/CD > Variables, masked and protected).
 - Permission to push tags to the repository.
+- **Generic packages "Reject duplicates" enabled** under
+  Settings > Packages and Registries > Generic packages. Without this, a
+  re-run of the release pipeline on the same tag silently overwrites the
+  bytes uploaded earlier.
 
 ## Release process
 
@@ -29,11 +40,31 @@ published automatically by CI when you push a version tag.
    ```
 
 4. **CI handles the rest**:
-   - Cross-compiles for amd64, arm64, and armv7
+   - Cross-compiles for amd64, arm64, and armv7 with `cargo auditable`
+     (binaries embed a compressed `Cargo.lock`-equivalent so SBOM tools can
+     enumerate Rust deps without source access)
+   - Generates per-file `.sha256` sidecars and a combined `SHA256SUMS`
+   - Cosign keyless-signs every blob (binary + `.so`) using the GitLab OIDC
+     id token, producing `.cosign.bundle` files
+   - Uploads everything to the Generic Package Registry under
+     `packages/generic/spoa-hub/<tag>/`
    - Builds and pushes a multiarch Docker image to the GitLab container
-     registry (`registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub`)
+     registry (`registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub`),
+     cosign-signs it by digest, and attaches a CycloneDX SBOM attestation
    - Publishes the plugin API crate to crates.io (if the version changed)
-   - Creates a GitLab release with notes from the changelog
+   - Creates a GitLab release with all artifacts linked as release assets
+
+## Verifying a release
+
+After CI finishes, verify the release end-to-end from a clean machine:
+
+```sh
+make verify-release VERSION=v0.2.1
+```
+
+This downloads `SHA256SUMS`, every artifact named in it, and every artifact's
+cosign bundle from the package registry, then runs `sha256sum -c` and
+`cosign verify-blob` against the project's tag identity.
 
 ## Version coordination
 
