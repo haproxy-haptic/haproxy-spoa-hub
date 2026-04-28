@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-28
+
+### Fixed
+
+- Release artifact-staging, blob-signing, and Generic Package Registry
+  upload scripts now run on POSIX `/bin/sh` (Alpine `ash`) instead of
+  requiring `bash`. The v0.2.1 tag pipeline failed at `sign-blobs` because
+  the alpine signer image has no bash; the binary release artifacts were
+  not published. Container image signing and SBOM attestation succeeded
+  on v0.2.1 — only the binary publish path was affected.
+
 ## [0.2.1] - 2026-04-28
 
 ### Added
