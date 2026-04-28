@@ -28,10 +28,6 @@ variables:
   # renovate: datasource=crate depName=cargo-auditable
   # 0.7.0+ required for Rust edition 2024 support (used by this workspace).
   CARGO_AUDITABLE_VERSION: "0.7.4"
-  # renovate: datasource=github-releases depName=sigstore/cosign extractVersion=^v(?<version>.*)$
-  COSIGN_VERSION: "2.4.1"
-  # renovate: datasource=github-releases depName=anchore/syft extractVersion=^v(?<version>.*)$
-  SYFT_VERSION: "1.16.0"
   # Glibc version baked into the Debian bookworm rust:bookworm builder image;
   # stamped into release-artifact filenames so consumers can pick a
   # binary-compatible build for their runtime.
@@ -444,45 +440,20 @@ integration:
 # (id_tokens with aud=sigstore); cosign reads SIGSTORE_ID_TOKEN automatically.
 # =============================================================================
 
-# Reusable cosign install snippet. Pinned to COSIGN_VERSION (renovate-managed)
-# and SHA256-verified against the upstream `cosign_checksums.txt` so a
-# compromised GitHub release or CDN cannot inject a malicious signer into
-# the very pipeline meant to harden supply chain.
+# Install cosign and syft from the alpine community package repository.
+# Trust derives from alpine's package signing infrastructure (the alpine:latest
+# image ships the alpine-keys package; apk verifies every download against
+# those keys). This avoids the chicken-and-egg of self-validating cosign
+# downloads from GitHub Releases — and keeps the upstream version coupling
+# out of this repo's variable block.
 .install-cosign:
   before_script:
-    - apk add --no-cache curl
-    - |
-      base="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
-      curl -sSL --fail -o /usr/local/bin/cosign "${base}/cosign-linux-amd64"
-      curl -sSL --fail -o /tmp/cosign_checksums.txt "${base}/cosign_checksums.txt"
-      expected=$(awk '$2 == "cosign-linux-amd64" {print $1}' /tmp/cosign_checksums.txt)
-      actual=$(sha256sum /usr/local/bin/cosign | awk '{print $1}')
-      if [ "${expected}" != "${actual}" ]; then
-        echo "cosign checksum mismatch: expected ${expected}, got ${actual}" >&2
-        exit 1
-      fi
-      chmod +x /usr/local/bin/cosign
+    - apk add --no-cache cosign
     - cosign version
 
-# Reusable syft install snippet — same TOFU caveat as cosign. Anchore's
-# `install.sh | sh` is convenient but bypasses the checksum manifest they
-# already publish; we use the binary tarball + checksums file directly.
 .install-syft:
   before_script:
-    - apk add --no-cache curl tar
-    - |
-      base="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"
-      tarball="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
-      curl -sSL --fail -o "/tmp/${tarball}" "${base}/${tarball}"
-      curl -sSL --fail -o /tmp/syft_checksums.txt \
-        "${base}/syft_${SYFT_VERSION}_checksums.txt"
-      expected=$(awk -v f="${tarball}" '$2 == f {print $1}' /tmp/syft_checksums.txt)
-      actual=$(sha256sum "/tmp/${tarball}" | awk '{print $1}')
-      if [ "${expected}" != "${actual}" ]; then
-        echo "syft checksum mismatch: expected ${expected}, got ${actual}" >&2
-        exit 1
-      fi
-      tar xzf "/tmp/${tarball}" -C /usr/local/bin syft
+    - apk add --no-cache syft
     - syft version
 
 # Reusable docker config.json setup so cosign/syft can authenticate to the
@@ -597,14 +568,17 @@ upload-artifacts:
   before_script:
     - apk add --no-cache curl bash coreutils
   script:
-    # Combined SHA256SUMS bundle (one line per artifact, friendly to
-    # `sha256sum -c SHA256SUMS`). Excludes sidecars and any prior bundle.
-    - cd artifacts
-    - >-
-      sha256sum
-      $(ls -1 | grep -vE '\.(sha256|cosign\.bundle)$|^SHA256SUMS$')
-      > SHA256SUMS
-    - cd ..
+    - |
+      cd artifacts
+      : > SHA256SUMS
+      for f in *; do
+        [ -f "$f" ] || continue
+        case "$f" in
+          *.sha256 | *.cosign.bundle | SHA256SUMS) continue ;;
+        esac
+        sha256sum "$f" >> SHA256SUMS
+      done
+      cd ..
     - scripts/upload-release-artifacts.sh
 
 # =============================================================================
