@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Stage release artifacts: copy per-arch built binaries into ./artifacts with
 # versioned filenames matching the published-asset naming convention, and emit
 # a per-file .sha256 sidecar for each.
@@ -10,7 +10,7 @@
 # Reads from binaries/${ARCH}/ (produced by cargo build) and writes to
 # artifacts/. Idempotent — safe to re-run.
 
-set -euo pipefail
+set -eu
 
 : "${ARCH:?ARCH not set}"
 : "${GLIBC_VERSION:?GLIBC_VERSION not set}"
@@ -32,8 +32,9 @@ done
 # Per-file SHA256 sidecars
 cd "${DST}"
 for f in *"${SUFFIX}"*; do
-    case "${f}" in
+    [ -f "$f" ] || continue
+    case "$f" in
         *.sha256) continue ;;
     esac
-    sha256sum "${f}" > "${f}.sha256"
+    sha256sum "$f" > "$f.sha256"
 done
