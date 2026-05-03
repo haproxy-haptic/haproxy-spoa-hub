@@ -13,10 +13,10 @@ use abi_stable::{
     library::RootModule,
     package_version_strings, sabi_trait,
     sabi_types::VersionStrings,
-    std_types::{RBox, RBoxError, ROption, RResult, RStr, RString},
+    std_types::{RBox, RBoxError, ROption, RResult, RStr, RString, RVec},
 };
 
-use crate::types::{PluginContext, ProcessingResult, SpoeMessage};
+use crate::types::{Diagnostic, PluginContext, ProcessingResult, SpoeMessage};
 
 /// FFI-safe plugin trait object type.
 pub type PluginBox = SpoePlugin_TO<'static, RBox<()>>;
@@ -91,6 +91,41 @@ pub trait SpoePlugin: Send + Sync + core::fmt::Debug {
     /// Return `RNone` (the default) to skip validation.
     fn config_schema(&self) -> ROption<RString> {
         ROption::RNone
+    }
+
+    /// Deep validation of the plugin's `[plugins.params]` subtree.
+    ///
+    /// Called by the hub before `init()` (production mode) and by the
+    /// validator sidecar in `--validate-socket` mode. Returns a list
+    /// of `Diagnostic` findings; an empty list means "the plugin's
+    /// configuration is valid as far as this plugin can tell."
+    ///
+    /// # Purity contract
+    ///
+    /// `validate()` MUST be pure: no tokio tasks, no goroutines, no
+    /// network I/O, no file I/O beyond what the `PluginContext`
+    /// carries, no global state mutation. Plugins MAY use
+    /// process-internal caches scoped to plugin-instance lifetime.
+    /// Side effects in validation would surface in the validator
+    /// sidecar, which has no business contacting external services.
+    ///
+    /// # Default behavior
+    ///
+    /// The default impl returns an empty `RVec`, so existing plugins
+    /// built against the prior plugin-api version continue to work
+    /// unchanged. Plugins that want to surface line/column-precise
+    /// errors at admission time (and in the production hub's startup
+    /// logs) override this method.
+    ///
+    /// # `Diagnostic.path`
+    ///
+    /// Plugins MUST leave the `path` field of returned diagnostics
+    /// empty. The hub fills it post-hoc with the file identity it
+    /// knows about. See [`Diagnostic`] for details.
+    ///
+    /// See `specs/004-validate-mode/` for the full design.
+    fn validate(&self, _: &PluginContext) -> RVec<Diagnostic> {
+        RVec::new()
     }
 }
 

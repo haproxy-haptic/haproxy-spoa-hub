@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `haproxy-spoa-hub-plugin-api` v0.3.0: `Diagnostic` and
+  `DiagnosticSeverity` types in the public API for plugin-validation
+  reporting, and a new `validate(&self, &PluginContext) -> RVec<Diagnostic>`
+  trait method on `SpoePlugin` with a default empty-vec impl. Plugins
+  that override the method surface line/column-precise diagnostics in
+  the production hub's startup logs (and, once the `--validate-socket`
+  mode lands, in admission webhook responses via HAPTIC's pluggable-
+  validator integration). The `define_plugin!` macro accepts an
+  optional `validate(&self, _: &PluginContext) -> Vec<Diagnostic>` body
+  alongside the existing optional `config_schema`. See
+  `specs/004-validate-mode/` for the full design.
+
+### Changed
+
+- `define_plugin!` macro restructured from two arms into a single arm
+  with `$()?` matchers for both optional methods. Existing plugin code
+  using the macro continues to work without changes — the macro accepts
+  the same input it did before.
+
 ## [0.2.2] - 2026-04-28
 
 ### Fixed
