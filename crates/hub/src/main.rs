@@ -5,7 +5,7 @@ use std::{
 };
 
 use clap::Parser;
-use haproxy_spoa_hub::{config, listener, metrics, plugin_loader, registry};
+use haproxy_spoa_hub::{config, listener, metrics, plugin_loader, registry, validate};
 use tokio::runtime;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -24,6 +24,14 @@ struct Cli {
     /// Validate configuration and exit.
     #[arg(long)]
     check: bool,
+
+    /// Run in validator-sidecar mode: bind a unix socket at this
+    /// path, accept length-prefixed JSON validation requests, and
+    /// dispatch them to plugins' `validate()` method without calling
+    /// `init()`. Suppresses the SPOE listener — the hub does not
+    /// serve traffic in this mode. See specs/004-validate-mode/.
+    #[arg(long, value_name = "PATH")]
+    validate_socket: Option<PathBuf>,
 }
 
 fn init_logging(log_level: &str) {
@@ -77,6 +85,13 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     if cli.check {
         tracing::info!("configuration valid");
         return Ok(());
+    }
+
+    // --validate-socket mode: bind unix socket, serve validation
+    // requests, never start the SPOE listener. See FR-006/FR-007 in
+    // specs/004-validate-mode/spec.md.
+    if let Some(socket_path) = cli.validate_socket {
+        return run_validator_mode(&hub_config, &socket_path).await;
     }
 
     // Initialize metrics
@@ -182,6 +197,48 @@ async fn wait_for_shutdown_signal() {
             .await
             .expect("failed to listen for ctrl-c");
     }
+}
+
+/// Validator-mode entry point. Loads plugins without calling
+/// `init()`, binds the unix socket, and serves requests until SIGTERM
+/// or Ctrl-C. The SPOE listener is never started; metrics aren't
+/// initialised either since the validator is purely a request-driven
+/// validation server with no traffic to instrument.
+async fn run_validator_mode(
+    hub_config: &config::HubConfig,
+    socket_path: &Path,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        socket = %socket_path.display(),
+        plugins = hub_config.plugins.len(),
+        "starting validator-sidecar mode"
+    );
+
+    let plugins =
+        validate::load_all_plugins_for_validation(&hub_config.plugin_dir, &hub_config.plugins);
+    if plugins.is_empty() {
+        anyhow::bail!("no plugins loaded for validator mode — nothing to validate against");
+    }
+    tracing::info!(count = plugins.len(), "validator-mode plugins ready");
+
+    let shutdown = CancellationToken::new();
+    let shutdown_trigger = shutdown.clone();
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        tracing::info!("received shutdown signal, closing validator socket");
+        shutdown_trigger.cancel();
+    });
+
+    validate::serve(
+        socket_path,
+        Arc::new(plugins),
+        validate::ServerConfig::default(),
+        shutdown,
+    )
+    .await?;
+
+    tracing::info!("validator-sidecar shutdown complete");
+    Ok(())
 }
 
 /// Re-read the config file and rebuild the plugin registry.

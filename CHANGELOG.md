@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional `validate(&self, _: &PluginContext) -> Vec<Diagnostic>` body
   alongside the existing optional `config_schema`. See
   `specs/004-validate-mode/` for the full design.
+- New `--validate-socket <path>` CLI flag puts the hub in validator-
+  sidecar mode: binds a unix socket at the given path, accepts
+  length-prefixed JSON requests carrying TOML config files, dispatches
+  each `[plugins.params.<name>]` subtree to the matching plugin's
+  `validate()` (without calling `init()`), and returns aggregated
+  diagnostics. The SPOE listener is suppressed in this mode. Drives
+  HAPTIC's pluggable-validator feature so broken plugin configs get
+  rejected at admission time with line/column-precise feedback. Wire
+  protocol documented in `specs/004-validate-mode/contracts/`.
+- Production-mode hub startup now calls each plugin's `validate()`
+  before its `init()`. Plugins that override `validate` get sharper
+  startup errors (line and column where the plugin's parser supports
+  it); plugins that don't override see no behaviour change.
 
 ### Changed
 
