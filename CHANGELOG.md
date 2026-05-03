@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-03
+
 ### Changed
 
 - `--validate-socket` server now serves persistent keep-alive connections instead of closing after every request-response cycle. Each accepted connection loops on read-frame / dispatch / write-response until the client closes, the connection goes idle past the idle timeout (default 60s), shutdown is signalled, or a transport-level error poisons the byte stream. Application-level errors (malformed JSON, validation timeout) keep the connection open; only framing failures close it. Multiple connections from the same client run in parallel (one tokio task per accepted connection); within a single connection, requests are sequential pipelined per the HAPTIC-owned wire-protocol contract. Validation work now runs on tokio's blocking pool via `spawn_blocking` so a slow Coraza WAF init can't pin one of the small number of async I/O worker threads.
