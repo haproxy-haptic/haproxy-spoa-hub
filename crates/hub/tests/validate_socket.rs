@@ -19,7 +19,10 @@ use haproxy_spoa_hub::{
     },
 };
 use tempfile::tempdir;
-use tokio::{io::AsyncReadExt, net::UnixStream};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixStream,
+};
 use tokio_util::sync::CancellationToken;
 
 fn socket_dir() -> tempfile::TempDir {
@@ -65,7 +68,8 @@ where
     let plugins = Arc::new(load_all_plugins_for_validation(&plugin_dir, &configs));
     assert!(
         plugins.contains_key("validating-noop"),
-        "validating-noop plugin must be built (run `cargo build` first); workspace target dir = {plugin_dir:?}"
+        "validating-noop plugin must be built (run `cargo build` first); workspace target dir = {}",
+        plugin_dir.display()
     );
 
     let shutdown = CancellationToken::new();
@@ -90,7 +94,8 @@ where
     }
     assert!(
         std::fs::metadata(&socket_path).is_ok(),
-        "validator socket never bound at {socket_path:?}"
+        "validator socket never bound at {}",
+        socket_path.display()
     );
 
     test(socket_path).await;
@@ -130,10 +135,10 @@ async fn warn_flag_yields_warning() {
             protocol_version: PROTOCOL_VERSION,
             files: vec![RequestFile {
                 path: "config.toml".into(),
-                content: r#"
+                content: r"
                     [plugins.params.validating-noop]
                     make_me_warn = true
-                    "#
+                    "
                 .to_owned(),
             }],
         };
@@ -154,10 +159,10 @@ async fn fail_flag_yields_error() {
             protocol_version: PROTOCOL_VERSION,
             files: vec![RequestFile {
                 path: "config.toml".into(),
-                content: r#"
+                content: r"
                     [plugins.params.validating-noop]
                     make_me_fail = true
-                    "#
+                    "
                 .to_owned(),
             }],
         };
@@ -177,10 +182,10 @@ async fn unknown_plugin_yields_error() {
             protocol_version: PROTOCOL_VERSION,
             files: vec![RequestFile {
                 path: "config.toml".into(),
-                content: r#"
+                content: r"
                     [plugins.params.absent-plugin]
                     x = 1
-                    "#
+                    "
                 .to_owned(),
             }],
         };
@@ -249,6 +254,128 @@ async fn wrong_protocol_version_yields_protocol_error() {
         assert_eq!(response.result, ValidationResult::Error);
         assert_eq!(response.errors.len(), 1);
         assert!(response.errors[0].message.contains("protocol version 99"));
+    })
+    .await;
+}
+
+/// Read one length-prefixed response frame from a stream. Used by the
+/// keep-alive tests below that don't go through `round_trip` (which
+/// connects a fresh stream per call).
+async fn read_response_frame(stream: &mut UnixStream) -> ValidateResponse {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await.expect("read len");
+    let len = u32::from_be_bytes(len_buf) as usize;
+    let mut body = vec![0u8; len];
+    stream.read_exact(&mut body).await.expect("read body");
+    serde_json::from_slice(&body).expect("decode response")
+}
+
+async fn write_request_frame(stream: &mut UnixStream, request: &ValidateRequest) {
+    let body = serde_json::to_vec(request).unwrap();
+    write_frame(stream, &body, 1_048_576).await.expect("write");
+}
+
+fn valid_request() -> ValidateRequest {
+    ValidateRequest {
+        protocol_version: PROTOCOL_VERSION,
+        files: vec![RequestFile {
+            path: "config.toml".into(),
+            content: r#"
+                [hub]
+                listen = "0.0.0.0:9000"
+
+                [plugins.params.validating-noop]
+                "#
+            .to_owned(),
+        }],
+    }
+}
+
+/// One connection serves multiple sequential request-response cycles
+/// (keep-alive). The HAPTIC-owned wire protocol mandates persistent
+/// connections; pipelined N requests on one stream must each get an
+/// in-order response without the server closing between cycles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keep_alive_serves_multiple_requests_on_one_connection() {
+    run_against_server(|socket_path| async move {
+        let mut stream = UnixStream::connect(&socket_path).await.expect("connect");
+
+        for _ in 0..3 {
+            write_request_frame(&mut stream, &valid_request()).await;
+            let response = read_response_frame(&mut stream).await;
+            assert_eq!(response.result, ValidationResult::Valid);
+        }
+
+        // Connection still usable for one more — proves the server
+        // didn't close after a fixed N.
+        write_request_frame(&mut stream, &valid_request()).await;
+        let response = read_response_frame(&mut stream).await;
+        assert_eq!(response.result, ValidationResult::Valid);
+    })
+    .await;
+}
+
+/// Multiple concurrent connections from the same client run in
+/// parallel. Each connection's request-response is independent of
+/// the others; a slow validation on one MUST NOT block another.
+/// Fires N requests concurrently on N distinct connections, expects
+/// all to complete cleanly and within a generous bound (the server
+/// uses `spawn_blocking` + tokio task per connection, so true
+/// parallelism is available).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_connections_run_independently() {
+    run_against_server(|socket_path| async move {
+        let mut tasks = Vec::new();
+        for _ in 0..5 {
+            let path = socket_path.clone();
+            tasks.push(tokio::spawn(async move {
+                let response = round_trip(&path, &valid_request()).await;
+                assert_eq!(response.result, ValidationResult::Valid);
+            }));
+        }
+        for t in tasks {
+            t.await.expect("task panicked");
+        }
+    })
+    .await;
+}
+
+/// An application-level error (malformed JSON in the body) MUST keep
+/// the connection open: the next frame on the same connection still
+/// gets served. Only transport-level errors (oversized frame, partial
+/// read) are allowed to poison the connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_json_keeps_connection_open() {
+    run_against_server(|socket_path| async move {
+        let mut stream = UnixStream::connect(&socket_path).await.expect("connect");
+
+        // First frame: garbage that decodes as bad JSON.
+        let garbage = b"{this is not json";
+        let len = u32::try_from(garbage.len()).unwrap();
+        stream
+            .write_all(&len.to_be_bytes())
+            .await
+            .expect("write len");
+        stream.write_all(garbage).await.expect("write body");
+
+        let resp = read_response_frame(&mut stream).await;
+        assert_eq!(resp.result, ValidationResult::Error);
+        assert!(
+            resp.errors[0].message.contains("not valid JSON"),
+            "expected JSON-decode protocol error; got {:?}",
+            resp.errors[0].message
+        );
+
+        // Second frame on the same connection: well-formed. Must be
+        // served — the server kept the connection alive after the
+        // app-level error.
+        write_request_frame(&mut stream, &valid_request()).await;
+        let resp = read_response_frame(&mut stream).await;
+        assert_eq!(
+            resp.result,
+            ValidationResult::Valid,
+            "connection was closed after app-level error; keep-alive contract broken"
+        );
     })
     .await;
 }

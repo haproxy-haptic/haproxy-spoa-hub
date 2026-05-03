@@ -651,7 +651,7 @@ mod tests {
             config,
         };
         assert_eq!(
-            ctx.get_config("timeout").and_then(|v| v.as_integer()),
+            ctx.get_config("timeout").and_then(ConfigValue::as_integer),
             Some(5000)
         );
         assert!(ctx.get_config("missing").is_none());
