@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "haproxy-spoa-hub-plugin-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "abi_stable",
 ]
@@ -2236,6 +2236,14 @@ checksum = "23b082222b4f6619906941c17eb2297fff4c2fb96cb60164170522942a200bd8"
 dependencies = [
  "outref",
  "vsimd",
+]
+
+[[package]]
+name = "validating-noop-plugin"
+version = "0.1.0"
+dependencies = [
+ "abi_stable",
+ "haproxy-spoa-hub-plugin-api",
 ]
 
 [[package]]

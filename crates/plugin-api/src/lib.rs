@@ -8,7 +8,8 @@ pub use abi_stable;
 pub use abi_stable::std_types::{RHashMap, RString, RVec, Tuple2};
 pub use plugin_trait::{PluginBox, PluginMod, PluginMod_Ref, SpoePlugin, SpoePlugin_TO};
 pub use types::{
-    ConfigValue, PluginContext, ProcessingResult, SpoeMessage, SpoeValue, TxnVariable, VarScope,
+    ConfigValue, Diagnostic, DiagnosticSeverity, PluginContext, ProcessingResult, SpoeMessage,
+    SpoeValue, TxnVariable, VarScope,
 };
 
 /// Define a plugin with automatic panic safety and module export.
@@ -54,76 +55,46 @@ pub use types::{
 ///     }
 /// });
 /// ```
-#[macro_export]
-macro_rules! define_plugin {
-    // Arm with config_schema
-    ($plugin_ty:ty, {
-        fn new() -> Self $new_body:block
-
-        fn init(&mut self, $ctx_param:ident : &PluginContext $(,)?) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body:block
-
-        fn name(&self) -> &str $name_body:block
-
-        fn version(&self) -> &str $version_body:block
-
-        fn process(
-            &self,
-            $msg_param:ident : &SpoeMessage $(,)?
-        ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body:block
-
-        fn config_schema(&self) -> Option<&str> $schema_body:block
-    }) => {
-        $crate::__define_plugin_impl!($plugin_ty,
-            new: $new_body,
-            init($ctx_param): $init_body,
-            name: $name_body,
-            version: $version_body,
-            process($msg_param): $process_body,
-            schema: { $schema_body }
-        );
-    };
-
-    // Arm without config_schema (backward compatible)
-    ($plugin_ty:ty, {
-        fn new() -> Self $new_body:block
-
-        fn init(&mut self, $ctx_param:ident : &PluginContext $(,)?) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body:block
-
-        fn name(&self) -> &str $name_body:block
-
-        fn version(&self) -> &str $version_body:block
-
-        fn process(
-            &self,
-            $msg_param:ident : &SpoeMessage $(,)?
-        ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body:block
-    }) => {
-        $crate::__define_plugin_impl!($plugin_ty,
-            new: $new_body,
-            init($ctx_param): $init_body,
-            name: $name_body,
-            version: $version_body,
-            process($msg_param): $process_body,
-            schema: { { None } }
-        );
-    };
-}
-
+/// Internal-only token-burner used by `define_plugin!` to reference a
+/// captured `$()?` metavariable inside the expansion (so macro_rules!
+/// can resolve which conditional branch to emit) without producing
+/// any Rust code itself. Accepts arbitrary token streams. Hidden from
+/// rustdoc.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __define_plugin_impl {
-    ($plugin_ty:ty,
-        new: $new_body:block,
-        init($ctx_param:ident): $init_body:block,
-        name: $name_body:block,
-        version: $version_body:block,
-        process($msg_param:ident): $process_body:block,
-        schema: { $schema_body:block }
-    ) => {
+macro_rules! __plugin_present {
+    ($($tt:tt)*) => {};
+}
+
+#[macro_export]
+macro_rules! define_plugin {
+    // Single arm — `config_schema` and `validate` are both optional and
+    // independently provided. Plugins that only define the required
+    // methods (new, init, name, version, process) work as today; plugins
+    // that override `config_schema`, `validate`, or both add them in
+    // that order at the end of the block. Backward-compatible.
+    ($plugin_ty:ty, {
+        fn new() -> Self $new_body:block
+
+        fn init(&mut self, $ctx_param:ident : &PluginContext $(,)?) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body:block
+
+        fn name(&self) -> &str $name_body:block
+
+        fn version(&self) -> &str $version_body:block
+
+        fn process(
+            &self,
+            $msg_param:ident : &SpoeMessage $(,)?
+        ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body:block
+
+        $(fn config_schema(&self) -> Option<&str> $schema_body:block)?
+
+        $(fn validate(&self, $vctx_param:ident : &PluginContext $(,)?) -> Vec<Diagnostic> $validate_body:block)?
+    }) => {
         mod __plugin_impl {
             use super::*;
             use $crate::abi_stable::std_types::{
-                RBoxError, ROption, RResult, RStr, RString,
+                RBoxError, ROption, RResult, RStr, RString, RVec,
             };
             use $crate::abi_stable::sabi_trait::prelude::TD_Opaque;
 
@@ -141,8 +112,19 @@ macro_rules! __define_plugin_impl {
                     &self,
                     $msg_param: &$crate::SpoeMessage,
                 ) -> Result<$crate::ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body
-                #[allow(clippy::unnecessary_wraps)]
-                pub fn __config_schema(&self) -> Option<&str> $schema_body
+
+                $(
+                    #[allow(clippy::unnecessary_wraps)]
+                    pub fn __config_schema(&self) -> Option<&str> $schema_body
+                )?
+
+                $(
+                    #[allow(clippy::unnecessary_wraps)]
+                    pub fn __validate(
+                        &self,
+                        $vctx_param: &$crate::PluginContext,
+                    ) -> Vec<$crate::Diagnostic> $validate_body
+                )?
             }
 
             impl $crate::SpoePlugin for $plugin_ty {
@@ -179,9 +161,22 @@ macro_rules! __define_plugin_impl {
 
                 fn shutdown(&self) {}
 
-                fn config_schema(&self) -> ROption<RString> {
-                    self.__config_schema().map(RString::from).into()
-                }
+                $(
+                    fn config_schema(&self) -> ROption<RString> {
+                        $crate::__plugin_present!($schema_body);
+                        self.__config_schema().map(RString::from).into()
+                    }
+                )?
+
+                $(
+                    fn validate(
+                        &self,
+                        context: &$crate::PluginContext,
+                    ) -> RVec<$crate::Diagnostic> {
+                        $crate::__plugin_present!($validate_body);
+                        self.__validate(context).into()
+                    }
+                )?
             }
 
             #[$crate::abi_stable::export_root_module]

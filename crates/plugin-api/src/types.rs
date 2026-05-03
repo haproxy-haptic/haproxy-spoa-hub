@@ -411,6 +411,81 @@ impl ProcessingResult {
     }
 }
 
+/// Severity of a diagnostic returned by a plugin's `validate()` method.
+///
+/// ABI-stable; new variants require a plugin-api version bump.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, StableAbi)]
+pub enum DiagnosticSeverity {
+    /// Surfaced via logs and CRD/admission status, but does not block
+    /// `init()` (production mode) or yield `result: "error"` (validator
+    /// mode).
+    Warning = 0,
+    /// Blocks `init()` in production mode and yields `result: "error"`
+    /// in validator mode.
+    Error = 1,
+}
+
+/// One finding produced by a plugin's `validate()` method.
+///
+/// Position fields (`line`, `column`) are 1-based; `0` indicates
+/// "unknown / file-level" — for example, a "this plugin requires field
+/// X to be set" diagnostic where there's no specific location to point
+/// at, or a parser error that the plugin couldn't extract a position
+/// from.
+///
+/// # `path` ownership
+///
+/// Plugins MUST leave `path` empty (`RString::new()`) when constructing
+/// diagnostics. The hub overwrites `path` post-hoc with the file
+/// identity it knows about — in validator-sidecar mode that's the
+/// request's `files[].path`; in production mode it's the value from
+/// the hub's `--config <path>` flag. Plugins don't have access to
+/// file identity (their input is the parsed `[plugins.params.<name>]`
+/// subtree, decoupled from the file it came from) and don't need it.
+///
+/// See `specs/004-validate-mode/contracts/plugin-api-delta.md` for the
+/// design rationale.
+#[repr(C)]
+#[derive(Debug, Clone, StableAbi)]
+pub struct Diagnostic {
+    pub severity: DiagnosticSeverity,
+    pub path: RString,
+    pub line: u32,
+    pub column: u32,
+    pub message: RString,
+}
+
+impl Diagnostic {
+    /// Construct an error diagnostic at the given line/column. Pass
+    /// `0` for either position field when it's not available. The hub
+    /// fills `path` later.
+    #[must_use]
+    pub fn error(line: u32, column: u32, message: impl Into<RString>) -> Self {
+        Self {
+            severity: DiagnosticSeverity::Error,
+            path: RString::new(),
+            line,
+            column,
+            message: message.into(),
+        }
+    }
+
+    /// Construct a warning diagnostic at the given line/column. Pass
+    /// `0` for either position field when it's not available. The hub
+    /// fills `path` later.
+    #[must_use]
+    pub fn warning(line: u32, column: u32, message: impl Into<RString>) -> Self {
+        Self {
+            severity: DiagnosticSeverity::Warning,
+            path: RString::new(),
+            line,
+            column,
+            message: message.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,5 +681,32 @@ mod tests {
         let mut t2 = RHashMap::new();
         t2.insert(RString::from("k"), ConfigValue::Integer(1));
         assert_eq!(ConfigValue::Table(t1), ConfigValue::Table(t2));
+    }
+
+    #[test]
+    fn diagnostic_error_constructor() {
+        let d = Diagnostic::error(42, 7, "unknown directive");
+        assert_eq!(d.severity, DiagnosticSeverity::Error);
+        assert!(d.path.is_empty(), "plugins must leave path empty for hub");
+        assert_eq!(d.line, 42);
+        assert_eq!(d.column, 7);
+        assert_eq!(d.message.as_str(), "unknown directive");
+    }
+
+    #[test]
+    fn diagnostic_warning_constructor() {
+        let d = Diagnostic::warning(0, 0, RString::from("file-level warn"));
+        assert_eq!(d.severity, DiagnosticSeverity::Warning);
+        assert!(d.path.is_empty());
+        assert_eq!(d.line, 0);
+        assert_eq!(d.column, 0);
+        assert_eq!(d.message.as_str(), "file-level warn");
+    }
+
+    #[test]
+    fn diagnostic_severity_distinct() {
+        assert_ne!(DiagnosticSeverity::Warning, DiagnosticSeverity::Error);
+        assert_eq!(DiagnosticSeverity::Warning as u8, 0);
+        assert_eq!(DiagnosticSeverity::Error as u8, 1);
     }
 }
