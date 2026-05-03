@@ -5,6 +5,7 @@ pub mod listener;
 pub mod metrics;
 pub mod plugin_loader;
 pub mod registry;
+pub mod validate;
 
 /// Test helpers shared across unit tests, integration tests, and benchmarks.
 ///

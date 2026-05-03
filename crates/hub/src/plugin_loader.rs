@@ -4,7 +4,9 @@ use abi_stable::{
     library::{RootModule, lib_header_from_path},
     std_types::{RHashMap, RString},
 };
-use haproxy_spoa_hub_plugin_api::{ConfigValue, PluginBox, PluginContext, PluginMod_Ref};
+use haproxy_spoa_hub_plugin_api::{
+    ConfigValue, DiagnosticSeverity, PluginBox, PluginContext, PluginMod_Ref,
+};
 
 use crate::config::PluginConfig;
 
@@ -112,6 +114,52 @@ fn validate_config_schema(
     }
 }
 
+/// Run a plugin's `validate()` method and convert any returned
+/// diagnostics into log lines. Errors block init; warnings are logged
+/// at WARN but not blocking (spec FR-004 / FR-005).
+///
+/// Note: aggregation across multiple plugins (so the operator sees
+/// every plugin's errors in one startup attempt rather than iterating
+/// fix-redeploy-fix-redeploy) lives at the `load_all_plugins` level
+/// — this function just handles a single plugin's diagnostics.
+fn run_plugin_validate(
+    instance: &PluginBox,
+    plugin_name: &str,
+    context: &PluginContext,
+) -> Result<(), LoadError> {
+    let diagnostics = instance.validate(context);
+    let mut errors = Vec::new();
+    for d in &diagnostics {
+        let pos = if d.line > 0 {
+            format!(" at line {}, column {}", d.line, d.column)
+        } else {
+            String::new()
+        };
+        match d.severity {
+            DiagnosticSeverity::Warning => {
+                tracing::warn!(
+                    plugin = plugin_name,
+                    line = d.line,
+                    column = d.column,
+                    message = %d.message,
+                    "plugin validation warning"
+                );
+            }
+            DiagnosticSeverity::Error => {
+                errors.push(format!("{}{pos}", d.message));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(LoadError::Validation {
+            name: plugin_name.to_owned(),
+            errors: errors.join("; "),
+        })
+    }
+}
+
 /// Load a single plugin from its `.so` file.
 pub fn load_plugin(
     plugin_dir: &Path,
@@ -150,6 +198,13 @@ pub fn load_plugin(
         name: name.as_str().into(),
         config: toml_table_to_config(&config.params),
     };
+
+    // Deep validation via the plugin's `validate()` method (FR-004).
+    // Runs before init() so plugins that override validate get
+    // sharper startup errors than init's generic failure path. The
+    // default impl returns empty Vec, so plugins that don't override
+    // see no behaviour change.
+    run_plugin_validate(&instance, name, &context)?;
 
     // Initialize the plugin with its context
     instance
