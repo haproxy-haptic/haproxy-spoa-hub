@@ -29,3 +29,4 @@ binaries/
 # Example plugin build artifacts (compiled .so files)
 # Note: do NOT ignore examples/ source code
 examples/*/target/
+.claude/settings.local.json

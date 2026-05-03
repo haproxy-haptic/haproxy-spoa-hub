@@ -1,9 +1,26 @@
 //! Validator-mode unix socket server.
 //!
-//! Accepts unix-socket connections, reads one length-prefixed JSON
-//! request per connection, dispatches to the orchestrator, writes
-//! the response, and closes (FR-008). Each request is processed in a
-//! tokio task so concurrent connections don't block each other.
+//! Accepts unix-socket connections and serves length-prefixed JSON
+//! request frames over each one until the client closes, the
+//! connection goes idle past `idle_timeout`, the cooperative
+//! `shutdown` token fires, or a transport-level frame error poisons
+//! the byte stream. Each connection is processed in its own tokio
+//! task so concurrent connections run in parallel; within one
+//! connection, requests are serialised pipelined per the wire
+//! protocol contract owned by HAPTIC.
+//!
+//! Per-request semantics:
+//!
+//! - Application-level errors (malformed JSON, validation timeout,
+//!   protocol-version mismatch) write a synthetic error response and
+//!   keep the connection open — the next frame might be well-formed.
+//! - Transport-level errors (oversized frame, partial read, write
+//!   failure) close the connection. The client reconnects.
+//!
+//! The validation work itself runs on tokio's blocking pool via
+//! `spawn_blocking` so a slow `validate()` (Coraza WAF init,
+//! regex-heavy CRS rule compile) doesn't pin one of the small
+//! number of async worker threads that drive I/O.
 
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -14,14 +31,24 @@ use super::framing::{FrameError, read_frame, write_frame};
 use super::orchestrator::{PluginMap, validate_request};
 use super::protocol::{ValidateRequest, ValidateResponse};
 
-/// Default per-request timeout (FR-013).
+/// Default per-request timeout (FR-013). Covers parse + validate +
+/// write of one request-response cycle. Read-frame waits are bounded
+/// by `idle_timeout`, not this.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Default idle timeout — close the connection after this long with
+/// no incoming bytes. The client is expected to reconnect
+/// transparently. 60 seconds matches typical HTTP keep-alive defaults
+/// and is well below most operating-system file-descriptor pressure
+/// thresholds.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Configuration for the validator socket server.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub max_frame_bytes: u32,
     pub request_timeout: Duration,
+    pub idle_timeout: Duration,
 }
 
 impl Default for ServerConfig {
@@ -29,6 +56,7 @@ impl Default for ServerConfig {
         Self {
             max_frame_bytes: super::framing::DEFAULT_MAX_FRAME_BYTES,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
     }
 }
@@ -40,7 +68,9 @@ impl Default for ServerConfig {
 /// doesn't leak across restarts.
 ///
 /// Each accepted connection is processed in a spawned task so slow
-/// validations don't block other clients.
+/// validations on one connection don't block other clients. Within a
+/// single connection, requests are sequential pipelined per the
+/// HAPTIC wire-protocol contract.
 pub async fn serve(
     socket_path: &Path,
     plugins: Arc<PluginMap>,
@@ -55,6 +85,7 @@ pub async fn serve(
         socket = %socket_path.display(),
         max_frame_bytes = config.max_frame_bytes,
         request_timeout_ms = u64::try_from(config.request_timeout.as_millis()).unwrap_or(u64::MAX),
+        idle_timeout_ms = u64::try_from(config.idle_timeout.as_millis()).unwrap_or(u64::MAX),
         "validator socket listening"
     );
 
@@ -69,9 +100,10 @@ pub async fn serve(
 
         let plugins = plugins.clone();
         let cfg = config.clone();
+        let shutdown = shutdown.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, plugins, cfg).await {
-                tracing::warn!(error = %e, "validator request failed");
+            if let Err(e) = handle_connection(stream, plugins, cfg, shutdown).await {
+                tracing::warn!(error = %e, "validator connection ended with error");
             }
         });
     }
@@ -85,77 +117,148 @@ pub async fn serve(
     Ok(())
 }
 
-/// Handle one accepted connection: read one request, dispatch, write
-/// one response, close. Per-request timeout (FR-013) applies to the
-/// entire dispatch path — read, parse, validate, AND write — so a
-/// stalled or malicious client that never reads from its end can't
-/// pin a tokio task indefinitely on a write that the kernel can't
-/// drain.
+/// Handle one accepted connection: loop on read-frame / dispatch /
+/// write-response until the client closes, the connection goes idle,
+/// shutdown is signalled, or a transport-level error poisons the
+/// stream. Each iteration is one request-response cycle.
 async fn handle_connection(
     mut stream: UnixStream,
     plugins: Arc<PluginMap>,
     config: ServerConfig,
+    shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let timeout_ms = config.request_timeout.as_millis();
-    let outcome = tokio::time::timeout(config.request_timeout, async {
-        // Read the request frame.
-        let payload = match read_frame(&mut stream, config.max_frame_bytes).await {
-            Ok(p) => p,
-            Err(FrameError::FrameTooLarge { size, max }) => {
-                let resp = ValidateResponse::protocol_error(format!(
-                    "request frame exceeds maximum size of {max} bytes (got {size})"
-                ));
-                return write_response(&mut stream, &resp, config.max_frame_bytes).await;
-            }
-            Err(FrameError::ConnectionClosed) => {
-                // Client closed before sending anything; nothing to
-                // respond to.
+    loop {
+        // Wait for the next frame, with idle and shutdown gates. Idle
+        // close lets the validator reclaim file descriptors when the
+        // controller has been quiet for a while; the controller's
+        // pool will reopen the connection on next use.
+        let payload = tokio::select! {
+            frame = tokio::time::timeout(
+                config.idle_timeout,
+                read_frame(&mut stream, config.max_frame_bytes),
+            ) => match frame {
+                Ok(Ok(payload)) => payload,
+                Ok(Err(FrameError::ConnectionClosed)) => {
+                    // Clean client close between frames.
+                    return Ok(());
+                }
+                Ok(Err(FrameError::FrameTooLarge { size, max })) => {
+                    // Stream sync is unrecoverable: we don't know
+                    // whether the next bytes are still part of this
+                    // oversized frame. Best-effort write the error
+                    // and close.
+                    let resp = ValidateResponse::protocol_error(format!(
+                        "request frame exceeds maximum size of {max} bytes (got {size})"
+                    ));
+                    let _ = write_response(&mut stream, &resp, config.max_frame_bytes).await;
+                    return Ok(());
+                }
+                Ok(Err(FrameError::Io(e))) => {
+                    // Transport poison; close.
+                    return Err(anyhow::anyhow!("read frame: {e}"));
+                }
+                Err(_elapsed) => {
+                    // Idle timeout. Close cleanly so the controller
+                    // sees EOF on its next request and reconnects.
+                    tracing::debug!("validator connection idle, closing");
+                    return Ok(());
+                }
+            },
+            () = shutdown.cancelled() => {
+                tracing::debug!("validator connection closed by shutdown");
                 return Ok(());
-            }
-            Err(FrameError::Io(e)) => {
-                let resp = ValidateResponse::protocol_error(format!("io error: {e}"));
-                return write_response(&mut stream, &resp, config.max_frame_bytes).await;
             }
         };
 
-        // Parse JSON.
+        // One request-response cycle, with the per-request timeout
+        // covering parse + validate + write. Application-level
+        // errors (malformed JSON, timeout) keep the connection open;
+        // only write failures poison it.
+        let cycle_outcome = run_cycle(&mut stream, payload, &plugins, &config).await;
+        match cycle_outcome {
+            CycleOutcome::Continue => {}
+            CycleOutcome::Close => return Ok(()),
+            CycleOutcome::Error(e) => return Err(e),
+        }
+    }
+}
+
+/// Outcome of one request-response cycle.
+enum CycleOutcome {
+    /// Cycle completed (well-formed or app-level error response sent);
+    /// keep the connection open for the next frame.
+    Continue,
+    /// Cycle ended in a state where the byte stream is no longer
+    /// trustworthy (write failure mid-frame, timeout that interrupted
+    /// a write); close the connection cleanly.
+    Close,
+    /// Cycle hit a fatal transport error worth bubbling up to the
+    /// connection-level error log.
+    Error(anyhow::Error),
+}
+
+/// Run one request-response cycle: parse JSON, dispatch to the
+/// orchestrator on the blocking pool, write the response. Wrapped in
+/// the per-request timeout so a slow `validate()` can't pin the
+/// connection.
+async fn run_cycle(
+    stream: &mut UnixStream,
+    payload: Vec<u8>,
+    plugins: &Arc<PluginMap>,
+    config: &ServerConfig,
+) -> CycleOutcome {
+    let timeout_ms = config.request_timeout.as_millis();
+
+    let outcome = tokio::time::timeout(config.request_timeout, async {
         let request: ValidateRequest = match serde_json::from_slice(&payload) {
             Ok(r) => r,
             Err(e) => {
                 let resp = ValidateResponse::protocol_error(format!(
                     "request body is not valid JSON: {e}"
                 ));
-                return write_response(&mut stream, &resp, config.max_frame_bytes).await;
+                return write_response(stream, &resp, config.max_frame_bytes).await;
             }
         };
 
-        // Dispatch to orchestrator and write the response — all
-        // inside the single timeout so the write can't outlive the
-        // budget.
-        let response = validate_request(&request, &plugins);
-        write_response(&mut stream, &response, config.max_frame_bytes).await
+        // Run the (potentially slow, CPU-bound) plugin validate()
+        // calls on the blocking pool so an expensive WAF init
+        // doesn't pin one of the I/O worker threads.
+        let plugins = plugins.clone();
+        let response =
+            tokio::task::spawn_blocking(move || validate_request(&request, &plugins)).await;
+        let response = match response {
+            Ok(r) => r,
+            Err(join_err) => {
+                let resp = ValidateResponse::protocol_error(format!(
+                    "internal validator error: {join_err}"
+                ));
+                return write_response(stream, &resp, config.max_frame_bytes).await;
+            }
+        };
+
+        write_response(stream, &response, config.max_frame_bytes).await
     })
     .await;
 
     match outcome {
-        Ok(write_result) => write_result,
+        Ok(Ok(())) => CycleOutcome::Continue,
+        Ok(Err(e)) => {
+            // Write or serialize failed; the byte stream is
+            // mid-frame. Surface the error and close.
+            CycleOutcome::Error(e)
+        }
         Err(_elapsed) => {
-            // Best-effort write of the timeout diagnostic. If the
-            // peer is the cause (slow reader) this write will likely
-            // also stall, but we attempt it anyway with a fresh
-            // grace window so the operator's logs reflect what
-            // happened. Errors are swallowed — the connection is
-            // about to be dropped.
+            // Best-effort write of the timeout diagnostic with a
+            // grace window. After a timeout we can't trust the
+            // stream state — close.
             let resp = ValidateResponse::protocol_error(format!(
                 "validation timed out after {timeout_ms}ms"
             ));
             let grace = Duration::from_millis(100);
-            let _ = tokio::time::timeout(
-                grace,
-                write_response(&mut stream, &resp, config.max_frame_bytes),
-            )
-            .await;
-            Ok(())
+            let _ =
+                tokio::time::timeout(grace, write_response(stream, &resp, config.max_frame_bytes))
+                    .await;
+            CycleOutcome::Close
         }
     }
 }

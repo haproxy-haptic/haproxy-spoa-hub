@@ -7,7 +7,13 @@
 //! |          length = N            |  JSON payload  |
 //! ```
 //!
-//! Each connection serves exactly one request-response cycle (FR-008).
+//! Connections are persistent: a client opens once and pipelines
+//! multiple request frames, with the server writing one response
+//! frame per request in arrival order. Either side closes the
+//! connection at inter-frame boundaries (idle timeout, graceful
+//! shutdown, transport error). The wire-protocol contract is owned
+//! by HAPTIC; see haproxy-template-ic `docs/development/validator-protocol.md`.
+//!
 //! The maximum frame size is configurable via the validator-mode CLI
 //! flag and applies to both request and response frames.
 
