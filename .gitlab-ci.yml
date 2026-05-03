@@ -106,7 +106,7 @@ fmt:
 
 markdown-lint:
   stage: check
-  image: node:20-alpine
+  image: node:24-alpine
   tags:
     - saas-linux-small-amd64
   needs: []
