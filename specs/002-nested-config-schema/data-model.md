@@ -16,6 +16,7 @@ A recursive, FFI-safe tagged union representing a TOML value tree.
 | Table     | `RHashMap<RString, ConfigValue>` | Table               |
 
 **Accessor methods** (all return `Option`):
+
 - `as_str() -> Option<&str>`
 - `as_integer() -> Option<i64>`
 - `as_float() -> Option<f64>`

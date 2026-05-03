@@ -147,11 +147,13 @@ pub enum VarScope {
 ## Plugin Author Workflow
 
 1. Create a new Rust crate:
+
    ```
    cargo new --lib my-spoa-plugin
    ```
 
 2. Set crate type and add dependency:
+
    ```toml
    [lib]
    crate-type = ["cdylib"]
@@ -162,6 +164,7 @@ pub enum VarScope {
    ```
 
 3. Implement the plugin using the `define_plugin!` macro:
+
    ```rust
    use haproxy_spoa_hub_plugin_api::*;
 

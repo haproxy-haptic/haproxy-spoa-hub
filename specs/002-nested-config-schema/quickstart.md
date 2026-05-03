@@ -11,6 +11,7 @@ cargo clippy --workspace
 ## Using nested config in a plugin
 
 TOML config:
+
 ```toml
 [[plugins]]
 name = "rate-limiter"
@@ -31,6 +32,7 @@ burst = 200
 ```
 
 Accessing in plugin `init()`:
+
 ```rust
 fn init(&mut self, context: &PluginContext)
     -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -102,6 +104,7 @@ define_plugin!(RateLimiter, {
 ```
 
 If config is invalid, the hub logs an error like:
+
 ```
 ERROR plugin="rate-limiter" error="config validation failed: \"default_max_rps\" is a required property"
 ```

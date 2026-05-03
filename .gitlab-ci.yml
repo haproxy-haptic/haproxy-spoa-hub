@@ -28,6 +28,11 @@ variables:
   # renovate: datasource=crate depName=cargo-auditable
   # 0.7.0+ required for Rust edition 2024 support (used by this workspace).
   CARGO_AUDITABLE_VERSION: "0.7.4"
+  # renovate: datasource=npm depName=markdownlint-cli2
+  # Pinned to 0.14.0 — newer versions require Node.js 20+. Matches the
+  # haproxy-haptic group's haptic repo so writing-style rules are
+  # consistent across repos.
+  MARKDOWNLINT_VERSION: "0.14.0"
   # Glibc version baked into the Debian bookworm rust:bookworm builder image;
   # stamped into release-artifact filenames so consumers can pick a
   # binary-compatible build for their runtime.
@@ -51,6 +56,18 @@ variables:
         - .cargo/**
         - .gitlab-ci.yml
         - renovate.json
+
+# Markdown / documentation paths. Drives the markdown-lint job below so
+# spec-only and doc-only branches still trigger CI — without this rule,
+# spec-only MRs end up with no head pipeline at all (workflow rule
+# matches but no job filters do), which blocks merge under the project's
+# "merge requires pipeline success" setting.
+.rules-docs:
+  rules:
+    - changes:
+        - "**/*.md"
+        - .markdownlint-cli2.jsonc
+        - .gitlab-ci.yml
 
 # Docker-in-Docker base configuration
 .docker-dind:
@@ -86,6 +103,20 @@ fmt:
     - rustup component add rustfmt
   script:
     - cargo fmt -- --check
+
+markdown-lint:
+  stage: check
+  image: node:20-alpine
+  tags:
+    - saas-linux-small-amd64
+  needs: []
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - !reference [.rules-docs, rules]
+  interruptible: true
+  script:
+    - npx --yes markdownlint-cli2@${MARKDOWNLINT_VERSION} "**/*.md"
 
 clippy:
   stage: check

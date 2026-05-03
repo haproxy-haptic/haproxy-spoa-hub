@@ -25,6 +25,7 @@ Unknown `hub.*` args are silently consumed (forward compatibility).
 A per-request set of plugin names to skip, derived from `hub.skip_plugins` and expanded via transitive dependency cascade.
 
 **Lifecycle**:
+
 1. Extracted from `hub.skip_plugins` arg (comma-split, trimmed)
 2. Expanded per execution group: if a skipped plugin has dependents, those dependents are added
 3. Checked before each plugin execution in `dispatch_message()`

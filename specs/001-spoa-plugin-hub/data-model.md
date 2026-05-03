@@ -85,9 +85,11 @@ within the same group run in parallel; groups execute sequentially.
 
 Example for message "check-request" with plugins A, B (independent)
 and C (depends on A):
+
 ```
 groups: [["A", "B"], ["C"]]
 ```
+
 A and B run in parallel, then C runs with A's output merged into its
 input.
 

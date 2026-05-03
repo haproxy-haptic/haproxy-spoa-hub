@@ -42,6 +42,7 @@ pub struct PluginContext {
 ### Migration for plugin authors
 
 Before:
+
 ```rust
 let db_path = context.config.get(&"db_path".into())
     .ok_or("missing db_path")?;
@@ -49,6 +50,7 @@ self.db = open_database(db_path.as_str())?;
 ```
 
 After:
+
 ```rust
 let db_path = context.config.get(&"db_path".into())
     .and_then(|v| v.as_str())
@@ -73,6 +75,7 @@ Plugins compiled without this method use the default (no schema, no validation).
 Two arms supported:
 
 1. Without schema (existing pattern, backward compatible):
+
 ```rust
 define_plugin!(MyPlugin, {
     fn new() -> Self { ... }
@@ -84,6 +87,7 @@ define_plugin!(MyPlugin, {
 ```
 
 2. With schema:
+
 ```rust
 define_plugin!(MyPlugin, {
     fn new() -> Self { ... }
@@ -98,6 +102,7 @@ define_plugin!(MyPlugin, {
 ## TOML config format (unchanged surface, expanded types)
 
 Before (only strings allowed):
+
 ```toml
 [plugins.params]
 db_path = "/data/GeoLite2.mmdb"
@@ -105,6 +110,7 @@ locale = "en"
 ```
 
 After (all TOML types allowed):
+
 ```toml
 [plugins.params]
 db_path = "/data/GeoLite2.mmdb"

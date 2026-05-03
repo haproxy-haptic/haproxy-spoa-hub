@@ -26,6 +26,7 @@ make clean             # Tear down containers and prune images
 ## Test Scripts
 
 Each script in `scripts/` is self-contained:
+
 - Generates a random `HAPROXY_PORT` to avoid conflicts
 - Uses a unique compose project name (`t057-$$`, `t048-$$`, `t049-$$`)
 - Cleans up via `trap cleanup EXIT`
@@ -50,6 +51,7 @@ Otherwise TOML parses them as part of the preceding table array entry.
 ## SIGHUP Test Details
 
 The `test_sighup.sh` script:
+
 1. Starts hub with noop-only config
 2. Sends a request, verifies noop runs (via hub logs)
 3. Copies `config-with-echo.toml` over `config.toml` inside the container
