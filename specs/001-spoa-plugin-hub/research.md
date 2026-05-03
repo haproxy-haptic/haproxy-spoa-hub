@@ -10,6 +10,7 @@ plugin loading with load-time layout verification.
 
 **Rationale**: The spec requires Rust-only plugins for v1 and a
 "robust and standardized plugin load system." abi_stable provides:
+
 - Recursive type layout verification at load time (catches ABI mismatches
   as errors, not segfaults)
 - FFI-safe replacements for standard types: `RVec`, `RString`,
@@ -22,6 +23,7 @@ plugin loading with load-time layout verification.
   single syscall costs ~1μs)
 
 **Alternatives considered**:
+
 - `extern "C"` + `libloading`: ~1.9ns per call, language-agnostic,
   but no type safety — caller must manually ensure signature
   correctness. Risk of silent memory corruption on mismatch. Could be
@@ -46,6 +48,7 @@ FR-013 at the tooling level.
 encoding/decoding.
 
 **Rationale**:
+
 - Only Rust SPOE/SPOP implementation available.
 - Actively maintained (latest release 2026-03-09, edition 2024).
 - Transport-agnostic codec (`SpopCodec` implements
@@ -58,6 +61,7 @@ encoding/decoding.
 - Already proven in the haproxy-fingerprinting reference project.
 
 **Alternatives considered**:
+
 - Implement SPOP from scratch: Unnecessary given spop's complete
   coverage. Would duplicate ~2000 lines of protocol parsing code.
 - No alternatives exist on crates.io.
@@ -72,6 +76,7 @@ Tokio is the de facto standard for async Rust with the largest
 ecosystem (hyper, tower, tonic all build on it).
 
 **Alternatives considered**:
+
 - `async-std`: Less ecosystem support, would conflict with spop's
   tokio dependency.
 - Synchronous (thread-per-connection): Higher resource usage at scale,
@@ -89,6 +94,7 @@ instead. JSON output to stderr with configurable log levels via
 `RUST_LOG` environment variable.
 
 **Alternatives considered**:
+
 - `slog`: Effectively in maintenance mode, author recommends tracing.
 - `log` + `env_logger`: No structured/JSON output support.
 
@@ -104,6 +110,7 @@ tracing via `metrics-tracing-context` for automatic span-to-label
 propagation.
 
 **Alternatives considered**:
+
 - `prometheus` (tikv): More downloads but requires bringing your own
   HTTP server.
 - `prometheus-client` (official): Smallest ecosystem, also requires

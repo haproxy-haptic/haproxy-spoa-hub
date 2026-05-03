@@ -7,6 +7,7 @@
 **Rationale**: `RVec<T>` and `RHashMap<K, V>` are heap-allocated containers with fixed inline layout (pointer + length + capacity). The `StableAbi` derive macro resolves type layouts lazily via `TypeLayoutCtor` function pointers, which breaks the recursive cycle. This is the same mechanism that allows `RVec<u8>` inside `SpoeValue::Binary` today.
 
 **Alternatives considered**:
+
 - Serialize config to JSON string across FFI: Loses type safety, adds serde_json dependency to every plugin, worse DX.
 - Use `#[sabi(unsafe_opaque_fields)]` to wrap `toml::Value`: Fragile across toml crate version changes, defeats ABI checking.
 - Flatten nested TOML into dot-notation keys (`server.host`): Keeps `RHashMap<RString, RString>` but requires parsing conventions and loses type information.
@@ -18,6 +19,7 @@
 **Rationale**: `toml::Table` directly maps to the `[plugins.params]` TOML section with full type fidelity. It implements `Default` (empty map), so `#[serde(default)]` continues to work. All existing test sites using `params: Default::default()` compile without changes.
 
 **Alternatives considered**:
+
 - `toml::Value`: Would allow params to be any TOML type (not just a table), but params should always be a key-value mapping at the top level.
 - `HashMap<String, toml::Value>`: Similar to `toml::Table` but loses TOML-specific ordering. Functionally equivalent; `toml::Table` is more idiomatic.
 
@@ -28,6 +30,7 @@
 **Rationale**: `jsonschema` is the most mature Rust JSON Schema validation library. Default features include HTTP `$ref` resolution via reqwest + TLS, which are unnecessary for validating inline schemas. Disabling defaults avoids pulling in reqwest, rustls, and their transitive dependency trees.
 
 **Alternatives considered**:
+
 - `valico`: Less maintained, fewer JSON Schema draft features.
 - Custom validation: Significant effort to implement even basic JSON Schema; not justified when a mature crate exists.
 - `boon`: Newer, smaller, but less battle-tested. `jsonschema` has wider adoption.
@@ -37,6 +40,7 @@
 **Decision**: Convert `toml::Table` to `serde_json::Value` for JSON Schema validation, then separately convert `toml::Table` to `ConfigValue` for FFI.
 
 **Rationale**: The `jsonschema` crate operates on `serde_json::Value`. TOML and JSON share the same scalar types (string, integer, float, boolean) and structural types (array, object/table). The mapping is straightforward:
+
 - `toml::Value::String` → `json!(string)`
 - `toml::Value::Integer(i64)` → `json!(i64)`
 - `toml::Value::Float(f64)` → `json!(f64)`
@@ -48,6 +52,7 @@
 Both conversions (TOML→JSON for validation, TOML→ConfigValue for FFI) are done in `plugin_loader.rs`. The `toml` crate provides `toml::Value` → `serde_json::Value` conversion via serde serialization.
 
 **Alternatives considered**:
+
 - Convert `ConfigValue` to `serde_json::Value` instead: Requires building ConfigValue first, then converting again. Two-step is more work and ConfigValue doesn't implement Serialize.
 - Use `toml::to_string` then `serde_json::from_str`: Lossy roundtrip for datetimes and ordering. Direct serde conversion is cleaner.
 
@@ -60,6 +65,7 @@ Both conversions (TOML→JSON for validation, TOML→ConfigValue for FFI) are do
 The method returns an `ROption<RString>` containing a JSON Schema string. Returning a string (not structured JSON) keeps the plugin-api crate free of serde_json dependency — plugin authors who want schema validation add serde_json to their own crate and use `json!()` for ergonomic schema construction.
 
 **Alternatives considered**:
+
 - Add schema to `PluginMod` (module-level, not instance-level): Requires prefix type changes to the root module, which is a more invasive ABI change.
 - Return structured `serde_json::Value` across FFI: Not `StableAbi`-compatible without opaque wrappers.
 - Custom StableAbi schema DSL: More types to maintain, limited validation expressiveness, more boilerplate for plugin authors. Discussed with user — JSON Schema chosen.

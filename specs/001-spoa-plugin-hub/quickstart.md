@@ -106,6 +106,7 @@ curl -k https://localhost:443/
 ```
 
 Expected log output:
+
 ```json
 {"timestamp":"...","level":"INFO","message":"plugin loaded","plugin":"noop","version":"0.1.0"}
 {"timestamp":"...","level":"INFO","message":"listening","transport":"unix","address":"/var/run/haproxy-spoa-hub.sock"}

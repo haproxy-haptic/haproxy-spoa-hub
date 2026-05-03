@@ -33,6 +33,7 @@ All three are published automatically by CI when you push a version tag.
      skips publishing if they match.
 
 3. **Commit and tag**:
+
    ```sh
    git add -A && git commit -m "release: v0.2.0"
    git tag v0.2.0
