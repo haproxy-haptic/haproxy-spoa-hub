@@ -2,11 +2,15 @@ use std::{
     io::stderr,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
+use arc_swap::ArcSwap;
 use clap::Parser;
-use haproxy_spoa_hub::{config, listener, metrics, plugin_loader, registry, validate};
-use tokio::runtime;
+use haproxy_spoa_hub::{
+    config, config_watcher, listener, metrics, plugin_loader, registry, validate,
+};
+use tokio::{runtime, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -136,30 +140,7 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
         shutdown_trigger.cancel();
     });
 
-    // Set up SIGHUP handler for config reload
-    #[cfg(unix)]
-    {
-        let registry = Arc::clone(&registry);
-        let config_path = cli.config;
-        tokio::spawn(async move {
-            let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-                .expect("failed to listen for SIGHUP");
-            loop {
-                sig.recv().await;
-                tracing::info!("received SIGHUP, reloading configuration");
-                match reload_plugins(&config_path) {
-                    Ok(new_registry) => {
-                        let old_registry = registry.swap(Arc::new(new_registry));
-                        old_registry.shutdown_all();
-                        tracing::info!("configuration reloaded successfully");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "config reload failed, keeping current config");
-                    }
-                }
-            }
-        });
-    }
+    let watcher = setup_config_reload(&registry, &cli.config, &shutdown);
 
     // Start listeners (returns after shutdown + drain, or on bind failure)
     let result = listener::start_listeners(
@@ -169,6 +150,13 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
         hub_config.max_connections,
     )
     .await;
+
+    // Drop the watcher BEFORE shutting down plugins so the bridging
+    // task observes the cancellation token and exits cleanly. Otherwise
+    // the watcher's internal thread keeps holding the inotify fd open
+    // for the (short) tail end of teardown — harmless but tidier this
+    // way.
+    drop(watcher);
 
     // Always shutdown plugins, whether we're exiting cleanly or due to error
     registry.load().shutdown_all();
@@ -239,6 +227,159 @@ async fn run_validator_mode(
 
     tracing::info!("validator-sidecar shutdown complete");
     Ok(())
+}
+
+/// Wire up SIGHUP + file-watch as parallel triggers for the in-process
+/// reload pipeline, plus a periodic ticker that updates the reload-age
+/// gauge between actual reloads.
+///
+/// Returns the file-watcher handle. Caller keeps it alive (drop = stop
+/// the inotify watch) until the listener returns.
+///
+/// Splitting this out of `async_main` keeps that function under the
+/// 100-line clippy budget and groups the four interlocked spawns
+/// (SIGHUP listener, file-watch bridge, file-watch consumer,
+/// age-gauge ticker) in one place.
+fn setup_config_reload(
+    registry: &Arc<ArcSwap<registry::PluginRegistry>>,
+    config_path: &Path,
+    shutdown: &CancellationToken,
+) -> Option<notify::RecommendedWatcher> {
+    // Last-success timestamp shared by the reload paths and the
+    // age-gauge ticker. Initialised at startup so the gauge has a
+    // sensible "since when" baseline before the first reload fires.
+    let last_reload_success = Arc::new(Mutex::new(Instant::now()));
+
+    // Mutex serialising apply_reload calls. SIGHUP and file-watch are
+    // independent triggers; without this lock, two reloads racing would
+    // both call `registry.swap` then `shutdown_all()` on what they got
+    // back, and the loser would shut down a registry that just became
+    // (or briefly was) the active one — including any plugins still
+    // held by in-flight SPOE messages via Arc snapshots. The lock makes
+    // each apply_reload() observe a consistent before/after registry
+    // pair. Wasted file-read+dlopen work in the rare race window is an
+    // acceptable cost; the serialised-shutdown invariant matters more.
+    let reload_lock = Arc::new(Mutex::new(()));
+
+    // SIGHUP trigger.
+    #[cfg(unix)]
+    {
+        let registry = Arc::clone(registry);
+        let config_path = config_path.to_path_buf();
+        let last_success = Arc::clone(&last_reload_success);
+        let reload_lock = Arc::clone(&reload_lock);
+        tokio::spawn(async move {
+            let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .expect("failed to listen for SIGHUP");
+            loop {
+                sig.recv().await;
+                tracing::info!("received SIGHUP, reloading configuration");
+                apply_reload(&registry, &config_path, &last_success, &reload_lock).await;
+            }
+        });
+    }
+
+    // File-watch trigger: HAPTIC pushes a new config via the dataplane
+    // API (atomic rename), the watcher reacts within milliseconds and
+    // calls apply_reload() the same way SIGHUP does. Channel is bounded
+    // to 1: any pending reload covers all enqueued changes.
+    let (watch_tx, mut watch_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let watcher = match config_watcher::spawn(config_path, watch_tx, shutdown.clone()) {
+        Ok(w) => Some(w),
+        Err(e) => {
+            // File-watch is best-effort. If it fails to attach (e.g.
+            // unsupported filesystem), we log and continue — SIGHUP
+            // still works as a manual fallback. Don't fail startup
+            // over this.
+            tracing::warn!(
+                error = %e,
+                "config-watch unavailable; falling back to SIGHUP-only reload"
+            );
+            None
+        }
+    };
+    {
+        let registry = Arc::clone(registry);
+        let config_path = config_path.to_path_buf();
+        let last_success = Arc::clone(&last_reload_success);
+        let reload_lock = Arc::clone(&reload_lock);
+        tokio::spawn(async move {
+            while watch_rx.recv().await.is_some() {
+                tracing::info!("config file change detected, reloading configuration");
+                apply_reload(&registry, &config_path, &last_success, &reload_lock).await;
+            }
+        });
+    }
+
+    // Periodic tick to keep the reload-age gauge fresh between actual
+    // reloads. 30s is fine-grained enough for alerting (typical alert
+    // window is minutes) and coarse enough not to fight prometheus
+    // scrape cadence.
+    {
+        let last_success = Arc::clone(&last_reload_success);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let age = last_success.lock().await.elapsed().as_secs_f64();
+                        metrics::update_config_reload_age(age);
+                    }
+                    () = shutdown.cancelled() => break,
+                }
+            }
+        });
+    }
+
+    watcher
+}
+
+/// Apply a config reload triggered by SIGHUP or file-watch.
+///
+/// Calls `reload_plugins` to re-read the config + rebuild the plugin
+/// registry, then atomically swaps the result into the shared
+/// `ArcSwap<PluginRegistry>`. On parse / plugin-init failure the
+/// previous registry stays in place — operators see the failure in
+/// logs and metrics, traffic keeps flowing on last-known-good rules.
+///
+/// `reload_lock` serialises this function across the SIGHUP and
+/// file-watch trigger paths. Without it, two reloads racing would
+/// both call `registry.swap` then `shutdown_all()` on what they got
+/// back, and the loser would shut down a registry that just briefly
+/// was the active one — including any plugins still held by in-flight
+/// SPOE messages via `Arc` snapshots. We hold the lock across the
+/// entire pipeline (file read + dlopen + swap + `shutdown_all`) so each
+/// reload sees a consistent before/after registry pair. The cost in
+/// the rare race window is one duplicated dlopen; the serialised-
+/// shutdown invariant matters more.
+///
+/// Both reload paths converge here so the metrics + last-success
+/// bookkeeping live in one place. Renaming this helper or splitting
+/// the SIGHUP and file-watch paths would let those bookkeeping bits
+/// drift out of sync (one path forgets to update the gauge, etc.) —
+/// keep them unified.
+async fn apply_reload(
+    registry: &Arc<ArcSwap<registry::PluginRegistry>>,
+    config_path: &Path,
+    last_reload_success: &Arc<Mutex<Instant>>,
+    reload_lock: &Arc<Mutex<()>>,
+) {
+    let _guard = reload_lock.lock().await;
+    match reload_plugins(config_path) {
+        Ok(new_registry) => {
+            let old_registry = registry.swap(Arc::new(new_registry));
+            old_registry.shutdown_all();
+            *last_reload_success.lock().await = Instant::now();
+            metrics::record_config_reload_success();
+            tracing::info!("configuration reloaded successfully");
+        }
+        Err(e) => {
+            metrics::record_config_reload_failure();
+            tracing::error!(error = %e, "config reload failed, keeping current config");
+        }
+    }
 }
 
 /// Re-read the config file and rebuild the plugin registry.
