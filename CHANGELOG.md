@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (one-time ABI migration)**: `haproxy-spoa-hub-plugin-api` v0.4.0 replaces `abi_stable`'s `#[sabi_trait] SpoePlugin` + `PluginMod` prefix-type + `RootModule` machinery with a hand-rolled `#[repr(C)] PluginVTable` struct. Plugin source code is largely unchanged — `define_plugin!` keeps the same trait-impl-style block — but every existing plugin `.so` must be rebuilt against plugin-api 0.4.0+ to load on the new hub. The new model unblocks host-grows ABI compat: from 0.4.0 onward, adding a method to plugin-api keeps existing plugin `.so` files loadable. See `docs/adr/0001-abi-evolution.md` for design rationale and `docs/abi-evolution.md` for the contributor reference. Plugin authors: drop the direct `abi_stable = "0.11"` dependency from your `Cargo.toml`; it's no longer required (the macro routes through this crate's re-exports).
+- **BREAKING for plugin authors**: `name()` and `version()` in the `define_plugin!` block must now return `&'static str`. In practice this means string literals (`"my-plugin"`) or `env!("CARGO_PKG_VERSION")`. Plugins that previously returned `&str` borrowed from instance fields (e.g. `&self.name_field`) need to either store the string as a `&'static str` (via `Box::leak(...)` at construction time) or convert it at compile time. The constraint comes from the FFI thunk's signature — `extern "C" fn` cannot carry the `&self` lifetime. None of the in-tree examples needed adjustment; check your own plugins.
+- **Panic safety hardened**: every FFI thunk the macro emits — `create`, `init`, `process`, `name`, `version`, `config_schema`, `validate`, `shutdown`, `destroy` — is now wrapped in `std::panic::catch_unwind`. Previously only `process` was wrapped. A panic in any other plugin method would have aborted the entire hub (Rust treats unwinding through `extern "C"` as abort). This was especially exposed in `--validate-socket` mode, where the hub must survive a buggy plugin's `validate()` and return a structured diagnostic instead of crashing. Each thunk has a documented fallback for the catch case; see `crates/plugin-api/CLAUDE.md` for the table.
+- `abi_stable` pinned to exact version `=0.11.3` in plugin-api and hub crates. `RString` / `RVec` / `RHashMap` layouts are now part of the FFI contract since the load-time check no longer runs on them; bumping the pin is a coordinated rollout.
+
+### Added
+
+- `crates/hub/src/plugin.rs::Plugin`: new loaded-plugin handle that owns the dlopened library, the vtable pointer, and the opaque state pointer. All FFI calls into plugins go through this struct's accessors so version-gating for future fields lives in one place.
+- `docs/adr/0001-abi-evolution.md` and `docs/abi-evolution.md`: design rationale and contributor reference for the hand-rolled vtable model. Worked example for adding a new method without breaking old plugins.
+- `crates/hub/tests/abi_matrix.rs`: regression test that loads every published plugin version against the current hub. Catches accidental field reorders, missed version bumps, and `abi_stable` layout drift.
+
+### Removed
+
+- `SpoePlugin` trait, `SpoePlugin_TO`, `PluginBox`, `PluginMod`, `PluginMod_Ref`, `RootModule for PluginMod_Ref`, `package_version_strings!()`, `declare_root_module_statics!()`, `abi_stable::library::lib_header_from_path` — replaced by the hand-rolled vtable. Plugin source code is unaffected; the macro's emitted FFI surface is what changed.
+- `crates/plugin-api/tests/test_panic_safety.rs` — exercised the old `SpoePlugin` trait directly. Panic safety is now structurally enforced by `define_plugin!`'s `catch_unwind` wrapper around `process` and is the matrix test's responsibility to keep regression-testing.
+
 ## [0.4.0] - 2026-05-03
 
 ### Changed

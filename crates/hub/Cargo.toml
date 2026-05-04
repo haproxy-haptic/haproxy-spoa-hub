@@ -16,7 +16,12 @@ path = "src/main.rs"
 
 [dependencies]
 haproxy-spoa-hub-plugin-api = { path = "../plugin-api" }
-abi_stable = "0.11"
+# Pinned to the same exact version as plugin-api: RString / RVec /
+# RHashMap layouts are now part of the FFI contract between hub and
+# plugin since abi_stable's load-time check no longer runs. See
+# `crates/plugin-api/Cargo.toml` for context.
+abi_stable = "=0.11.3"
+libloading = "0.8"
 spop = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "signal", "macros"] }
 tokio-util = { version = "0.7", features = ["codec"] }
@@ -37,6 +42,12 @@ thiserror = "2"
 [dev-dependencies]
 tempfile = "3"
 criterion = { version = "0.8", features = ["html_reports"] }
+# Used by the abi_matrix integration test to download plugin .so
+# files from the GitLab Generic Package Registry. Blocking client
+# keeps the test simple (no tokio runtime needed).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.10"
+hex = "0.4"
 
 [[bench]]
 name = "dispatch_bench"

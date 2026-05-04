@@ -9,10 +9,8 @@
 
 use std::{path::Path, sync::Arc};
 
-use abi_stable::library::{RootModule, lib_header_from_path};
-use haproxy_spoa_hub_plugin_api::{PluginBox, PluginMod_Ref};
-
 use crate::config::PluginConfig;
+use crate::plugin::Plugin;
 use crate::plugin_loader::LoadError;
 use crate::validate::orchestrator::PluginMap;
 
@@ -23,21 +21,15 @@ use crate::validate::orchestrator::PluginMap;
 pub fn load_plugin_for_validation(
     plugin_dir: &Path,
     config: &PluginConfig,
-) -> Result<(String, Arc<PluginBox>), LoadError> {
+) -> Result<(String, Arc<Plugin>), LoadError> {
     let lib_path = plugin_dir.join(&config.library);
     let name = &config.name;
 
-    let load_err = |source| LoadError::Load {
+    // SAFETY: dlopen of operator-configured plugin path. Plugin::load
+    // performs dlsym + version-check + factory call.
+    let instance = unsafe { Plugin::load(&lib_path) }.map_err(|source| LoadError::Load {
         name: name.clone(),
-        path: lib_path.display().to_string(),
         source,
-    };
-
-    let _ = lib_header_from_path(&lib_path).map_err(load_err)?;
-    let module = PluginMod_Ref::load_from_file(&lib_path).map_err(load_err)?;
-    let instance = module.new()().into_result().map_err(|e| LoadError::Init {
-        name: name.clone(),
-        reason: e.to_string(),
     })?;
 
     Ok((name.clone(), Arc::new(instance)))

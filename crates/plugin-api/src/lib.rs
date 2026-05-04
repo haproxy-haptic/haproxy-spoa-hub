@@ -1,202 +1,374 @@
-// abi_stable's proc macros generate code that triggers these warnings
+//! Plugin API for haproxy-spoa-hub.
+//!
+//! # ABI model
+//!
+//! Plugins are loaded from `.so` files at runtime via `dlopen`. The
+//! interface between hub and plugin is a hand-rolled `#[repr(C)]`
+//! vtable defined in [`vtable::PluginVTable`], reached via the
+//! exported `get_plugin_vtable` symbol.
+//!
+//! See [`vtable`] for the load-bearing layout invariants and version
+//! evolution rules. In short: append-only, never reorder, never remove,
+//! version-gate every new field on the host. The matrix test in
+//! `crates/hub/tests/abi_matrix.rs` enforces these invariants by
+//! loading every published plugin version against the current hub.
+//!
+//! # Layout discipline for data types
+//!
+//! `PluginContext`, `SpoeMessage`, `ProcessingResult`, `Diagnostic`,
+//! `ConfigValue`, `SpoeValue`, `TxnVariable`, and `VarScope` are all
+//! `#[derive(StableAbi)]` which gives them `#[repr(C)]` layout.
+//! Existing fields MUST NOT be reordered or removed. Adding a field is
+//! a layout change that requires a coordinated plugin-api version bump
+//! (and is itself a separate concern from vtable evolution — there is
+//! no per-field version-gating on data types).
+//!
+//! `abi_stable` is pinned to `=0.11.3` in `Cargo.toml` so plugins and
+//! hub see byte-identical `RString` / `RVec` / etc. across the FFI
+//! boundary. Bumping that pin is a coordinated rollout, not a routine
+//! patch.
+
 #![allow(non_camel_case_types, non_local_definitions)]
 
-pub mod plugin_trait;
 pub mod types;
+pub mod vtable;
 
 pub use abi_stable;
-pub use abi_stable::std_types::{RHashMap, RString, RVec, Tuple2};
-pub use plugin_trait::{PluginBox, PluginMod, PluginMod_Ref, SpoePlugin, SpoePlugin_TO};
+pub use abi_stable::std_types::{
+    RBoxError, RHashMap, ROption, RResult, RStr, RString, RVec, Tuple2,
+};
 pub use types::{
     ConfigValue, Diagnostic, DiagnosticSeverity, PluginContext, ProcessingResult, SpoeMessage,
     SpoeValue, TxnVariable, VarScope,
 };
+pub use vtable::{
+    GET_PLUGIN_VTABLE_SYMBOL, GetPluginVTableFn, PLUGIN_API_VERSION, PLUGIN_API_VERSION_V1,
+    PluginVTable,
+};
 
-/// Define a plugin with automatic panic safety and module export.
+/// Define a plugin and emit the FFI surface (vtable + entry symbol).
 ///
-/// This macro generates the `#[export_root_module]` entry point and
-/// wraps the `process` implementation in `std::panic::catch_unwind`
-/// to prevent plugin panics from aborting the hub process.
+/// Plugin authors write a regular `impl`-style block; the macro emits
+/// `extern "C"` thunks that bridge into it, the static `PluginVTable`,
+/// and the `get_plugin_vtable` symbol the hub looks up after `dlopen`.
+///
+/// `process` is automatically wrapped in `std::panic::catch_unwind` so
+/// a panic during request handling does not abort the hub process.
 ///
 /// # Usage
 ///
 /// ```rust,ignore
-/// use haproxy_spoa_hub_plugin_api::*;
+/// use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, TxnVariable, define_plugin};
 ///
-/// #[derive(Debug)]
+/// #[derive(Debug, Default)]
 /// struct MyPlugin;
 ///
 /// define_plugin!(MyPlugin, {
-///     fn new() -> Self {
-///         MyPlugin
-///     }
+///     fn new() -> Self { MyPlugin }
 ///
-///     fn init(&mut self, _context: &PluginContext)
-///         -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-///     {
+///     fn init(&mut self, _: &PluginContext) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ///         Ok(())
 ///     }
 ///
-///     fn name(&self) -> &str {
-///         "my-plugin"
-///     }
+///     fn name(&self) -> &str { "my-plugin" }
+///     fn version(&self) -> &str { env!("CARGO_PKG_VERSION") }
 ///
-///     fn version(&self) -> &str {
-///         "0.1.0"
-///     }
-///
-///     fn process(
-///         &self,
-///         message: &SpoeMessage,
-///     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
-///         Ok(ProcessingResult {
-///             variables: vec![].into(),
-///         })
+///     fn process(&self, _: &SpoeMessage)
+///         -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>>
+///     {
+///         Ok(ProcessingResult::single(TxnVariable::session(
+///             "result", SpoeValue::String("ok".into()),
+///         )))
 ///     }
 /// });
 /// ```
-/// Internal-only token-burner used by `define_plugin!` to reference a
-/// captured `$()?` metavariable inside the expansion (so macro_rules!
-/// can resolve which conditional branch to emit) without producing
-/// any Rust code itself. Accepts arbitrary token streams. Hidden from
-/// rustdoc.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __plugin_present {
-    ($($tt:tt)*) => {};
-}
-
+///
+/// `config_schema` and `validate` are optional. Add them at the end of
+/// the block in that order if you need them. Plugins that omit them
+/// get the default no-op behavior (no schema, empty diagnostics).
+///
+/// # Lifetime constraints
+///
+/// `name` and `version` MUST return `&'static str`. The macro emits an
+/// FFI thunk whose return type is `RStr<'static>`, so a `&str`
+/// borrowed from `&self` will not compile. In practice this means
+/// returning either a string literal or `env!("CARGO_PKG_VERSION")`.
+/// If you need to compute the name from instance fields, store it in
+/// a `&'static str` (e.g. via `Box::leak(...)` at construction time)
+/// or pre-register the strings as `const`s.
+///
+/// # Panic safety
+///
+/// Every author-supplied body is wrapped in `std::panic::catch_unwind`
+/// inside its FFI thunk. A panic surfaces as:
+/// - `process` / `init` / `create`: `RResult::RErr(PluginPanicError)`.
+/// - `validate`: a single `Diagnostic::error` entry returned to the
+///   host (not an abort — required for `--validate-socket` mode).
+/// - `config_schema`: treated as `RNone`.
+/// - `name` / `version`: returned as the literal `"<plugin-panic>"`.
+/// - `shutdown` / `destroy`: absorbed; memory may leak but the hub
+///   stays up.
 #[macro_export]
 macro_rules! define_plugin {
-    // Single arm — `config_schema` and `validate` are both optional and
-    // independently provided. Plugins that only define the required
-    // methods (new, init, name, version, process) work as today; plugins
-    // that override `config_schema`, `validate`, or both add them in
-    // that order at the end of the block. Backward-compatible.
-    ($plugin_ty:ty, {
-        fn new() -> Self $new_body:block
+    (
+        $plugin_ty:ty, {
+            fn new() -> Self $new_body:block
 
-        fn init(&mut self, $ctx_param:ident : &PluginContext $(,)?) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body:block
+            fn init(&mut self, $ctx_param:ident : &PluginContext $(,)?)
+                -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body:block
 
-        fn name(&self) -> &str $name_body:block
+            fn name(&self) -> &str $name_body:block
 
-        fn version(&self) -> &str $version_body:block
+            fn version(&self) -> &str $version_body:block
 
-        fn process(
-            &self,
-            $msg_param:ident : &SpoeMessage $(,)?
-        ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body:block
+            fn process(
+                &self,
+                $msg_param:ident : &SpoeMessage $(,)?
+            ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body:block
 
-        $(fn config_schema(&self) -> Option<&str> $schema_body:block)?
+            $(fn config_schema(&self) -> Option<&str> $schema_body:block)?
 
-        $(fn validate(&self, $vctx_param:ident : &PluginContext $(,)?) -> Vec<Diagnostic> $validate_body:block)?
-    }) => {
-        mod __plugin_impl {
-            use super::*;
-            use $crate::abi_stable::std_types::{
-                RBoxError, ROption, RResult, RStr, RString, RVec,
-            };
-            use $crate::abi_stable::sabi_trait::prelude::TD_Opaque;
-
-            impl $plugin_ty {
-                pub fn __new() -> Self $new_body
-                #[allow(clippy::unnecessary_wraps)]
-                pub fn __init(
-                    &mut self,
-                    $ctx_param: &$crate::PluginContext,
-                ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body
-                pub fn __name(&self) -> &str $name_body
-                pub fn __version(&self) -> &str $version_body
-                #[allow(clippy::unnecessary_wraps)]
-                pub fn __process(
-                    &self,
-                    $msg_param: &$crate::SpoeMessage,
-                ) -> Result<$crate::ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body
-
-                $(
-                    #[allow(clippy::unnecessary_wraps)]
-                    pub fn __config_schema(&self) -> Option<&str> $schema_body
-                )?
-
-                $(
-                    #[allow(clippy::unnecessary_wraps)]
-                    pub fn __validate(
-                        &self,
-                        $vctx_param: &$crate::PluginContext,
-                    ) -> Vec<$crate::Diagnostic> $validate_body
-                )?
-            }
-
-            impl $crate::SpoePlugin for $plugin_ty {
-                fn init(
-                    &mut self,
-                    context: &$crate::PluginContext,
-                ) -> RResult<(), RBoxError> {
-                    self.__init(context).map_err(RBoxError::from_box).into()
-                }
-
-                fn process(
-                    &self,
-                    message: &$crate::SpoeMessage,
-                ) -> RResult<$crate::ProcessingResult, RBoxError> {
-                    match std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| self.__process(message)),
-                    ) {
-                        Ok(res) => res.map_err(RBoxError::from_box).into(),
-                        Err(_) => {
-                            RResult::RErr(RBoxError::new(
-                                $crate::PluginPanicError,
-                            ))
-                        }
-                    }
-                }
-
-                fn name(&self) -> RStr<'_> {
-                    self.__name().into()
-                }
-
-                fn version(&self) -> RStr<'_> {
-                    self.__version().into()
-                }
-
-                fn shutdown(&self) {}
-
-                $(
-                    fn config_schema(&self) -> ROption<RString> {
-                        $crate::__plugin_present!($schema_body);
-                        self.__config_schema().map(RString::from).into()
-                    }
-                )?
-
-                $(
-                    fn validate(
-                        &self,
-                        context: &$crate::PluginContext,
-                    ) -> RVec<$crate::Diagnostic> {
-                        $crate::__plugin_present!($validate_body);
-                        self.__validate(context).into()
-                    }
-                )?
-            }
-
-            #[$crate::abi_stable::export_root_module]
-            pub fn get_root_module() -> $crate::PluginMod_Ref {
-                use $crate::abi_stable::prefix_type::PrefixTypeTrait;
-                $crate::PluginMod {
-                    new: __create_plugin,
-                }
-                .leak_into_prefix()
-            }
-
-            extern "C" fn __create_plugin() -> RResult<$crate::PluginBox, RBoxError> {
-                let plugin = <$plugin_ty>::__new();
-                RResult::ROk($crate::SpoePlugin_TO::from_value(plugin, TD_Opaque))
-            }
+            $(fn validate(&self, $vctx_param:ident : &PluginContext $(,)?) -> Vec<Diagnostic> $validate_body:block)?
         }
+    ) => {
+        // Author-supplied bodies become inherent methods on the
+        // plugin type. The thunks below cast the opaque state pointer
+        // back to `&Self` (or `&mut Self` for init) and call them.
+        impl $plugin_ty {
+            #[allow(dead_code)]
+            fn __new() -> Self $new_body
+
+            #[allow(clippy::unnecessary_wraps, dead_code)]
+            fn __init(
+                &mut self,
+                $ctx_param: &$crate::PluginContext,
+            ) -> ::std::result::Result<(), ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>>
+                $init_body
+
+            #[allow(dead_code)]
+            fn __name(&self) -> &'static str $name_body
+
+            #[allow(dead_code)]
+            fn __version(&self) -> &'static str $version_body
+
+            #[allow(clippy::unnecessary_wraps, dead_code)]
+            fn __process(
+                &self,
+                $msg_param: &$crate::SpoeMessage,
+            ) -> ::std::result::Result<
+                $crate::ProcessingResult,
+                ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>,
+            > $process_body
+
+            $(
+                #[allow(clippy::unnecessary_wraps, dead_code)]
+                fn __config_schema(&self) -> ::std::option::Option<&'static str> $schema_body
+            )?
+
+            $(
+                #[allow(clippy::unnecessary_wraps, dead_code)]
+                fn __validate(
+                    &self,
+                    $vctx_param: &$crate::PluginContext,
+                ) -> ::std::vec::Vec<$crate::Diagnostic> $validate_body
+            )?
+        }
+
+        // FFI thunks. All `unsafe` operations are confined here; the
+        // plugin author's bodies above remain in safe Rust.
+        const _: () = {
+            use ::std::os::raw::c_void;
+            use ::std::panic::{AssertUnwindSafe, catch_unwind};
+
+            // Every thunk that calls into user-supplied code is wrapped
+            // in `catch_unwind`. Without this, a panic in any plugin
+            // method would unwind through `extern "C"` — which Rust
+            // defines as abort — taking the whole hub down. Each thunk
+            // has a sensible fallback for the catch case so the host
+            // observes a structured error rather than UB.
+
+            extern "C" fn create() -> $crate::RResult<*mut c_void, $crate::RBoxError> {
+                match catch_unwind(|| {
+                    let plugin: ::std::boxed::Box<$plugin_ty> =
+                        ::std::boxed::Box::new(<$plugin_ty>::__new());
+                    ::std::boxed::Box::into_raw(plugin).cast::<c_void>()
+                }) {
+                    Ok(raw) => $crate::RResult::ROk(raw),
+                    Err(_) => $crate::RResult::RErr($crate::RBoxError::new(
+                        $crate::PluginPanicError,
+                    )),
+                }
+            }
+
+            extern "C" fn destroy(state: *mut c_void) {
+                if state.is_null() {
+                    return;
+                }
+                // SAFETY: state was produced by `create` via Box::into_raw
+                // on `Box<$plugin_ty>`. The hub guarantees one destroy per
+                // create. A panic in the plugin's Drop is absorbed; the
+                // alternative (abort) would lose every other live plugin.
+                let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    ::std::mem::drop(::std::boxed::Box::from_raw(state.cast::<$plugin_ty>()));
+                }));
+            }
+
+            extern "C" fn init(
+                state: *mut c_void,
+                ctx: &$crate::PluginContext,
+            ) -> $crate::RResult<(), $crate::RBoxError> {
+                // SAFETY: state was produced by `create` and not yet
+                // destroyed. Hub holds an exclusive reference during init.
+                let plugin = unsafe { &mut *state.cast::<$plugin_ty>() };
+                match catch_unwind(AssertUnwindSafe(|| plugin.__init(ctx))) {
+                    Ok(Ok(())) => $crate::RResult::ROk(()),
+                    Ok(Err(e)) => $crate::RResult::RErr($crate::RBoxError::from_box(e)),
+                    Err(_) => $crate::RResult::RErr($crate::RBoxError::new(
+                        $crate::PluginPanicError,
+                    )),
+                }
+            }
+
+            extern "C" fn process(
+                state: *const c_void,
+                msg: &$crate::SpoeMessage,
+            ) -> $crate::RResult<$crate::ProcessingResult, $crate::RBoxError> {
+                // SAFETY: state is alive between init and destroy. Process
+                // takes &self so concurrent calls share a borrow — the
+                // plugin must use interior mutability for any mutable state.
+                let plugin = unsafe { &*state.cast::<$plugin_ty>() };
+                match catch_unwind(AssertUnwindSafe(|| plugin.__process(msg))) {
+                    Ok(Ok(result)) => $crate::RResult::ROk(result),
+                    Ok(Err(e)) => $crate::RResult::RErr($crate::RBoxError::from_box(e)),
+                    Err(_) => $crate::RResult::RErr($crate::RBoxError::new(
+                        $crate::PluginPanicError,
+                    )),
+                }
+            }
+
+            extern "C" fn name(state: *const c_void) -> $crate::RStr<'static> {
+                // SAFETY: state alive between init and destroy.
+                let plugin = unsafe { &*state.cast::<$plugin_ty>() };
+                match catch_unwind(AssertUnwindSafe(|| plugin.__name())) {
+                    Ok(s) => $crate::RStr::from(s),
+                    Err(_) => $crate::RStr::from("<plugin-panic>"),
+                }
+            }
+
+            extern "C" fn plugin_version(state: *const c_void) -> $crate::RStr<'static> {
+                // SAFETY: state alive between init and destroy.
+                let plugin = unsafe { &*state.cast::<$plugin_ty>() };
+                match catch_unwind(AssertUnwindSafe(|| plugin.__version())) {
+                    Ok(s) => $crate::RStr::from(s),
+                    Err(_) => $crate::RStr::from("<plugin-panic>"),
+                }
+            }
+
+            extern "C" fn shutdown(_state: *const c_void) {
+                // The original SpoePlugin trait's shutdown has an empty
+                // default body; the macro mirrors that. Plugins that need
+                // teardown logic do it in `destroy` (Drop on the boxed
+                // state), which is called once after the last use.
+                // Wrapped for forward-compat: if the macro grows a
+                // user-overridable shutdown body, the wrapper is already
+                // here.
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    let _ = _state;
+                }));
+            }
+
+            extern "C" fn config_schema(_state: *const c_void) -> $crate::ROption<$crate::RString> {
+                // catch_unwind around the (potentially user-overridden)
+                // body. On panic, return RNone so the hub skips schema
+                // validation rather than aborting.
+                catch_unwind(AssertUnwindSafe(|| {
+                    $crate::__define_plugin_config_schema_thunk!(_state, $plugin_ty $(, $schema_body)?)
+                }))
+                .unwrap_or($crate::ROption::RNone)
+            }
+
+            extern "C" fn validate(
+                _state: *const c_void,
+                _ctx: &$crate::PluginContext,
+            ) -> $crate::RVec<$crate::Diagnostic> {
+                // catch_unwind around the (potentially user-overridden)
+                // body. On panic, return a single error Diagnostic so
+                // the hub surfaces a structured failure instead of
+                // aborting (critical for --validate-socket mode).
+                catch_unwind(AssertUnwindSafe(|| {
+                    $crate::__define_plugin_validate_thunk!(_state, _ctx, $plugin_ty $(, $validate_body)?)
+                }))
+                .unwrap_or_else(|_| {
+                    let mut diags = $crate::RVec::new();
+                    diags.push($crate::Diagnostic::error(
+                        0,
+                        0,
+                        "plugin's validate() panicked",
+                    ));
+                    diags
+                })
+            }
+
+            #[allow(non_upper_case_globals)]
+            static PLUGIN_VTABLE_INSTANCE: $crate::PluginVTable = $crate::PluginVTable {
+                api_version: $crate::PLUGIN_API_VERSION,
+                create,
+                destroy,
+                init,
+                process,
+                name,
+                plugin_version,
+                shutdown,
+                config_schema,
+                validate,
+            };
+
+            #[unsafe(no_mangle)]
+            pub extern "C" fn get_plugin_vtable() -> *const $crate::PluginVTable {
+                &PLUGIN_VTABLE_INSTANCE
+            }
+        };
     };
 }
 
-/// Error type for plugin panics caught by the `define_plugin!` macro.
+/// Internal helper used by `define_plugin!` to expand the optional
+/// `config_schema` arm. With body → call the impl; without → return None.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __define_plugin_config_schema_thunk {
+    ($state:ident, $plugin_ty:ty) => {{
+        let _ = $state;
+        $crate::ROption::RNone
+    }};
+    ($state:ident, $plugin_ty:ty, $body:block) => {{
+        // SAFETY: state alive between init and destroy.
+        let plugin = unsafe { &*$state.cast::<$plugin_ty>() };
+        match plugin.__config_schema() {
+            ::std::option::Option::Some(s) => $crate::ROption::RSome($crate::RString::from(s)),
+            ::std::option::Option::None => $crate::ROption::RNone,
+        }
+    }};
+}
+
+/// Internal helper used by `define_plugin!` to expand the optional
+/// `validate` arm. With body → call the impl; without → return empty.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __define_plugin_validate_thunk {
+    ($state:ident, $ctx:ident, $plugin_ty:ty) => {{
+        let _ = $state;
+        let _ = $ctx;
+        $crate::RVec::new()
+    }};
+    ($state:ident, $ctx:ident, $plugin_ty:ty, $body:block) => {{
+        // SAFETY: state alive between init and destroy.
+        let plugin = unsafe { &*$state.cast::<$plugin_ty>() };
+        $crate::RVec::from(plugin.__validate($ctx))
+    }};
+}
+
+/// Error raised when a plugin's `process` panics. Wrapped in `RBoxError`
+/// by the `define_plugin!` macro's panic-safety net.
 #[derive(Debug)]
 pub struct PluginPanicError;
 
