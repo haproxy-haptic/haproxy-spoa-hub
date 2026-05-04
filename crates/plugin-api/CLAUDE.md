@@ -182,7 +182,7 @@ pre-register the strings as `const`s.
 This is a tightening from the original `SpoePlugin` trait which used
 `fn name(&self) -> &str` (lifetime tied to `&self`). The macro's doc-
 comment surfaces this; mention it to plugin authors who hit a compile
-error after upgrading to plugin-api 0.4.0.
+error after upgrading to plugin-api 0.5.0.
 
 ## Convenience Helpers
 

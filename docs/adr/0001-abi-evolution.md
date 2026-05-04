@@ -93,10 +93,10 @@ plugins and hub see byte-identical layouts.
 - plugin-api crate rewrite (this change).
 - 4 in-tree examples: zero source change (the macro absorbed it).
 - 6 external plugins: each needs a re-release built against
-  plugin-api 0.4.0+. Drop their direct `abi_stable` dependency at the
+  plugin-api 0.5.0+. Drop their direct `abi_stable` dependency at the
   same time.
 - HAPTIC chart's `versions-spoa.env`: bump every plugin pin in
-  lockstep with the plugin-api 0.4.0 release.
+  lockstep with the plugin-api 0.5.0 release.
 
 **Going forward:** every appendable plugin-api change is a routine
 minor bump. No more chain-rebuild events.
