@@ -11,14 +11,16 @@ use std::{collections::HashMap, panic::AssertUnwindSafe, sync::Arc};
 
 use abi_stable::std_types::{RHashMap, RString};
 use haproxy_spoa_hub_plugin_api::{
-    ConfigValue, DiagnosticSeverity as PluginSeverity, PluginBox, PluginContext,
+    ConfigValue, DiagnosticSeverity as PluginSeverity, PluginContext,
 };
+
+use crate::plugin::Plugin;
 
 use super::protocol::{PROTOCOL_VERSION, ValidateRequest, ValidateResponse, WireDiagnostic};
 
 /// Map of plugin name → loaded plugin instance. Built once at
 /// validator-mode startup and shared by all incoming requests.
-pub type PluginMap = HashMap<String, Arc<PluginBox>>;
+pub type PluginMap = HashMap<String, Arc<Plugin>>;
 
 /// Validate one incoming request against the loaded plugin set.
 ///
@@ -125,7 +127,7 @@ fn validate_file(
 fn dispatch_to_plugin(
     path: &str,
     plugin_name: &str,
-    instance: &PluginBox,
+    instance: &Plugin,
     subtree: &toml::Table,
     warnings: &mut Vec<WireDiagnostic>,
     errors: &mut Vec<WireDiagnostic>,

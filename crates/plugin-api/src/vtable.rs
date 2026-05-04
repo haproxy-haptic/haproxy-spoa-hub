@@ -1,0 +1,139 @@
+//! Hand-rolled `#[repr(C)]` plugin vtable.
+//!
+//! Design rationale: see ADR-001 / docs/abi-evolution.md (TBD). In short:
+//! `abi_stable`'s prefix-type model rejects loads where the host's vtable
+//! has more fields than the plugin's, blocking the host-grows-faster
+//! direction we need. The hand-rolled C-style vtable with a leading
+//! `api_version: u32` field, version-gated host access, and an
+//! append-only evolution discipline gives us bidirectional ABI compat
+//! without a third-party load-time check that fights us.
+//!
+//! # Layout invariants (load-bearing)
+//!
+//! 1. `api_version` MUST be the first field.
+//! 2. Existing fields MUST NOT be reordered or removed in any future
+//!    crate version. New fields MUST be appended after the existing ones.
+//! 3. `PLUGIN_API_VERSION` increments by 1 each time a new field is
+//!    appended and the corresponding accessor lands.
+//! 4. Hosts MUST read `api_version` before accessing any field beyond
+//!    the v1 baseline. Reading newer fields on a plugin that reports
+//!    a lower `api_version` is undefined behavior — the plugin's
+//!    allocation does not include those bytes.
+//!
+//! See `crates/hub/tests/abi_matrix.rs` for the regression test that
+//! enforces invariants 1–3 by loading every published plugin version
+//! against the current hub binary.
+
+use std::os::raw::c_void;
+
+use abi_stable::std_types::{RBoxError, ROption, RResult, RStr, RString, RVec};
+
+use crate::types::{Diagnostic, PluginContext, ProcessingResult, SpoeMessage};
+
+/// API version corresponding to the v1 baseline (initial release of the
+/// hand-rolled vtable). Every field declared in `PluginVTable` is part
+/// of v1 and is present on every plugin built against this crate.
+pub const PLUGIN_API_VERSION_V1: u32 = 1;
+
+/// Latest API version this crate's `PluginVTable` exposes. Plugin
+/// authors set this as the `api_version` field. When future versions
+/// of this crate append a field, this constant bumps by 1.
+pub const PLUGIN_API_VERSION: u32 = PLUGIN_API_VERSION_V1;
+
+/// Symbol name the hub looks up via `dlsym` after `dlopen`.
+pub const GET_PLUGIN_VTABLE_SYMBOL: &[u8] = b"get_plugin_vtable\0";
+
+/// Type of the exported entry-point symbol.
+pub type GetPluginVTableFn = extern "C" fn() -> *const PluginVTable;
+
+/// The function table a plugin shared library exports.
+///
+/// `#[repr(C)]` is mandatory: it pins field offsets and padding rules
+/// so plugins built against an older version of this crate keep
+/// working when the hub is built against a newer one (and vice versa).
+///
+/// # Safety contract for hosts
+///
+/// Fields below the v1 baseline marker are version-gated. Hosts MUST
+/// NOT access them via `&PluginVTable` directly — the borrow would
+/// implicitly cover the whole struct, which on an older plugin is
+/// past the end of its allocation. Use the `read_*_field` accessors
+/// or read individual fields through the raw pointer (e.g.
+/// `unsafe { (*ptr).api_version }`) which read only the bytes for that
+/// field.
+#[repr(C)]
+pub struct PluginVTable {
+    // ============================================================
+    // v1 baseline — always present on every plugin built against
+    // this crate. All fields above the marker comment are mandatory
+    // and never change order.
+    // ============================================================
+    /// Plugin's reported API version. The hub uses this to gate
+    /// access to fields beyond the v1 baseline.
+    pub api_version: u32,
+
+    /// Factory: allocate and return a new plugin state pointer.
+    /// `RErr` aborts plugin loading.
+    pub create: extern "C" fn() -> RResult<*mut c_void, RBoxError>,
+
+    /// Destructor: free the plugin state pointer. Called once at hub
+    /// shutdown or when a plugin fails post-create. MUST tolerate
+    /// being called with a state pointer that `init()` has not yet
+    /// observed.
+    pub destroy: extern "C" fn(state: *mut c_void),
+
+    /// Initialize the plugin. Called once after `create` and any
+    /// schema/validate pre-checks. `RErr` aborts plugin loading.
+    pub init: extern "C" fn(state: *mut c_void, ctx: &PluginContext) -> RResult<(), RBoxError>,
+
+    /// Handle one SPOE message. Called per request. The implementation
+    /// is wrapped in `catch_unwind` by the `define_plugin!` macro so a
+    /// panic does not abort the hub process.
+    pub process: extern "C" fn(
+        state: *const c_void,
+        msg: &SpoeMessage,
+    ) -> RResult<ProcessingResult, RBoxError>,
+
+    /// Plugin's display name. Borrowed for the lifetime of the plugin
+    /// instance (until `destroy` is called). Plugins typically return
+    /// a `&'static str` literal.
+    pub name: extern "C" fn(state: *const c_void) -> RStr<'static>,
+
+    /// Plugin's `SemVer` string. Same lifetime contract as `name`.
+    pub plugin_version: extern "C" fn(state: *const c_void) -> RStr<'static>,
+
+    /// Shutdown hook. Called once before `destroy`.
+    pub shutdown: extern "C" fn(state: *const c_void),
+
+    /// Optional JSON Schema string for config validation. `RNone`
+    /// skips schema validation. The default `define_plugin!` macro
+    /// emits a thunk that returns `RNone` when the plugin author has
+    /// not declared one.
+    pub config_schema: extern "C" fn(state: *const c_void) -> ROption<RString>,
+
+    /// Deep config validation. Returns an empty `RVec` when the
+    /// plugin's config is valid. Errors block loading; warnings are
+    /// surfaced but do not block.
+    pub validate: extern "C" fn(state: *const c_void, ctx: &PluginContext) -> RVec<Diagnostic>,
+    // ============================================================
+    // End of v1 baseline. Future additions appear below this line.
+    // Each new field MUST be guarded on `api_version` in the host
+    // and bumps `PLUGIN_API_VERSION` by 1.
+    // ============================================================
+}
+
+impl PluginVTable {
+    /// Read just the `api_version` field of a plugin's vtable.
+    ///
+    /// # Safety
+    ///
+    /// `vtable_ptr` must be a non-null pointer to a `PluginVTable`
+    /// allocation that is at least 4 bytes long (every plugin has at
+    /// least the `api_version` field).
+    #[must_use]
+    pub unsafe fn read_api_version(vtable_ptr: *const PluginVTable) -> u32 {
+        // SAFETY: caller guarantees vtable_ptr is at least 4 bytes long.
+        // Reads only the first field; does not borrow the full struct.
+        unsafe { (*vtable_ptr).api_version }
+    }
+}

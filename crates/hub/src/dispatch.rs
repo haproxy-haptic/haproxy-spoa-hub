@@ -265,7 +265,7 @@ async fn execute_group(
         let timeout = entry.timeout;
 
         // Launch on blocking thread pool immediately
-        let handle = tokio::task::spawn_blocking(move || instance.process(&msg).into_result());
+        let handle = tokio::task::spawn_blocking(move || instance.process(&msg));
 
         // Create a future that wraps the handle with a timeout
         let name = plugin_name.to_owned();

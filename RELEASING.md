@@ -23,10 +23,37 @@ All three are published automatically by CI when you push a version tag.
 
 ## Release process
 
-1. **Update `CHANGELOG.md`**: move items from `[Unreleased]` into a new
+1. **Run the ABI compat matrix locally** (when bumping plugin-api):
+
+   ```sh
+   cargo test --workspace --test abi_matrix
+   ```
+
+   This loads every previously-published plugin `.so` against the
+   current hub binary and asserts the expected outcome (compatible /
+   forward / hard-incompatible). If it goes red, do NOT release —
+   investigate per `docs/abi-evolution.md`'s "When the matrix test
+   goes red" checklist. Common causes: an unintended field reorder in
+   `vtable::PluginVTable`, a missed `PLUGIN_API_VERSION` bump after
+   appending, or an `abi_stable` pin drift.
+
+2. **Audit `crates/plugin-api/src/vtable.rs`** for layout discipline:
+   - Every change since the last release MUST be append-only below
+     the v1 baseline marker comment.
+   - `PLUGIN_API_VERSION` MUST have bumped by 1 per appended field.
+   - Existing field types and order MUST be unchanged.
+
+3. **Audit the `abi_stable` pin**: `grep abi_stable crates/*/Cargo.toml`
+   should still show `=0.11.3` (or whatever the current pinned exact
+   version is). If the pin changed, treat it as a coordinated rollout:
+   re-publish every plugin built against the new pin, run the matrix
+   against both old AND new published .so sets, and document the
+   migration in CHANGELOG.
+
+4. **Update `CHANGELOG.md`**: move items from `[Unreleased]` into a new
    `## [x.y.z]` section.
 
-2. **Bump versions** in `Cargo.toml` files:
+5. **Bump versions** in `Cargo.toml` files:
    - `crates/hub/Cargo.toml` — always bump for a hub release.
    - `crates/plugin-api/Cargo.toml` — bump only when the plugin API has
      changed. The CI job compares the local version against crates.io and
@@ -71,11 +98,26 @@ cosign bundle from the package registry, then runs `sha256sum -c` and
 
 The hub and plugin API crate are versioned independently. A hub-only fix
 (e.g., a performance improvement in dispatch) does not require an API crate
-bump. Conversely, adding a new method to `SpoePlugin` or a variant to
+bump. Conversely, adding a method to `PluginVTable` or a variant to
 `SpoeValue` requires bumping the API crate.
 
 When both change in the same release, use the same version number for
 simplicity.
+
+### What kind of plugin-api bump is appropriate?
+
+- **Patch** (0.4.0 → 0.4.1): Documentation fixes, internal helpers
+  that don't change FFI shape, code style.
+- **Minor** (0.4.0 → 0.5.0): Append a method to `PluginVTable`, append
+  a variant to `ConfigValue` / `SpoeValue` / `VarScope` (before the
+  `__Other` catch-all), append a method/helper on data types. Old
+  plugins built against the previous minor still load — this is the
+  prize of the v0.4.0 ABI migration.
+- **Major** (0.x → 1.0, or 1.0 → 2.0): Any change that breaks the
+  append-only / never-reorder invariant. Every existing plugin must
+  rebuild. Treat this as a coordinated rollout same as bumping the
+  pinned `abi_stable` version. Should be exceedingly rare; if you
+  find yourself here, write a new ADR explaining the trigger.
 
 ## First-time publish
 

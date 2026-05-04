@@ -5,8 +5,8 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use haproxy_spoa_hub_plugin_api::PluginBox;
 
+use crate::plugin::Plugin;
 use crate::plugin_loader::LoadedPlugin;
 
 /// Build a [`SharedRegistry`] from a list of loaded plugins.
@@ -40,7 +40,7 @@ pub struct ExecutionPlan {
 
 /// Runtime plugin entry in the registry.
 pub struct PluginEntry {
-    pub instance: Arc<PluginBox>,
+    pub instance: Arc<Plugin>,
     pub timeout: Duration,
 }
 

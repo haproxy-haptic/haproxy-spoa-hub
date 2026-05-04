@@ -1,0 +1,60 @@
+# ABI compatibility matrix for the hub.
+#
+# Lists every published plugin version we want to keep loadable on the
+# current hub binary. The matrix test (`tests/abi_matrix.rs`)
+# downloads each .so from the GitLab Generic Package Registry and
+# asserts the expected behaviour:
+#
+#   - "compatible":      plugin loads, api_version matches, v1
+#                        baseline accessors work, drop runs cleanly.
+#   - "forward":         plugin reports a higher api_version than the
+#                        hub knows about. Hub uses only the fields it
+#                        knows; extras are ignored.
+#   - "hard_incompatible": plugin is too old (e.g. built against
+#                          plugin-api < 0.4.0 with the abi_stable
+#                          prefix-type model). Hub MUST refuse to load
+#                          with a clean structured error, not crash.
+#
+# Schema (per plugin):
+#
+#   [plugins.<short-name>]
+#   project = "haproxy-haptic/haproxy-spoa-hub-plugin-<short-name>"
+#   package = "<generic-package-name>"
+#   so_filename = "lib<crate>_plugin.so"
+#
+#     [[plugins.<short-name>.versions]]
+#     version = "0.4.0"               # plugin's own SemVer tag
+#     plugin_api_version = 1          # what the .so reports as api_version
+#     expected_load = "compatible"    # see above
+#     # Optional sha256 hex of the .so for cache-validation.
+#     # sha256 = "abc123..."
+#
+# Editing rules:
+#
+# - When a plugin publishes a new version, append a [[versions]] entry
+#   below the matching [plugins.<name>] section.
+# - When PLUGIN_API_VERSION bumps in this repo, every existing entry
+#   stays "compatible" — that's the whole point of the migration.
+# - Sha256 sidecars are uploaded alongside .so files by the plugin
+#   release CI; copying the value into this file lets the matrix
+#   detect cache poisoning or partial downloads. Optional but
+#   recommended for stable builds.
+#
+# The matrix test caches downloaded .so files under
+# `target/abi-matrix-cache/` (gitignored) so re-runs are fast.
+#
+# Currently empty: this scaffolding lands with the v0.4.0 plugin-api
+# migration. Once the 6 external plugins migrate to plugin-api 0.4.0+
+# and publish releases, append their [plugins.<name>] sections here.
+#
+# Worked example (uncomment and fill in once a real release exists):
+#
+# [plugins.coraza]
+# project = "haproxy-haptic/haproxy-spoa-hub-plugin-coraza"
+# package = "coraza"
+# so_filename = "libcoraza_plugin.so"
+#
+#   [[plugins.coraza.versions]]
+#   version = "0.4.0"
+#   plugin_api_version = 1
+#   expected_load = "compatible"

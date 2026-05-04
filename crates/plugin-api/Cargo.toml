@@ -1,6 +1,6 @@
 [package]
 name = "haproxy-spoa-hub-plugin-api"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -14,7 +14,16 @@ categories = ["development-tools::ffi"]
 name = "haproxy_spoa_hub_plugin_api"
 
 [dependencies]
-abi_stable = "0.11"
+# Pinned to an exact version on purpose: the hand-rolled vtable in
+# `src/vtable.rs` no longer goes through abi_stable's load-time layout
+# check. Plugins and the hub both rely on RString / RVec / RHashMap /
+# ROption / RResult having byte-identical layout. Pinning here means
+# every plugin built against this crate, and the hub linking it,
+# transitively get the same abi_stable version. Bumping this pin is a
+# coordinated-rollout event (bump plugin-api's version too, re-release
+# all plugins). See `crates/hub/tests/abi_matrix.rs` for the regression
+# test that catches layout drift.
+abi_stable = "=0.11.3"
 
 [lints]
 workspace = true
