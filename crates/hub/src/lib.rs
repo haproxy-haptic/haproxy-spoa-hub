@@ -1,4 +1,5 @@
 pub mod config;
+pub mod config_watcher;
 pub mod connection;
 pub mod dispatch;
 pub mod listener;

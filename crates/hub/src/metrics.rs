@@ -31,8 +31,49 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
         "spoa_plugin_skips_total",
         "Plugins skipped via hub.skip_plugins arg"
     );
+    describe_counter!(
+        "spoa_hub_config_reload_success_total",
+        "Successful config reloads (SIGHUP or file-watch trigger)"
+    );
+    describe_counter!(
+        "spoa_hub_config_reload_failure_total",
+        "Config reloads that failed parse / plugin re-init; previous \
+         config is retained in memory"
+    );
+    describe_gauge!(
+        "spoa_hub_config_reload_age_seconds",
+        "Seconds since the last successful config reload. Set to 0 at \
+         startup; updated on each successful reload. A growing value \
+         while operators expect changes to apply means the file-watch \
+         trigger is stalled or every recent reload attempt failed — \
+         cross-check against spoa_hub_config_reload_failure_total."
+    );
 
     Ok(())
+}
+
+/// Record a successful config reload. Increments the success counter
+/// and resets the age gauge to 0. Called from `main.rs` when the new
+/// `arc_swap` registry has been swapped in.
+pub fn record_config_reload_success() {
+    counter!("spoa_hub_config_reload_success_total").increment(1);
+    gauge!("spoa_hub_config_reload_age_seconds").set(0.0);
+}
+
+/// Record a config reload that failed parse or plugin re-init. The
+/// previous config is still in memory; this counter tracks how often
+/// operators are pushing broken configs (or how often the file-watch
+/// fires on a half-written file). Does not touch the age gauge — the
+/// last successful reload's age keeps growing until the next success.
+pub fn record_config_reload_failure() {
+    counter!("spoa_hub_config_reload_failure_total").increment(1);
+}
+
+/// Update the age gauge from a "seconds since last success" value
+/// computed by the caller. Called periodically by main.rs from a
+/// 30-second tick task.
+pub fn update_config_reload_age(seconds: f64) {
+    gauge!("spoa_hub_config_reload_age_seconds").set(seconds);
 }
 
 pub fn record_message_processed(message: &str, duration: Duration) {
