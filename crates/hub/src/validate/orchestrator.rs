@@ -35,6 +35,7 @@ use haproxy_spoa_hub_plugin_api::{
 };
 
 use crate::plugin::Plugin;
+use crate::plugin_loader;
 
 use super::protocol::{PROTOCOL_VERSION, ValidateRequest, ValidateResponse, WireDiagnostic};
 
@@ -224,6 +225,57 @@ fn dispatch_to_plugin(
     warnings: &mut Vec<WireDiagnostic>,
     errors: &mut Vec<WireDiagnostic>,
 ) {
+    // Validate against the plugin's JSON Schema BEFORE calling
+    // `plugin.validate()`. This makes the contract symmetric with the
+    // load-time path (see `plugin_loader::load_plugin`): both paths
+    // schema-check first, then call `validate()` with a context the
+    // plugin can trust to satisfy `config_schema()`. Plugin authors
+    // writing `validate()` overrides therefore only need semantic
+    // validation (e.g. compiling SecLang directives via Coraza) and
+    // never structural validation. See `crates/plugin-api/src/lib.rs`
+    // (the `define_plugin!` docstring on the `validate` arm) for the
+    // explicit contract.
+    //
+    // This was the latent gap that let the coraza plugin's
+    // schema-shape drift in v0.4.0 / v0.4.1 (validator read
+    // `applications` as an array, runtime read it as a table-keyed-by-
+    // name) sneak past admission-time validation: `validate()` was
+    // called with a `PluginContext` whose structure didn't match
+    // `config_schema()`, the plugin's parallel parser silently saw
+    // zero entries, the broken TOML reached the data plane, and the
+    // runtime hub then refused to reload. Schema-checking first
+    // closes that gap centrally.
+    match plugin_loader::collect_schema_errors(instance, subtree) {
+        Ok(schema_errors) if !schema_errors.is_empty() => {
+            for msg in schema_errors {
+                errors.push(WireDiagnostic {
+                    path: path.to_owned(),
+                    line: 0,
+                    column: 0,
+                    message: msg,
+                });
+            }
+            return;
+        }
+        Err(meta_error) => {
+            // The plugin's own config_schema() string is invalid
+            // JSON Schema — a plugin bug, not an operator config
+            // issue. Surface it so plugin authors see it, but don't
+            // attempt to call validate() with no schema validation
+            // (the structure could be anything).
+            errors.push(WireDiagnostic {
+                path: path.to_owned(),
+                line: 0,
+                column: 0,
+                message: format!(
+                    "plugin '{plugin_name}' returned invalid config_schema(): {meta_error}"
+                ),
+            });
+            return;
+        }
+        Ok(_) => {}
+    }
+
     let context = PluginContext {
         name: plugin_name.into(),
         config: toml_table_to_rhashmap(subtree),

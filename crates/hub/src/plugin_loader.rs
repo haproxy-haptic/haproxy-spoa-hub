@@ -14,7 +14,7 @@
 //! `Plugin` struct's accessor methods are where version-gating lives.
 //! See `crates/plugin-api/src/vtable.rs` and `crates/hub/CLAUDE.md`.
 
-use std::{fmt, path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use abi_stable::std_types::{RHashMap, RString};
 use haproxy_spoa_hub_plugin_api::{ConfigValue, DiagnosticSeverity, PluginContext};
@@ -84,40 +84,66 @@ fn format_schema_error(error: &jsonschema::ValidationError<'_>) -> String {
 }
 
 /// Validate plugin config against a JSON Schema declared by the plugin.
+///
+/// Returns an outer `Err(meta_error)` if the plugin's `config_schema()`
+/// itself isn't valid JSON Schema (a plugin bug, not an operator
+/// config issue) and `Ok(diagnostics)` with the per-instance schema
+/// errors otherwise — `Ok(empty_vec)` means structurally valid.
+///
+/// Shared between two callers with different error vocabularies:
+///   - [`load_plugin`] wraps the result in [`LoadError::Validation`]
+///     to fail-fast at startup.
+///   - [`crate::validate::orchestrator`] wraps it in `WireDiagnostic`s
+///     to surface the same errors over the validate-socket protocol.
+///
+/// Plugin authors writing `validate()` overrides can rely on this
+/// having run first — the [`PluginContext`] passed to `validate()`
+/// always satisfies `config_schema()` in both call paths, so plugins
+/// only need to do *semantic* validation (e.g. compiling `SecLang`
+/// directives via Coraza) and never structural validation. See
+/// `crates/plugin-api/src/lib.rs`'s `define_plugin!` docstring for
+/// the contract.
+pub(crate) fn collect_schema_errors(
+    instance: &Plugin,
+    params: &toml::Table,
+) -> Result<Vec<String>, String> {
+    let Some(schema_str) = instance.config_schema() else {
+        return Ok(Vec::new());
+    };
+
+    let schema_json: serde_json::Value =
+        serde_json::from_str(&schema_str).map_err(|e| format!("invalid JSON Schema: {e}"))?;
+
+    let schema =
+        jsonschema::validator_for(&schema_json).map_err(|e| format!("invalid JSON Schema: {e}"))?;
+
+    let params_json =
+        serde_json::to_value(params).expect("TOML table is always serializable to JSON");
+
+    Ok(schema
+        .iter_errors(&params_json)
+        .map(|e| format_schema_error(&e))
+        .collect())
+}
+
+/// Validate plugin config against a JSON Schema declared by the
+/// plugin. Wraps [`collect_schema_errors`] for the load-time call
+/// site, where any error is fatal.
 fn validate_config_schema(
     instance: &Plugin,
     plugin_name: &str,
     params: &toml::Table,
 ) -> Result<(), LoadError> {
-    let Some(schema_str) = instance.config_schema() else {
-        return Ok(());
-    };
-
-    let make_schema_err = |e: &dyn fmt::Display| LoadError::Validation {
-        name: plugin_name.to_owned(),
-        errors: format!("invalid JSON Schema: {e}"),
-    };
-
-    let schema_json: serde_json::Value =
-        serde_json::from_str(&schema_str).map_err(|e| make_schema_err(&e))?;
-
-    let schema = jsonschema::validator_for(&schema_json).map_err(|e| make_schema_err(&e))?;
-
-    let params_json =
-        serde_json::to_value(params).expect("TOML table is always serializable to JSON");
-
-    let errors: Vec<String> = schema
-        .iter_errors(&params_json)
-        .map(|e| format_schema_error(&e))
-        .collect();
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(LoadError::Validation {
+    match collect_schema_errors(instance, params) {
+        Ok(errors) if errors.is_empty() => Ok(()),
+        Ok(errors) => Err(LoadError::Validation {
             name: plugin_name.to_owned(),
             errors: errors.join("; "),
-        })
+        }),
+        Err(meta_error) => Err(LoadError::Validation {
+            name: plugin_name.to_owned(),
+            errors: meta_error,
+        }),
     }
 }
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The `--validate-socket` orchestrator now schema-checks every plugin's `params` subtree against the plugin's own `config_schema()` BEFORE dispatching to `plugin.validate()`, mirroring the load-time path (`plugin_loader::load_plugin` already did this). Schema errors short-circuit and surface as `WireDiagnostic`s without ever calling the plugin's `validate()` body. Plugin authors writing `validate()` overrides can therefore rely on the `PluginContext` being structurally valid and limit themselves to *semantic* validation (e.g. compiling SecLang directives via Coraza). See the new contract section in the `define_plugin!` macro docstring (`crates/plugin-api/src/lib.rs`). Closes the gap that let the coraza plugin's `applications`-as-array-vs-table schema drift in v0.4.0 / v0.4.1 sneak past admission-time validation: the validator-socket path was reading raw `PluginContext` while the runtime parser disagreed about the schema shape, and there was no central enforcement.
+
+### Changed
+
+- `plugin_loader::collect_schema_errors` is the new shared helper for plugin schema validation. The pre-existing `validate_config_schema` (load-time) is now a thin wrapper around it; the orchestrator (validator-socket path) calls it directly. This is the canonical place for any future schema-related changes — keep it that way; do NOT add ad-hoc structural checks back into individual plugins.
+
 ## [0.5.1] - 2026-05-05
 
 ### Fixed
