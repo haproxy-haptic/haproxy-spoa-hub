@@ -2733,6 +2733,7 @@ version = "0.1.0"
 dependencies = [
  "abi_stable",
  "haproxy-spoa-hub-plugin-api",
+ "serde_json",
 ]
 
 [[package]]

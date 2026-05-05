@@ -48,8 +48,19 @@ define_plugin!(ValidatingNoop, {
     }
 
     fn config_schema(&self) -> Option<&str> {
-        // Trivially permissive schema — accepts any object.
-        Some(r#"{"type": "object"}"#)
+        // Permissive schema — accepts any object — but documents the
+        // optional `sleep_ms` knob the parallel-dispatch test uses to
+        // inject deterministic per-plugin latency. Other keys
+        // (`make_me_warn`, `make_me_fail`) are silently allowed by
+        // the `additionalProperties: true` default.
+        Some(
+            r#"{
+              "type": "object",
+              "properties": {
+                "sleep_ms": { "type": "integer", "minimum": 0 }
+              }
+            }"#,
+        )
     }
 
     fn validate(&self, ctx: &PluginContext) -> Vec<Diagnostic> {
@@ -58,6 +69,24 @@ define_plugin!(ValidatingNoop, {
         // Otherwise no diagnostics. Real plugins would do meaningful
         // structural / semantic checks here (parse SecLang, validate
         // OIDC discovery URL, etc.).
+        //
+        // Optional `sleep_ms` (used by the parallel-dispatch test):
+        // sleep this many milliseconds before returning. Lets the
+        // test inject deterministic per-plugin latency without
+        // depending on coraza or any other heavy plugin. Production
+        // plugin authors should NOT mirror this; it exists purely as
+        // a wall-clock control knob for the orchestrator's
+        // fan-out test.
+        if let Some(v) = ctx.get_config("sleep_ms") {
+            if let Some(ms) = v.as_integer() {
+                if let Ok(ms_u64) = u64::try_from(ms) {
+                    if ms_u64 > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(ms_u64));
+                    }
+                }
+            }
+        }
+
         let mut diagnostics = Vec::new();
         if let Some(v) = ctx.get_config("make_me_warn") {
             if v.as_bool() == Some(true) {
@@ -105,8 +134,15 @@ mod regression_tests {
     #[test]
     fn config_schema_arm_compiles_and_returns_user_value() {
         let plugin = ValidatingNoop::__new();
-        let schema = plugin.__config_schema().expect("schema present");
-        assert_eq!(schema, r#"{"type": "object"}"#);
+        let schema_str = plugin.__config_schema().expect("schema present");
+        let schema_json: serde_json::Value =
+            serde_json::from_str(schema_str).expect("schema parses as JSON");
+        // Sanity-check the schema describes an object with the
+        // optional `sleep_ms` integer property the parallel-dispatch
+        // test injects. Keeps this regression test resilient to
+        // whitespace changes in the schema literal.
+        assert_eq!(schema_json["type"], "object");
+        assert_eq!(schema_json["properties"]["sleep_ms"]["type"], "integer");
     }
 
     #[test]

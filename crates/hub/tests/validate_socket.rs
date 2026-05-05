@@ -404,6 +404,115 @@ async fn parallel_connections_run_independently() {
     .await;
 }
 
+/// Parallel plugin dispatch within a single validator request:
+/// multiple `[[plugins]]` entries in the same TOML must run
+/// concurrently rather than sequentially. Two entries each carrying
+/// `sleep_ms = 100` should complete in ~100ms (max), not ~200ms (sum).
+///
+/// Both entries name the same loaded plugin (`validating-noop`) — the
+/// orchestrator iterates `[[plugins]]` by index and resolves each
+/// entry's name against the same plugin Arc, so duplicate entries are
+/// legal and produce concurrent calls into one plugin instance. This
+/// also exercises the thread-safety contract: `Plugin: Send + Sync`
+/// + concurrent `&self` access on `validate()`.
+///
+/// Diagnostic ordering must match input order: entry 0's warning
+/// comes before entry 1's error regardless of which thread finishes
+/// first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_dispatch_within_request_runs_concurrently() {
+    run_against_server(|socket_path| async move {
+        // Two `[[plugins]]` entries, each with a 100ms sleep. Entry 0
+        // emits a warning; entry 1 emits an error. Serial would take
+        // ~200ms; parallel should take ~100ms plus thread-spawn
+        // overhead. The 100ms unit is large enough that CI scheduling
+        // jitter is well below the parallel/serial gap (~100ms).
+        let toml = r#"
+plugin_dir = "/etc/haproxy-spoa-hub/plugins"
+
+[[listeners]]
+type = "unix"
+address = "/run/spoa/hub.sock"
+
+[[plugins]]
+name = "validating-noop"
+library = "libvalidating_noop_plugin.so"
+messages = ["test-msg"]
+
+[plugins.params]
+sleep_ms = 100
+make_me_warn = true
+
+[[plugins]]
+name = "validating-noop"
+library = "libvalidating_noop_plugin.so"
+messages = ["test-msg"]
+
+[plugins.params]
+sleep_ms = 100
+make_me_fail = true
+"#;
+        let request = ValidateRequest {
+            protocol_version: PROTOCOL_VERSION,
+            files: vec![RequestFile {
+                path: "config.toml".into(),
+                content: toml.to_owned(),
+            }],
+        };
+
+        // Warmup round-trip with a no-sleep config so the validator's
+        // tokio blocking pool, dlopen lazy-binding, and JSON-Schema
+        // compilation cache are all primed. Without this, the first
+        // measured call carries ~30-40ms of one-shot overhead that
+        // pollutes the timing assertion. The warmup also confirms the
+        // server is fully up and responding.
+        let warmup = ValidateRequest {
+            protocol_version: PROTOCOL_VERSION,
+            files: vec![RequestFile {
+                path: "config.toml".into(),
+                content: canonical_config(""),
+            }],
+        };
+        let _ = round_trip(&socket_path, &warmup).await;
+
+        let start = std::time::Instant::now();
+        let response = round_trip(&socket_path, &request).await;
+        let elapsed = start.elapsed();
+
+        // Lower bound: the sleeps must actually have happened.
+        assert!(
+            elapsed >= Duration::from_millis(90),
+            "round trip too fast ({elapsed:?}); sleeps were skipped?"
+        );
+        // Upper bound: serial dispatch would be >=200ms. We require
+        // < 170ms to fail loud on regression, with 70ms of headroom
+        // above the 100ms parallel work — covers thread spawn/join,
+        // socket I/O, and CI scheduling jitter.
+        assert!(
+            elapsed < Duration::from_millis(170),
+            "round trip too slow ({elapsed:?}); dispatch is serial, not parallel"
+        );
+
+        // Both diagnostics present, in input order.
+        assert_eq!(response.result, ValidationResult::Error);
+        assert_eq!(
+            response.warnings.len(),
+            1,
+            "expected exactly the entry-0 warning; got {:?}",
+            response.warnings,
+        );
+        assert_eq!(response.warnings[0].message, "warn flag was set");
+        assert_eq!(
+            response.errors.len(),
+            1,
+            "expected exactly the entry-1 error; got {:?}",
+            response.errors,
+        );
+        assert_eq!(response.errors[0].message, "fail flag was set");
+    })
+    .await;
+}
+
 /// An application-level error (malformed JSON in the body) MUST keep
 /// the connection open: the next frame on the same connection still
 /// gets served. Only transport-level errors (oversized frame, partial
