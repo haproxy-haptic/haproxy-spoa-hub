@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-05-05
+
 ### Changed
 
 - The validator orchestrator now dispatches each request's `[[plugins]]` entries to their plugins **in parallel** via `std::thread::scope` instead of looping serially. Total wall-clock per validate request is now `max` of per-plugin times rather than `sum`. Matters most for configs carrying multiple plugins with non-trivial `validate()` overrides — e.g. coraza compiles operator-supplied SecLang via FFI into Coraza's Go-side parser; previously each plugin paid for the previous plugin's compile latency on top of its own. Diagnostic ordering is unchanged: per-plugin diagnostics are still emitted in input-array order. Plugin thread-safety contract (`Plugin: Send + Sync`, concurrent `&self` calls) is unchanged from the existing concurrent-connection case where multiple connection tasks already call the same plugin instance in parallel. New regression test `parallel_dispatch_within_request_runs_concurrently` pins the contract by injecting a 100ms sleep into two `[[plugins]]` entries and asserting wall-clock < 170ms (serial would be ~200ms+).
