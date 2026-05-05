@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-05
+
 ### Fixed
 
 - Validator orchestrator now accepts the canonical `[[plugins]]` array-of-tables schema (same shape `HubConfig` deserialises at runtime startup), and only that shape. The previous code path called `as_table()` on `plugins`, which returns `None` when `plugins` is an array, causing the dispatcher to silently return zero diagnostics. Downstream HAPTIC's webhook accepted Ingresses carrying invalid `nginx.ingress.kubernetes.io/modsecurity-snippet` SecRules because the coraza plugin's `validate()` was never called. The whole point of `validate()` is to catch that at admission time.
