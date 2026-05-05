@@ -441,8 +441,9 @@ pub enum DiagnosticSeverity {
 /// identity it knows about — in validator-sidecar mode that's the
 /// request's `files[].path`; in production mode it's the value from
 /// the hub's `--config <path>` flag. Plugins don't have access to
-/// file identity (their input is the parsed `[plugins.params.<name>]`
-/// subtree, decoupled from the file it came from) and don't need it.
+/// file identity (their input is the parsed `params` sub-table from
+/// the matching `[[plugins]]` entry, decoupled from the file it came
+/// from) and don't need it.
 ///
 /// See `specs/004-validate-mode/contracts/plugin-api-delta.md` for the
 /// design rationale.
