@@ -87,6 +87,42 @@ pub use vtable::{
 /// the block in that order if you need them. Plugins that omit them
 /// get the default no-op behavior (no schema, empty diagnostics).
 ///
+/// # `validate()` contract: do *semantic* checks only
+///
+/// The hub guarantees that by the time your `validate()` body runs,
+/// the [`PluginContext`] passed in has already been validated against
+/// your `config_schema()` (in BOTH the load path and the
+/// `--validate-socket` path; see `crates/hub/src/plugin_loader.rs`'s
+/// `collect_schema_errors` and how it's called from
+/// `crates/hub/src/validate/orchestrator.rs`). Schema errors short-
+/// circuit before `validate()` is called and surface to the operator
+/// as the same diagnostic shape your override would emit.
+///
+/// **You should therefore never reimplement structural validation
+/// inside `validate()`.** No re-checking that a field is a string,
+/// no walking arrays-vs-tables defensively, no type-shape
+/// assumptions. Use whatever typed accessor your plugin already
+/// builds for `init()` (typically `from_context(ctx)` populating a
+/// `PluginConfig` struct) — the structure is guaranteed valid.
+///
+/// `validate()` is for *semantic* checks the JSON Schema can't
+/// express. Examples:
+/// - Compiling `SecLang` directives via Coraza so a typo'd
+///   `SecBogusDirective` becomes a line-numbered diagnostic
+///   (haproxy-spoa-hub-plugin-coraza).
+/// - Resolving a remote auth-server URL to verify it's reachable
+///   (a hypothetical external-auth deep check).
+/// - Anything else that requires runtime context the schema can't
+///   capture.
+///
+/// Historical context: pre-hub-v0.5.2, the `--validate-socket` path
+/// did NOT schema-check before calling `validate()`, so plugins that
+/// added their own structural walking could (and did) drift away
+/// from `config_schema()` and the runtime parser. The coraza plugin's
+/// `applications`-as-array vs `applications`-as-table mismatch in
+/// v0.4.0–v0.4.1 was that bug. Centralising the check in the hub
+/// makes it impossible for a plugin author to accidentally repeat.
+///
 /// # Lifetime constraints
 ///
 /// `name` and `version` MUST return `&'static str`. The macro emits an
