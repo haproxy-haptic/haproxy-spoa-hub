@@ -27,9 +27,9 @@ pub enum DiagnosticSeverity {
 /// in post-hoc with the file identity it knows about — in validator
 /// sidecar mode that's the request's `files[].path`; in production
 /// mode it's the value from the hub's `--config <path>` flag. Plugins
-/// don't have access to file identity (their input is the parsed
-/// `[plugins.params.<name>]` subtree, decoupled from the file it came
-/// from), and asking them to track it would couple the plugin API to
+/// don't have access to file identity (their input is the `params`
+/// sub-table from the matching `[[plugins]]` entry, decoupled from
+/// the file it came from), and asking them to track it would couple the plugin API to
 /// the hub's I/O. The hub-set value is what HAPTIC and operators see.
 #[repr(C)]
 #[derive(Debug, Clone, StableAbi)]

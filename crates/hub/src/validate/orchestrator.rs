@@ -1,11 +1,31 @@
 //! Validation orchestrator.
 //!
-//! Takes a parsed `ValidateRequest`, dispatches each file's
-//! `[plugins.params.<name>]` subtree to the matching loaded plugin's
-//! `validate()` method, and aggregates diagnostics into a
-//! `ValidateResponse`. Each plugin's `validate()` is wrapped in
-//! `catch_unwind` so a panic in one plugin doesn't take down the
-//! validator (FR-014).
+//! Takes a parsed `ValidateRequest`, walks each file's `[[plugins]]`
+//! array, and dispatches each entry's `params` sub-table to the
+//! matching loaded plugin's `validate()` method, aggregating
+//! diagnostics into a `ValidateResponse`. Each plugin's `validate()`
+//! is wrapped in `catch_unwind` so a panic in one plugin doesn't take
+//! down the validator (FR-014).
+//!
+//! The accepted TOML shape is the canonical hub config — the same
+//! one `HubConfig` deserialises at runtime startup, so the validator
+//! consumes byte-for-byte the file the runtime hub will see. HAPTIC's
+//! chart-rendered `general/spoa-hub-config.toml` uses this shape.
+//!
+//! ```toml
+//! [[plugins]]
+//! name = "coraza"
+//! library = "libcoraza_plugin.so"
+//! [plugins.params]
+//! directives = """SecRuleEngine On"""
+//! ```
+//!
+//! Earlier drafts of this code path also accepted a flat
+//! `[plugins.params.<name>]` schema. That second shape was unique to
+//! the validator and never matched what `HubConfig` parses, so it was
+//! removed — keeping it would have meant validator-mode TOMLs that
+//! cannot be loaded by the runtime hub, which defeats the point of
+//! validating with the same plugin set.
 
 use std::{collections::HashMap, panic::AssertUnwindSafe, sync::Arc};
 
@@ -24,10 +44,11 @@ pub type PluginMap = HashMap<String, Arc<Plugin>>;
 
 /// Validate one incoming request against the loaded plugin set.
 ///
-/// Each file is parsed as TOML; for each `[plugins.params.<name>]`
-/// subtree found, the matching plugin's `validate()` is invoked.
-/// Diagnostics are collected into the response with the originating
-/// file's path attached (hub-owned, per FR-002).
+/// Each file is parsed as TOML; for each `[[plugins]]` entry, the
+/// matching plugin's `validate()` is invoked with that entry's
+/// `params` sub-table. Diagnostics are collected into the response
+/// with the originating file's path attached (hub-owned, per
+/// FR-002).
 #[must_use]
 pub fn validate_request(request: &ValidateRequest, plugins: &PluginMap) -> ValidateResponse {
     if request.protocol_version != PROTOCOL_VERSION {
@@ -57,8 +78,8 @@ pub fn validate_request(request: &ValidateRequest, plugins: &PluginMap) -> Valid
 }
 
 /// Validate one file's content. TOML parse failures emit a single
-/// error diagnostic; otherwise we walk `[plugins.params.<name>]`
-/// subtrees and dispatch each to its plugin.
+/// error diagnostic; otherwise we walk the `[[plugins]]` array and
+/// dispatch each entry's `params` sub-table to the matching plugin.
 fn validate_file(
     path: &str,
     content: &str,
@@ -84,27 +105,98 @@ fn validate_file(
         return;
     };
 
-    // Walk [plugins.params.<name>] subtrees. Missing tables are not
-    // an error — the file may not be intended for plugin validation.
-    let Some(plugins_table) = table.get("plugins").and_then(|v| v.as_table()) else {
-        return;
-    };
-    let Some(params_table) = plugins_table.get("params").and_then(|v| v.as_table()) else {
+    // Missing `plugins` is not an error — the file may not be intended
+    // for plugin validation.
+    let Some(plugins_value) = table.get("plugins") else {
         return;
     };
 
-    for (plugin_name, subtree) in params_table {
-        let Some(subtree_table) = subtree.as_table() else {
+    let Some(entries) = plugins_value.as_array() else {
+        errors.push(WireDiagnostic {
+            path: path.to_owned(),
+            line: 0,
+            column: 0,
+            message: format!(
+                "`plugins` must be an Array of Tables (canonical hub config); got {:?}",
+                plugins_value.type_str()
+            ),
+        });
+        return;
+    };
+
+    walk_plugins_array(path, entries, plugins, warnings, errors);
+}
+
+/// Walk the `[[plugins]]` array. Each entry must be a table with a
+/// `name` field; its `params` sub-table (default-empty when absent)
+/// is dispatched to the plugin instance registered under `name`.
+/// Entries missing `name`, carrying a non-string `name`, or naming a
+/// plugin not loaded by this validator emit error diagnostics; non-
+/// table array entries and non-table `params` values are flagged
+/// with their actual type so operators can debug malformed configs.
+fn walk_plugins_array(
+    path: &str,
+    entries: &[toml::Value],
+    plugins: &PluginMap,
+    warnings: &mut Vec<WireDiagnostic>,
+    errors: &mut Vec<WireDiagnostic>,
+) {
+    let empty_table = toml::Table::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let Some(entry_table) = entry.as_table() else {
             errors.push(WireDiagnostic {
                 path: path.to_owned(),
                 line: 0,
                 column: 0,
                 message: format!(
-                    "[plugins.params.{plugin_name}] is not a table (got {:?})",
-                    subtree.type_str()
+                    "[[plugins]] entry at index {index} is not a table (got {:?})",
+                    entry.type_str()
                 ),
             });
             continue;
+        };
+
+        let plugin_name = match entry_table.get("name") {
+            Some(toml::Value::String(s)) => s.as_str(),
+            Some(other) => {
+                errors.push(WireDiagnostic {
+                    path: path.to_owned(),
+                    line: 0,
+                    column: 0,
+                    message: format!(
+                        "[[plugins]] entry at index {index} has non-string `name` \
+                         (got {:?})",
+                        other.type_str()
+                    ),
+                });
+                continue;
+            }
+            None => {
+                errors.push(WireDiagnostic {
+                    path: path.to_owned(),
+                    line: 0,
+                    column: 0,
+                    message: format!("[[plugins]] entry at index {index} is missing `name`"),
+                });
+                continue;
+            }
+        };
+
+        let params = match entry_table.get("params") {
+            Some(toml::Value::Table(t)) => t,
+            Some(other) => {
+                errors.push(WireDiagnostic {
+                    path: path.to_owned(),
+                    line: 0,
+                    column: 0,
+                    message: format!(
+                        "[plugins.params] for plugin '{plugin_name}' is not a table (got {:?})",
+                        other.type_str()
+                    ),
+                });
+                continue;
+            }
+            None => &empty_table,
         };
 
         let Some(instance) = plugins.get(plugin_name) else {
@@ -117,7 +209,7 @@ fn validate_file(
             continue;
         };
 
-        dispatch_to_plugin(path, plugin_name, instance, subtree_table, warnings, errors);
+        dispatch_to_plugin(path, plugin_name, instance, params, warnings, errors);
     }
 }
 
@@ -291,16 +383,67 @@ mod tests {
     }
 
     #[test]
-    fn unknown_plugin_in_params_yields_error() {
+    fn unknown_plugin_in_array_yields_error() {
         let req = empty_request_with(vec![RequestFile {
             path: "config.toml".into(),
-            content: "[plugins.params.absent_plugin]\nx = 1\n".into(),
+            content: "[[plugins]]\nname = \"absent_plugin\"\n[plugins.params]\nx = 1\n".into(),
         }]);
         let resp = validate_request(&req, &PluginMap::new());
         assert_eq!(resp.result, ValidationResult::Error);
         assert_eq!(resp.errors.len(), 1);
         assert!(resp.errors[0].message.contains("absent_plugin"));
         assert!(resp.errors[0].message.contains("not loaded"));
+    }
+
+    #[test]
+    fn plugins_table_yields_schema_error() {
+        // The legacy `[plugins.params.<name>]` shape is rejected: the
+        // validator and the runtime hub must consume the same TOML, and
+        // `HubConfig` only deserialises `[[plugins]]` arrays.
+        let req = empty_request_with(vec![RequestFile {
+            path: "config.toml".into(),
+            content: "[plugins.params.coraza]\ndirectives = \"\"\n".into(),
+        }]);
+        let resp = validate_request(&req, &PluginMap::new());
+        assert_eq!(resp.result, ValidationResult::Error);
+        assert_eq!(resp.errors.len(), 1);
+        assert!(
+            resp.errors[0].message.contains("Array of Tables"),
+            "expected schema-shape diagnostic, got {:?}",
+            resp.errors[0].message
+        );
+    }
+
+    #[test]
+    fn plugin_entry_missing_name_yields_error() {
+        let req = empty_request_with(vec![RequestFile {
+            path: "config.toml".into(),
+            content: "[[plugins]]\n[plugins.params]\nx = 1\n".into(),
+        }]);
+        let resp = validate_request(&req, &PluginMap::new());
+        assert_eq!(resp.result, ValidationResult::Error);
+        assert_eq!(resp.errors.len(), 1);
+        assert!(resp.errors[0].message.contains("missing `name`"));
+    }
+
+    #[test]
+    fn plugin_entry_with_non_string_name_yields_error() {
+        // Distinct error from "missing `name`": the key exists but
+        // carries the wrong type. Operators copy/pasting from another
+        // file and dropping the quotes hit this; the message should
+        // make the type mismatch obvious.
+        let req = empty_request_with(vec![RequestFile {
+            path: "config.toml".into(),
+            content: "[[plugins]]\nname = 42\n".into(),
+        }]);
+        let resp = validate_request(&req, &PluginMap::new());
+        assert_eq!(resp.result, ValidationResult::Error);
+        assert_eq!(resp.errors.len(), 1);
+        assert!(
+            resp.errors[0].message.contains("non-string `name`"),
+            "expected non-string name diagnostic, got {:?}",
+            resp.errors[0].message
+        );
     }
 
     #[test]

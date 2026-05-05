@@ -1,7 +1,8 @@
 //! Validator-mode hub: serves a unix-socket protocol that accepts
-//! TOML configuration files and dispatches each plugin's
-//! `[plugins.params.<name>]` subtree to that plugin's `validate()`
-//! method, returning aggregated diagnostics.
+//! TOML configuration files in the canonical `[[plugins]]` array
+//! schema (same shape `HubConfig` deserialises at runtime startup)
+//! and dispatches each entry's `params` sub-table to the matching
+//! plugin's `validate()` method, returning aggregated diagnostics.
 //!
 //! Spec: `specs/004-validate-mode/`. Wire protocol contract:
 //! `specs/004-validate-mode/contracts/validate-socket-protocol.md`.

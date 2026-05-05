@@ -104,6 +104,39 @@ where
     let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
 }
 
+// All validator-mode integration tests use the canonical `[[plugins]]`
+// array-of-tables schema — the exact shape `HubConfig` deserialises at
+// runtime startup, and the shape downstream HAPTIC's chart-rendered
+// `general/spoa-hub-config.toml` emits. Earlier drafts of the
+// validator accepted a simplified `[plugins.params.<name>]` flat
+// schema; that was removed because it didn't match what the runtime
+// hub parses, which defeated the point of validating with the same
+// plugin set.
+
+/// Build a minimally well-formed canonical hub-config TOML for the
+/// validator-mode tests. `extra_params` is appended verbatim inside
+/// the validating-noop entry's `[plugins.params]` table, e.g.
+/// `"make_me_fail = true\n"`.
+fn canonical_config(extra_params: &str) -> String {
+    format!(
+        r#"
+plugin_dir = "/etc/haproxy-spoa-hub/plugins"
+
+[[listeners]]
+type = "unix"
+address = "/run/spoa/hub.sock"
+
+[[plugins]]
+name = "validating-noop"
+library = "libvalidating_noop_plugin.so"
+messages = ["test-msg"]
+
+[plugins.params]
+{extra_params}
+"#,
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn valid_config_returns_valid() {
     run_against_server(|socket_path| async move {
@@ -111,13 +144,7 @@ async fn valid_config_returns_valid() {
             protocol_version: PROTOCOL_VERSION,
             files: vec![RequestFile {
                 path: "config.toml".into(),
-                content: r#"
-                    [hub]
-                    listen = "0.0.0.0:9000"
-
-                    [plugins.params.validating-noop]
-                    "#
-                .to_owned(),
+                content: canonical_config(""),
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -135,11 +162,7 @@ async fn warn_flag_yields_warning() {
             protocol_version: PROTOCOL_VERSION,
             files: vec![RequestFile {
                 path: "config.toml".into(),
-                content: r"
-                    [plugins.params.validating-noop]
-                    make_me_warn = true
-                    "
-                .to_owned(),
+                content: canonical_config("make_me_warn = true\n"),
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -152,6 +175,16 @@ async fn warn_flag_yields_warning() {
     .await;
 }
 
+/// Regression test for the silent-no-op bug fixed alongside the legacy-
+/// schema removal. With the unfixed orchestrator, sending the canonical
+/// `[[plugins]]` array shape made `as_table()` on `plugins` return
+/// `None`, the dispatch loop never ran, and every `validate()` call
+/// silently came back with zero diagnostics. Downstream HAPTIC's
+/// admission webhook then accepted Ingresses carrying invalid
+/// `nginx.ingress.kubernetes.io/modsecurity-snippet` `SecRules`, the
+/// runtime hub blew up at next reload trying to load the unknown
+/// directive — the whole point of `validate()` is to catch that at
+/// admission time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fail_flag_yields_error() {
     run_against_server(|socket_path| async move {
@@ -159,16 +192,17 @@ async fn fail_flag_yields_error() {
             protocol_version: PROTOCOL_VERSION,
             files: vec![RequestFile {
                 path: "config.toml".into(),
-                content: r"
-                    [plugins.params.validating-noop]
-                    make_me_fail = true
-                    "
-                .to_owned(),
+                content: canonical_config("make_me_fail = true\n"),
             }],
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Error);
-        assert_eq!(response.errors.len(), 1);
+        assert_eq!(
+            response.errors.len(),
+            1,
+            "expected exactly the validating-noop fail diagnostic; got {:?}",
+            response.errors,
+        );
         assert_eq!(response.errors[0].path, "config.toml");
         assert_eq!(response.errors[0].message, "fail flag was set");
     })
@@ -182,10 +216,14 @@ async fn unknown_plugin_yields_error() {
             protocol_version: PROTOCOL_VERSION,
             files: vec![RequestFile {
                 path: "config.toml".into(),
-                content: r"
-                    [plugins.params.absent-plugin]
-                    x = 1
-                    "
+                content: r#"
+[[plugins]]
+name = "absent-plugin"
+library = "libabsent.so"
+messages = ["test-msg"]
+[plugins.params]
+x = 1
+"#
                 .to_owned(),
             }],
         };
@@ -194,6 +232,38 @@ async fn unknown_plugin_yields_error() {
         assert_eq!(response.errors.len(), 1);
         assert!(response.errors[0].message.contains("absent-plugin"));
         assert!(response.errors[0].message.contains("not loaded"));
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_flat_plugins_table_is_rejected() {
+    // The old `[plugins.params.<name>]` shape — accepted by drafts of
+    // this validator before v0.5.1 — must now be rejected with a
+    // schema-shape diagnostic. Producers were never supposed to use
+    // it: the same TOML cannot be loaded by the runtime hub, which
+    // defeats the point of a validate() that runs the same plugin
+    // set as the data plane.
+    run_against_server(|socket_path| async move {
+        let request = ValidateRequest {
+            protocol_version: PROTOCOL_VERSION,
+            files: vec![RequestFile {
+                path: "config.toml".into(),
+                content: r"
+[plugins.params.validating-noop]
+make_me_fail = true
+"
+                .to_owned(),
+            }],
+        };
+        let response = round_trip(&socket_path, &request).await;
+        assert_eq!(response.result, ValidationResult::Error);
+        assert_eq!(response.errors.len(), 1);
+        assert!(
+            response.errors[0].message.contains("Array of Tables"),
+            "expected schema-shape diagnostic, got {:?}",
+            response.errors[0].message
+        );
     })
     .await;
 }
@@ -280,13 +350,7 @@ fn valid_request() -> ValidateRequest {
         protocol_version: PROTOCOL_VERSION,
         files: vec![RequestFile {
             path: "config.toml".into(),
-            content: r#"
-                [hub]
-                listen = "0.0.0.0:9000"
-
-                [plugins.params.validating-noop]
-                "#
-            .to_owned(),
+            content: canonical_config(""),
         }],
     }
 }

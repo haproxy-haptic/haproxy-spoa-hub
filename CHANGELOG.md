@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Validator orchestrator now accepts the canonical `[[plugins]]` array-of-tables schema (same shape `HubConfig` deserialises at runtime startup), and only that shape. The previous code path called `as_table()` on `plugins`, which returns `None` when `plugins` is an array, causing the dispatcher to silently return zero diagnostics. Downstream HAPTIC's webhook accepted Ingresses carrying invalid `nginx.ingress.kubernetes.io/modsecurity-snippet` SecRules because the coraza plugin's `validate()` was never called. The whole point of `validate()` is to catch that at admission time.
+
+### Changed
+
+- **BREAKING (validator-mode TOML schema)**: dropped support for the flat `[plugins.params.<name>]` schema in validator-mode requests. The validator now only walks `[[plugins]]` arrays, matching what `HubConfig` parses at runtime startup. The legacy shape was unique to the original validate-socket spec and never matched the runtime hub config — keeping it would have meant validator-mode TOMLs that cannot be loaded by the runtime hub, defeating the point of validating with the same plugin set. Callers sending the legacy shape now receive a structured schema-shape error diagnostic. JSON wire protocol (`PROTOCOL_VERSION`) is unchanged; this only affects the TOML *content* shape inside `RequestFile`.
+
 ## [0.5.0] - 2026-05-04
 
 ### Changed
