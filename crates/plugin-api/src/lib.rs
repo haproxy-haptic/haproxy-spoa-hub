@@ -30,20 +30,22 @@
 
 #![allow(non_camel_case_types, non_local_definitions)]
 
+pub mod metrics;
 pub mod types;
 pub mod vtable;
 
 pub use abi_stable;
 pub use abi_stable::std_types::{
-    RBoxError, RHashMap, ROption, RResult, RStr, RString, RVec, Tuple2,
+    RBoxError, RHashMap, ROption, RResult, RSlice, RStr, RString, RVec, Tuple2,
 };
+pub use metrics::{MetricKind, MetricLabel, MetricRecorder, RecordMetricFn};
 pub use types::{
     ConfigValue, Diagnostic, DiagnosticSeverity, PluginContext, ProcessingResult, SpoeMessage,
     SpoeValue, TxnVariable, VarScope,
 };
 pub use vtable::{
     GET_PLUGIN_VTABLE_SYMBOL, GetPluginVTableFn, PLUGIN_API_VERSION, PLUGIN_API_VERSION_V1,
-    PluginVTable,
+    PLUGIN_API_VERSION_V2, PluginVTable,
 };
 
 /// Define a plugin and emit the FFI surface (vtable + entry symbol).
@@ -165,6 +167,8 @@ macro_rules! define_plugin {
             $(fn config_schema(&self) -> Option<&str> $schema_body:block)?
 
             $(fn validate(&self, $vctx_param:ident : &PluginContext $(,)?) -> Vec<Diagnostic> $validate_body:block)?
+
+            $(metrics_static = $metrics_static:path;)?
         }
     ) => {
         // Author-supplied bodies become inherent methods on the
@@ -345,6 +349,21 @@ macro_rules! define_plugin {
                 })
             }
 
+            extern "C" fn set_metric_recorder(
+                _state: *mut c_void,
+                _record_fn: $crate::RecordMetricFn,
+                _ctx: *const c_void,
+            ) {
+                // The thunk dispatches to the plugin's `metrics_static`
+                // declaration (when present) by calling install() on
+                // the named MetricRecorder. When absent, no-op.
+                // catch_unwind so a panic in install() doesn't unwind
+                // through extern "C".
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    $crate::__define_plugin_metrics_thunk!(_state, _record_fn, _ctx $(, $metrics_static)?)
+                }));
+            }
+
             #[allow(non_upper_case_globals)]
             static PLUGIN_VTABLE_INSTANCE: $crate::PluginVTable = $crate::PluginVTable {
                 api_version: $crate::PLUGIN_API_VERSION,
@@ -357,6 +376,7 @@ macro_rules! define_plugin {
                 shutdown,
                 config_schema,
                 validate,
+                set_metric_recorder,
             };
 
             #[unsafe(no_mangle)]
@@ -400,6 +420,38 @@ macro_rules! __define_plugin_validate_thunk {
         // SAFETY: state alive between init and destroy.
         let plugin = unsafe { &*$state.cast::<$plugin_ty>() };
         $crate::RVec::from(plugin.__validate($ctx))
+    }};
+}
+
+/// Internal helper used by `define_plugin!` to expand the optional
+/// `metrics_static` arm. With a path → install the recorder on the
+/// named static `MetricRecorder`; without → ignore (the plugin doesn't
+/// emit metrics).
+///
+/// Why a static and not a `&self` accessor: Rust macro hygiene doesn't
+/// let `$body:block` bodies inside `define_plugin!` reference `self`
+/// (the `self` token in the body resolves through the macro's hygiene
+/// context, not the function's receiver — see the existing pattern
+/// where every other plugin uses a `static OnceLock<State>` for the
+/// same reason). A path arm avoids the limitation cleanly and matches
+/// the convention every other plugin already follows.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __define_plugin_metrics_thunk {
+    ($state:ident, $record_fn:ident, $ctx:ident) => {{
+        // Plugin didn't declare `metrics_static` — no-op install.
+        let _ = $state;
+        let _ = $record_fn;
+        let _ = $ctx;
+    }};
+    ($state:ident, $record_fn:ident, $ctx:ident, $metrics_static:path) => {{
+        let _ = $state;
+        // Install on the static MetricRecorder the plugin pointed to.
+        // The static is global so it's reachable from every thread
+        // for the plugin's lifetime, matching the recorder's lifetime
+        // contract (valid until destroy returns; static lives forever
+        // → trivially satisfies the bound).
+        $metrics_static.install($record_fn, $ctx);
     }};
 }
 

@@ -28,6 +28,7 @@ use std::os::raw::c_void;
 
 use abi_stable::std_types::{RBoxError, ROption, RResult, RStr, RString, RVec};
 
+use crate::metrics::RecordMetricFn;
 use crate::types::{Diagnostic, PluginContext, ProcessingResult, SpoeMessage};
 
 /// API version corresponding to the v1 baseline (initial release of the
@@ -35,10 +36,18 @@ use crate::types::{Diagnostic, PluginContext, ProcessingResult, SpoeMessage};
 /// of v1 and is present on every plugin built against this crate.
 pub const PLUGIN_API_VERSION_V1: u32 = 1;
 
+/// API version v2: adds `set_metric_recorder` so plugins can emit
+/// Prometheus metrics through the hub's existing recorder. Plugins
+/// built against v2 keep loading on v1 hubs (the hub ignores the field
+/// because it doesn't know it exists); plugins built against v1 keep
+/// loading on v2 hubs (the hub gates access on `api_version >= 2` and
+/// skips the install for v1 plugins).
+pub const PLUGIN_API_VERSION_V2: u32 = 2;
+
 /// Latest API version this crate's `PluginVTable` exposes. Plugin
 /// authors set this as the `api_version` field. When future versions
 /// of this crate append a field, this constant bumps by 1.
-pub const PLUGIN_API_VERSION: u32 = PLUGIN_API_VERSION_V1;
+pub const PLUGIN_API_VERSION: u32 = PLUGIN_API_VERSION_V2;
 
 /// Symbol name the hub looks up via `dlsym` after `dlopen`.
 pub const GET_PLUGIN_VTABLE_SYMBOL: &[u8] = b"get_plugin_vtable\0";
@@ -120,6 +129,28 @@ pub struct PluginVTable {
     // Each new field MUST be guarded on `api_version` in the host
     // and bumps `PLUGIN_API_VERSION` by 1.
     // ============================================================
+    //
+    // v2 additions — present iff api_version >= PLUGIN_API_VERSION_V2.
+    /// Install the hub's metric recorder on the plugin. Called by the
+    /// hub once between `create` and `init`, so the plugin can emit
+    /// metrics from `init` onward. The plugin stores the `record_fn`
+    /// and `ctx` (typically inside a [`MetricRecorder`] field of its
+    /// state) and invokes `record_fn(ctx, ...)` for every metric
+    /// event. The recorder remains valid until `destroy` returns; the
+    /// hub guarantees lifetime, the plugin guarantees not to call it
+    /// after `destroy`.
+    ///
+    /// Plugins that don't want metrics still need to provide a thunk
+    /// (the `define_plugin!` macro emits a no-op default) — the field
+    /// is unconditionally read on v2 hubs.
+    ///
+    /// **Host access:** gated on `api_version >= PLUGIN_API_VERSION_V2`.
+    /// Reading this field on a v1 plugin's vtable is UB — the v1
+    /// allocation does not include these bytes.
+    ///
+    /// [`MetricRecorder`]: crate::MetricRecorder
+    pub set_metric_recorder:
+        extern "C" fn(state: *mut c_void, record_fn: RecordMetricFn, ctx: *const c_void),
 }
 
 impl PluginVTable {
@@ -135,5 +166,32 @@ impl PluginVTable {
         // SAFETY: caller guarantees vtable_ptr is at least 4 bytes long.
         // Reads only the first field; does not borrow the full struct.
         unsafe { (*vtable_ptr).api_version }
+    }
+
+    /// Read the v2 `set_metric_recorder` field, returning `None` for
+    /// plugins built against v1 (whose allocation doesn't include it).
+    ///
+    /// # Safety
+    ///
+    /// `vtable_ptr` must be a non-null pointer to a `PluginVTable`
+    /// allocation produced by a published plugin (i.e. consistent with
+    /// the `api_version` field's claim about which fields are present).
+    /// On v1 plugins this function reads only `api_version` and returns
+    /// `None` without touching past the v1 baseline.
+    #[must_use]
+    pub unsafe fn read_set_metric_recorder(
+        vtable_ptr: *const PluginVTable,
+    ) -> Option<extern "C" fn(state: *mut c_void, record_fn: RecordMetricFn, ctx: *const c_void)>
+    {
+        // SAFETY: caller guarantees vtable_ptr is at least 4 bytes long
+        // and that api_version accurately describes the layout.
+        let api_version = unsafe { Self::read_api_version(vtable_ptr) };
+        if api_version < PLUGIN_API_VERSION_V2 {
+            return None;
+        }
+        // SAFETY: api_version >= V2 implies the allocation includes the
+        // set_metric_recorder field. Reading the field directly (not
+        // via `&PluginVTable`) avoids borrowing the whole struct.
+        Some(unsafe { (*vtable_ptr).set_metric_recorder })
     }
 }

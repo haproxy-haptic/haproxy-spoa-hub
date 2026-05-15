@@ -6,6 +6,7 @@ pub mod listener;
 pub mod metrics;
 pub mod plugin;
 pub mod plugin_loader;
+pub mod plugin_metrics;
 pub mod registry;
 pub mod validate;
 

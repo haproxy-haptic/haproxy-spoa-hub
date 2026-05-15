@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-15
+
+### Added
+
+- **Plugin metrics** (`PLUGIN_API_VERSION` 1→2). Plugins can now emit Prometheus counters, gauges, and histograms through the hub's existing `/metrics` endpoint, alongside the hub's own `spoa_*` and `spoa_hub_*` metrics. Each metric is namespaced as `plugin_<plugin>_<metric>` so operators can tell which plugin produced which sample at a glance.
+- New `set_metric_recorder` vtable entry (v2 baseline). The hub allocates a per-plugin `MetricCtx` carrying the plugin's name and installs a function pointer to its own dispatcher; the plugin invokes `record_metric(ctx, name, labels, value, kind)` for every event. The dispatcher routes into the `metrics` crate macros (`counter!` / `gauge!` / `histogram!`) which the existing Prometheus exporter already serves.
+- Plugin-side helper `MetricRecorder` in `haproxy-spoa-hub-plugin-api`. Plugins declare a `static METRICS: MetricRecorder = MetricRecorder::new();` and reference it from the `define_plugin!` block via an optional `metrics_static = METRICS;` arm. Anywhere in the plugin's code, `METRICS.counter("dispatches_total", &[("kind", "ok")], 1)`, `METRICS.gauge(...)`, and `METRICS.histogram(...)` emit through the hub. The macro emits a no-op `set_metric_recorder` thunk when the `metrics_static` arm is omitted, so plugins that don't want metrics build unchanged. (The static-not-`self.field` design works around a Rust macro hygiene limitation where `$body:block` substitution can't bind `self` from the synthesised inherent method; every existing plugin in the repo already uses a static for the same reason.)
+- New `examples/metrics-noop` example plugin that opts into the metrics path: declares the static recorder, emits one counter / one gauge / one histogram per `process()`, and serves as the canonical reference for plugin authors. Loaded by the new `plugin_metrics_e2e` integration test to verify the dispatcher end-to-end.
+
+### ABI compatibility
+
+- v1 plugins continue to load unchanged on the v2 hub. The hub gates `set_metric_recorder` access on `api_version >= 2` (new `PluginVTable::read_set_metric_recorder` accessor) and silently skips installation for v1 plugins — they never had the field in their allocation, and reading past the v1 baseline would be UB. Same fix-direction guarantee in reverse: a v2 plugin loaded by a hypothetical v1 hub keeps working because the v1 hub doesn't know to read the new field.
+- The hand-rolled vtable's append-only evolution discipline (see `crates/plugin-api/src/vtable.rs` doc) gets its first real exercise here; future versions add fields below the v2 marker and follow the same gating pattern.
+
+### Lifetime contract for plugin authors
+
+- The recorder callback and its `ctx` pointer remain valid from the hub's `set_metric_recorder` call until that plugin's `destroy` returns. Plugins MUST NOT call the recorder after returning from `destroy`. The hub guarantees the `MetricCtx` box is freed AFTER `destroy` (Rust field drop order in `Plugin`), so the recorder ctx pointer never dangles while the plugin can observe it.
+
 ## [0.5.3] - 2026-05-05
 
 ### Changed

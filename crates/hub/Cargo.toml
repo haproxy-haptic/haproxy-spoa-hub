@@ -1,6 +1,6 @@
 [package]
 name = "haproxy-spoa-hub"
-version = "0.5.3"
+version = "0.6.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -52,6 +52,11 @@ criterion = { version = "0.8", features = ["html_reports"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 sha2 = "0.11"
 hex = "0.4"
+# Used by the plugin_metrics_e2e integration test to install a
+# DebuggingRecorder, snapshot the metrics registry after a plugin
+# emits, and verify each kind (counter / gauge / histogram) lands
+# in the matching primitive with the right name prefix and labels.
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 
 [[bench]]
 name = "dispatch_bench"
