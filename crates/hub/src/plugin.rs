@@ -70,6 +70,15 @@ pub struct Plugin {
     /// Set to true on the first `shutdown()` call so subsequent calls
     /// (and the Drop impl's safety net) are no-ops at the FFI layer.
     shutdown_called: AtomicBool,
+    /// Per-plugin metric context handed to plugins (v2+) via
+    /// `set_metric_recorder`. `None` for v1 plugins, which never had
+    /// the recorder field. Held for its Drop side effect (frees the
+    /// box only after `destroy()` has returned, so the raw pointer
+    /// the plugin's `MetricRecorder` still has remains valid for the
+    /// entire `process()` window). Underscore-prefixed because the
+    /// hub never reads the field directly — only the plugin does,
+    /// via the raw pointer we handed it at install time.
+    _metric_ctx: Option<Box<crate::plugin_metrics::MetricCtx>>,
     /// Held purely to keep the `.so` mapped. Dropped LAST after
     /// state is destroyed (Rust drops fields in declaration order).
     _library: libloading::Library,
@@ -160,11 +169,36 @@ impl Plugin {
             }
         };
 
+        // Install the metric recorder on v2+ plugins. v1 plugins
+        // never had the field, so we MUST gate this on api_version
+        // (reading the field on a v1 vtable is UB). The boxed ctx is
+        // retained on the Plugin struct; the plugin keeps a raw
+        // pointer into it via its own MetricRecorder helper, valid
+        // for the plugin's lifetime.
+        //
+        // SAFETY: name is at v1 baseline (always present), and we
+        // read it BEFORE installing the recorder so the resulting
+        // String is owned by the hub independent of the plugin's
+        // lifetime. read_set_metric_recorder is safe by construction:
+        // it gates on api_version internally and returns None for v1.
+        let metric_ctx = unsafe {
+            if let Some(set_recorder) = PluginVTable::read_set_metric_recorder(vtable) {
+                let name_fn = (*vtable).name;
+                let plugin_name = name_fn(state).as_str().to_owned();
+                let ctx = crate::plugin_metrics::MetricCtx::boxed(plugin_name);
+                set_recorder(state, crate::plugin_metrics::record_metric, ctx.as_ptr());
+                Some(ctx)
+            } else {
+                None
+            }
+        };
+
         Ok(Plugin {
             state,
             vtable,
             api_version,
             shutdown_called: AtomicBool::new(false),
+            _metric_ctx: metric_ctx,
             _library: library,
         })
     }
@@ -290,6 +324,50 @@ impl Drop for Plugin {
             destroy_fn(self.state);
         }
         self.state = std::ptr::null_mut();
-        // _library drops here, dlclose-ing the .so AFTER state is gone.
+        // _metric_ctx and _library drop here. The Box<MetricCtx> drops
+        // BEFORE the Library (declaration order), which is fine: by
+        // this point destroy() has returned and no plugin code can
+        // call into the recorder anymore. The Library drops LAST so
+        // dlclose runs after every plugin allocation is freed.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use haproxy_spoa_hub_plugin_api::PLUGIN_API_VERSION_V2;
+
+    /// Loads the noop example plugin and asserts the v2 vtable plumbing
+    /// works end-to-end: `api_version` reports V2, the metric ctx box was
+    /// allocated by `load`, and Drop runs cleanly with the ctx still
+    /// alive (`destroy` must finish before the box drops, so the plugin
+    /// never observes a freed recorder ctx).
+    #[test]
+    #[allow(clippy::used_underscore_binding)]
+    fn noop_plugin_loads_at_v2_with_metric_ctx_installed() {
+        let so_path = crate::test_support::workspace_target_dir().join("libnoop_plugin.so");
+        if !so_path.exists() {
+            // `cargo test --workspace` builds the example plugins,
+            // but a standalone `cargo test -p haproxy-spoa-hub` may
+            // skip them. Skip rather than fail in that case.
+            eprintln!("skipping: {} not built", so_path.display());
+            return;
+        }
+        // SAFETY: we trust our own build output.
+        let plugin = unsafe { Plugin::load(&so_path) }.expect("load noop");
+        assert_eq!(
+            plugin.api_version(),
+            PLUGIN_API_VERSION_V2,
+            "noop is built against the current crate so it must report v2"
+        );
+        // The underscore-prefixed field is deliberate (the hub never
+        // reads it from outside its Drop side effect) but the test
+        // needs to verify it landed.
+        assert!(
+            plugin._metric_ctx.is_some(),
+            "v2 plugins must have a MetricCtx allocated by load"
+        );
+        // Drop the plugin here; this exercises the shutdown → destroy →
+        // metric_ctx drop → library drop sequence.
     }
 }

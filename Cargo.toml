@@ -7,6 +7,7 @@ members = [
     "examples/delay",
     "examples/echo",
     "examples/validating-noop",
+    "examples/metrics-noop",
 ]
 
 [workspace.package]
