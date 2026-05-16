@@ -218,6 +218,17 @@ fn run_matrix_cell(
     spec: &PluginVersionSpec,
     so_path: &Path,
 ) -> Result<(), String> {
+    // Print a breadcrumb before each load so a crash in dlopen /
+    // create (e.g. a plugin whose Go runtime aborts on init, or a
+    // missing transitive system library) leaves a trail in the
+    // captured stderr — the main loop only flushes its summary at
+    // the end. Cheap; kept always-on for diagnosability of the
+    // exact class of failure operators historically hit here.
+    eprintln!(
+        "  ↓ loading {plugin_name}@{ver} from {p}",
+        ver = spec.version,
+        p = so_path.display()
+    );
     // SAFETY: dlopen of a downloaded .so. We trust the GitLab Package
     // Registry as the source of authoritative plugin builds.
     let load_result = unsafe { Plugin::load(so_path) };

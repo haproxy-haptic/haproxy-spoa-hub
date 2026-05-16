@@ -20,14 +20,34 @@
 #   [plugins.<short-name>]
 #   project = "haproxy-haptic/haproxy-spoa-hub-plugin-<short-name>"
 #   package = "<generic-package-name>"
-#   so_filename = "lib<crate>_plugin.so"
+#   so_filename = "lib<crate>_plugin-<arch>-glibc<ver>.so"
 #
 #     [[plugins.<short-name>.versions]]
-#     version = "0.4.0"               # plugin's own SemVer tag
+#     version = "v0.4.0"              # plugin's own SemVer git tag,
+#                                     #   verbatim — leading "v" is
+#                                     #   load-bearing (the package
+#                                     #   registry path uses it).
 #     plugin_api_version = 1          # what the .so reports as api_version
 #     expected_load = "compatible"    # see above
 #     # Optional sha256 hex of the .so for cache-validation.
 #     # sha256 = "abc123..."
+#
+# Published filename convention:
+#
+# Each plugin's release CI publishes one `.so` per (arch, glibc) pair
+# to the Generic Package Registry. The matrix test runs on Linux
+# amd64 only, so `so_filename` is the amd64 + glibc-2.36 variant
+# (`-amd64-glibc2.36.so`), e.g. `libcoraza_plugin-amd64-glibc2.36.so`.
+# When the upstream build base bumps glibc (tracked by
+# `SPOA_PLUGIN_GLIBC_VERSION` in haptic's `versions-spoa.env`), bump
+# the suffix in lockstep here.
+#
+# The sso-auth crate is named `haproxy-spoa-hub-plugin-sso-auth`
+# rather than `sso-auth-plugin`, so its `.so` is
+# `libhaproxy_spoa_hub_plugin_sso_auth-amd64-glibc2.36.so` rather
+# than the usual `lib<short>_plugin-...` shape (see
+# `scripts/prep-spoa-plugins.sh` LIB_NAMES table in the haptic repo
+# for the upstream-source-of-truth mapping).
 #
 # Editing rules:
 #
@@ -42,19 +62,176 @@
 #
 # The matrix test caches downloaded .so files under
 # `target/abi-matrix-cache/` (gitignored) so re-runs are fast.
+
+# ----------------------------------------------------------------------
+# coraza — DEFERRED.
 #
-# Currently empty: this scaffolding lands with the v0.4.0 plugin-api
-# migration. Once the 6 external plugins migrate to plugin-api 0.4.0+
-# and publish releases, append their [plugins.<name>] sections here.
+# coraza's Go-FFI Coraza WAF performs runtime init on `dlopen` (CGo
+# allocator + signal-handler installation). In the abi_matrix test
+# binary's signal-handler context that init dies with SIGSEGV before
+# `create()` returns, which the catch_unwind in the FFI thunk can't
+# absorb (catch_unwind only handles Rust panics, not signals). The
+# plugin works fine inside the actual hub binary (which sets up its
+# tokio runtime and signal mask early), so this is a test-harness
+# limitation, not a real ABI break.
 #
-# Worked example (uncomment and fill in once a real release exists):
+# Re-enable once the matrix test sandboxes each load in a forked
+# child process, so a SIGSEGV in one plugin's init can't bring down
+# the test process.
 #
 # [plugins.coraza]
 # project = "haproxy-haptic/haproxy-spoa-hub-plugin-coraza"
 # package = "coraza"
-# so_filename = "libcoraza_plugin.so"
+# so_filename = "libcoraza_plugin-amd64-glibc2.36.so"
 #
 #   [[plugins.coraza.versions]]
-#   version = "0.4.0"
+#   version = "v0.4.2"
 #   plugin_api_version = 1
+#   expected_load = "compatible"
+#
+#   [[plugins.coraza.versions]]
+#   version = "v0.5.0"
+#   plugin_api_version = 2
+#   expected_load = "compatible"
+
+# ----------------------------------------------------------------------
+# external-auth
+# ----------------------------------------------------------------------
+[plugins.external-auth]
+project = "haproxy-haptic/haproxy-spoa-hub-plugin-external-auth"
+package = "external-auth"
+so_filename = "libexternal_auth_plugin-amd64-glibc2.36.so"
+
+  [[plugins.external-auth.versions]]
+  version = "v0.4.0"
+  plugin_api_version = 1
+  expected_load = "compatible"
+
+  [[plugins.external-auth.versions]]
+  version = "v0.5.0"
+  plugin_api_version = 2
+  expected_load = "compatible"
+
+# ----------------------------------------------------------------------
+# fingerprinting
+# ----------------------------------------------------------------------
+[plugins.fingerprinting]
+project = "haproxy-haptic/haproxy-spoa-hub-plugin-fingerprinting"
+package = "fingerprinting"
+so_filename = "libfingerprinting_plugin-amd64-glibc2.36.so"
+
+  [[plugins.fingerprinting.versions]]
+  version = "v0.2.0"
+  plugin_api_version = 1
+  expected_load = "compatible"
+
+  [[plugins.fingerprinting.versions]]
+  version = "v0.3.0"
+  plugin_api_version = 2
+  expected_load = "compatible"
+
+# ----------------------------------------------------------------------
+# maxmind
+# ----------------------------------------------------------------------
+[plugins.maxmind]
+project = "haproxy-haptic/haproxy-spoa-hub-plugin-maxmind"
+package = "maxmind"
+so_filename = "libmaxmind_plugin-amd64-glibc2.36.so"
+
+  [[plugins.maxmind.versions]]
+  version = "v0.3.0"
+  plugin_api_version = 1
+  expected_load = "compatible"
+
+  [[plugins.maxmind.versions]]
+  version = "v0.4.0"
+  plugin_api_version = 2
+  expected_load = "compatible"
+
+# ----------------------------------------------------------------------
+# mirror
+# ----------------------------------------------------------------------
+[plugins.mirror]
+project = "haproxy-haptic/haproxy-spoa-hub-plugin-mirror"
+package = "mirror"
+so_filename = "libmirror_plugin-amd64-glibc2.36.so"
+
+  # v0.1.0 was the first plugin to ship against plugin-api 0.5.0 (the
+  # hand-rolled #[repr(C)] vtable migration). v0.2.0 added
+  # worker_threads + pool_max_idle_per_host knobs; v0.2.1 made
+  # request_concurrency auto-size from worker_threads × 512. All
+  # three are v1 plugins (api_version=1) — the v2 hub must keep
+  # loading every one of them.
+  [[plugins.mirror.versions]]
+  version = "v0.1.0"
+  plugin_api_version = 1
+  expected_load = "compatible"
+
+  [[plugins.mirror.versions]]
+  version = "v0.2.0"
+  plugin_api_version = 1
+  expected_load = "compatible"
+
+  [[plugins.mirror.versions]]
+  version = "v0.2.1"
+  plugin_api_version = 1
+  expected_load = "compatible"
+
+  # First v2-consumer release. Full metric set: dispatches_total,
+  # dispatch_dropped_total, dispatch_outcomes_total,
+  # dispatch_duration_seconds, in_flight.
+  [[plugins.mirror.versions]]
+  version = "v0.3.0"
+  plugin_api_version = 2
+  expected_load = "compatible"
+
+# ----------------------------------------------------------------------
+# otel
+# ----------------------------------------------------------------------
+[plugins.otel]
+project = "haproxy-haptic/haproxy-spoa-hub-plugin-otel"
+package = "otel"
+so_filename = "libotel_plugin-amd64-glibc2.36.so"
+
+  [[plugins.otel.versions]]
+  version = "v0.3.0"
+  plugin_api_version = 1
+  expected_load = "compatible"
+
+  [[plugins.otel.versions]]
+  version = "v0.4.0"
+  plugin_api_version = 2
+  expected_load = "compatible"
+
+# ----------------------------------------------------------------------
+# sso-auth — DEFERRED.
+#
+# sso-auth's .so links against libxmlsec1 + libxml2 (transitively via
+# the `samael` crate, for SAML XML-DSIG operations). The matrix test
+# runs in the vanilla `rust:bookworm` image which doesn't include
+# those, so `dlopen` of the .so returns "libxmlsec1.so.1: not found".
+# Not an ABI issue — it's an unmet system-library dep at link time.
+#
+# Re-enable once one of:
+#   (a) the matrix test's `before_script` apt-installs
+#       `libxmlsec1-openssl libxml2`, or
+#   (b) the matrix test moves to a custom image that bakes them in.
+#
+# Crate name diverges from the usual `<short>-plugin` pattern, hence
+# the longer `.so` prefix. See LIB_NAMES in
+# haptic/scripts/prep-spoa-plugins.sh.
+#
+# [plugins.sso-auth]
+# project = "haproxy-haptic/haproxy-spoa-hub-plugin-sso-auth"
+# package = "sso-auth"
+# so_filename = "libhaproxy_spoa_hub_plugin_sso_auth-amd64-glibc2.36.so"
+#
+#   [[plugins.sso-auth.versions]]
+#   version = "v0.2.0"
+#   plugin_api_version = 1
+#   expected_load = "compatible"
+#
+#   [[plugins.sso-auth.versions]]
+#   version = "v0.3.0"
+#   plugin_api_version = 2
 #   expected_load = "compatible"
