@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tests/abi-matrix-versions.toml` is now populated with every published plugin .so the workspace cares about (5 plugins × 12 versions: every `mirror` v0.1.0 → v0.3.0, every `external-auth` / `fingerprinting` / `maxmind` / `otel` v1-baseline → v2-consumer release). The `abi_matrix` test downloads each .so from the GitLab Generic Package Registry, loads it against the current hub binary, and asserts (a) `dlopen` succeeds, (b) `api_version()` matches the toml's declared value, (c) v1-baseline accessors (name / plugin_version) work, (d) drop runs cleanly. Catches accidental field reorder or removal in `PluginVTable`, missed `PLUGIN_API_VERSION` bumps after appending a field, and `abi_stable` layout drift — exactly the failure modes the hand-rolled vtable migration was designed against. `coraza` and `sso-auth` are deferred (Go-FFI signal-handler init aborts in the test harness for coraza; sso-auth needs `libxmlsec1` + `libxml2` which the vanilla `rust:bookworm` test image doesn't ship); both have re-enable conditions documented inline.
+- `abi_matrix` test now prints a breadcrumb line (`↓ loading <plugin>@<ver> from <path>`) before each load attempt. The summary report only flushes at the end, so without this trail a SIGSEGV or abort in one plugin's init left the operator with no visible indication of which plugin caused it.
+
 ## [0.6.0] - 2026-05-15
 
 ### Added
