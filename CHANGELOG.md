@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-23
+
 ### Fixed
 
 - `MetricRecorder::install()` now REPLACES the recorder on every call instead of being silently no-op on the second-and-later invocations. The previous `OnceLock`-based behaviour caused a use-after-free on plugin reload: plugins declare `pub(crate) static METRICS: MetricRecorder = MetricRecorder::new();`, which lives in the .so's BSS and survives reload because the hub keeps the library mapped via libloading refcount. The NEW plugin's `set_metric_recorder` thunk called `install(NEW_ctx)`, but `OnceLock::set` returned `Err` (already initialised), the NEW ctx was dropped on the floor, and the static `METRICS` kept pointing at the OLD ctx. When the hub later dropped the OLD plugin's `Box<MetricCtx>` (after the OLD plugin's last in-flight `process()` retired), the next metric emission anywhere in the .so dereferenced freed memory → SIGSEGV (exit 139), tearing down every in-flight SPOP connection and every queued NOTIFY. Reproduced against haptic's gateway-conformance suite, which writes the hub's general-storage directory in rapid bursts (`reconciliationDebounceInterval=10ms`) and pushes the hub through dozens of plugin reloads per conformance shard. Storage switched to `RwLock<Option<RecorderInner>>` so install actually swaps and emit holds a read guard across the FFI callback. Regression tests: `metrics::tests::install_replaces_previous_recorder` pins the new contract; `install_during_concurrent_emit_does_not_tear` stresses the lock against 10k concurrent emissions and 1k concurrent installs.
