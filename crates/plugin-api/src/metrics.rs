@@ -33,7 +33,7 @@
 //! it has called `destroy` on every plugin that received it.
 
 use std::os::raw::c_void;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use abi_stable::std_types::{RSlice, RStr};
 
@@ -111,9 +111,41 @@ pub type RecordMetricFn = extern "C" fn(
 /// When the recorder is not yet installed (between `create` and the
 /// hub's `set_metric_recorder` call) or the host is running a v1 hub
 /// that never installs one, the methods are inexpensive no-ops — a
-/// single relaxed pointer load that observes `None`.
+/// single uncontended read-lock acquire that observes `None`.
+///
+/// # Why `RwLock<Option<…>>` and not `OnceLock<…>`
+///
+/// Plugins are typically declared as `pub(crate) static METRICS:
+/// MetricRecorder = MetricRecorder::new();` — a process-wide singleton
+/// living in the `.so`'s BSS. The hub keeps the `.so` mapped across
+/// plugin reloads via `libloading::Library` refcounting, so the static
+/// **survives** every reload and accumulates state across plugin
+/// instances. With an internal `OnceLock`, `install()` was silently
+/// no-op on the second-and-later plugin loads: the NEW plugin's hub
+/// `ctx` pointer never replaced the OLD one. When the hub then dropped
+/// the OLD plugin's `Box<MetricCtx>` (after the OLD plugin's last
+/// in-flight `process()` call retired), the stale OLD pointer in
+/// `MetricRecorder` became a use-after-free; the next `counter()` /
+/// `gauge()` / `histogram()` from any plugin instance — old or new —
+/// dereferenced freed memory and segfaulted the hub process. The
+/// haptic conformance suite reproduces this on every conformance shard
+/// run because its `reconciliationDebounceInterval=10ms` triggers
+/// rapid back-to-back `HAProxy` general-storage writes, each of which
+/// the hub's file-watcher turns into a plugin reload.
+///
+/// `RwLock` lets `install()` actually REPLACE the inner on every call,
+/// which is what plugin reload requires. Read paths (`emit`) take the
+/// read lock for the duration of the recorder callback, holding the
+/// pointer valid against a racing `install()` from a concurrent
+/// reload. The hub's lifetime contract — "ctx is valid until the
+/// plugin instance that received it is destroyed" — combined with the
+/// hub's drop ordering (`Plugin::drop` calls `destroy()` BEFORE
+/// dropping `Box<MetricCtx>`) means a NEW install always lands BEFORE
+/// the corresponding OLD `Box` is freed, so once `emit` reads NEW
+/// inner under its read lock, the ctx it observes is the NEW one and
+/// stays valid for the call.
 pub struct MetricRecorder {
-    inner: OnceLock<RecorderInner>,
+    inner: RwLock<Option<RecorderInner>>,
 }
 
 struct RecorderInner {
@@ -139,16 +171,31 @@ impl MetricRecorder {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            inner: OnceLock::new(),
+            inner: RwLock::new(None),
         }
     }
 
-    /// Install the hub-provided recorder. Idempotent; subsequent calls
-    /// are no-ops (the OnceLock retains the first installation). The
-    /// `define_plugin!` macro's `set_metric_recorder` thunk calls this.
+    /// Install the hub-provided recorder. REPLACES any previously
+    /// installed recorder — this is intentional and load-bearing: when
+    /// the hub reloads plugins, the NEW plugin's `set_metric_recorder`
+    /// thunk calls this with a fresh `ctx` pointer, and the OLD `ctx`
+    /// (which the hub is about to free) must be evicted from this
+    /// recorder. See the struct-level docs for the use-after-free that
+    /// the previous OnceLock-based no-op-on-second-set behaviour
+    /// produced. The `define_plugin!` macro's `set_metric_recorder`
+    /// thunk calls this.
+    ///
+    /// On lock poisoning we fall back to recovering the inner via
+    /// `into_inner()` — install is rare and a poisoned lock would
+    /// otherwise leak a dangling pointer; the hub's panic-catching
+    /// thunks make poisoning unlikely in the first place.
     #[doc(hidden)]
     pub fn install(&self, record_fn: RecordMetricFn, ctx: *const c_void) {
-        let _ = self.inner.set(RecorderInner { record_fn, ctx });
+        let new = RecorderInner { record_fn, ctx };
+        match self.inner.write() {
+            Ok(mut guard) => *guard = Some(new),
+            Err(poisoned) => *poisoned.into_inner() = Some(new),
+        }
     }
 
     /// Increment a counter. `increment` is typically `1`. Names are
@@ -173,7 +220,20 @@ impl MetricRecorder {
     }
 
     fn emit(&self, name: &str, labels: &[(&str, &str)], value: f64, kind: MetricKind) {
-        let Some(inner) = self.inner.get() else {
+        // Read-lock guard kept alive across the callback invocation:
+        // a racing reload's `install()` blocks on the write lock until
+        // we release, so the `ctx` we hand to `record_fn` cannot be
+        // freed mid-call by the hub dropping its `Box<MetricCtx>`
+        // (which only happens AFTER the OLD plugin's `process` calls
+        // have all retired — see `Plugin::drop` in the hub).
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            // Poisoned read recovers by reading the inner anyway; we
+            // can't propagate the panic from a method that's called
+            // from arbitrary metric-emission sites in plugin code.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let Some(ref inner) = *guard else {
             // No recorder installed — running against a v1 hub, or
             // emit fired before install (between create and
             // set_metric_recorder). Silently drop; no panic, no log
@@ -207,8 +267,14 @@ impl Default for MetricRecorder {
 
 impl std::fmt::Debug for MetricRecorder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `try_read` so a Debug print never deadlocks on a writer
+        // (install is rare; treat the contended case as "unknown").
+        let installed = match self.inner.try_read() {
+            Ok(g) => Some(g.is_some()),
+            Err(_) => None,
+        };
         f.debug_struct("MetricRecorder")
-            .field("installed", &self.inner.get().is_some())
+            .field("installed", &installed)
             .finish()
     }
 }
@@ -253,14 +319,95 @@ mod tests {
     }
 
     #[test]
-    fn install_is_idempotent() {
+    fn install_replaces_previous_recorder() {
+        // Was previously asserting OnceLock-style "second install is
+        // no-op". That contract caused a use-after-free on plugin
+        // reload: the hub creates a fresh `Box<MetricCtx>` for the
+        // NEW plugin, but the static `MetricRecorder` in the plugin
+        // .so kept the OLD ctx pointer; when the hub later dropped
+        // the OLD Box (after the OLD plugin's last in-flight call
+        // retired), the NEXT metric emission dereferenced freed
+        // memory. The contract is now: install REPLACES.
+        static EMITTED_VIA_CTX: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+        extern "C" fn recorder_route_by_ctx(
+            ctx: *const c_void,
+            _name: RStr<'_>,
+            _labels: RSlice<'_, MetricLabel<'_>>,
+            _value: f64,
+            _kind: MetricKind,
+        ) {
+            let idx = ctx as usize;
+            if idx < EMITTED_VIA_CTX.len() {
+                EMITTED_VIA_CTX[idx].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
         let r = MetricRecorder::new();
-        r.install(test_recorder, ptr::null());
-        // Second install should be a no-op — OnceLock retains the
-        // first value. The plugin's `process()` would otherwise see
-        // mid-flight churn if the hub re-installs on config reload.
-        r.install(test_recorder, 0xdead_beef as *const c_void);
-        // No assertion needed beyond "no panic"; this would have
-        // failed if the OnceLock's set() panicked on the second call.
+        r.install(recorder_route_by_ctx, std::ptr::null::<c_void>());
+        r.counter("c1", &[], 1);
+        assert_eq!(EMITTED_VIA_CTX[0].load(Ordering::Relaxed), 1);
+        assert_eq!(EMITTED_VIA_CTX[1].load(Ordering::Relaxed), 0);
+
+        // Second install MUST replace — this is the reload case.
+        r.install(recorder_route_by_ctx, std::ptr::dangling::<c_void>());
+        r.counter("c2", &[], 1);
+        // The NEW ctx received the new emission, NOT the old ctx.
+        assert_eq!(EMITTED_VIA_CTX[0].load(Ordering::Relaxed), 1);
+        assert_eq!(EMITTED_VIA_CTX[1].load(Ordering::Relaxed), 1);
+    }
+
+    /// Concurrent emit while a racing install replaces the recorder.
+    /// Models the hub's "NEW plugin's `set_metric_recorder` thunk runs
+    /// while OLD plugin's `process()` emissions are in flight" race.
+    /// The read-lock in `emit()` must hold the OLD inner valid for
+    /// the duration of the in-flight callback; the install must not
+    /// be observed as a torn write.
+    #[test]
+    fn install_during_concurrent_emit_does_not_tear() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        static OK_CALLS: AtomicU64 = AtomicU64::new(0);
+
+        extern "C" fn ok_recorder(
+            _ctx: *const c_void,
+            _name: RStr<'_>,
+            _labels: RSlice<'_, MetricLabel<'_>>,
+            _value: f64,
+            _kind: MetricKind,
+        ) {
+            OK_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let r = Arc::new(MetricRecorder::new());
+        r.install(ok_recorder, ptr::null());
+
+        let emitter = {
+            let r = Arc::clone(&r);
+            thread::spawn(move || {
+                for _ in 0..10_000 {
+                    r.counter("dispatches_total", &[], 1);
+                }
+            })
+        };
+        let installer = {
+            let r = Arc::clone(&r);
+            thread::spawn(move || {
+                for i in 0..1_000 {
+                    r.install(ok_recorder, i as *const c_void);
+                    thread::sleep(Duration::from_micros(10));
+                }
+            })
+        };
+
+        emitter.join().unwrap();
+        installer.join().unwrap();
+        // All 10_000 emissions must have landed (no panic, no torn
+        // write that the read side rejected). The exact count is
+        // observable via OK_CALLS, but the load-bearing assertion is
+        // "no segfault / no panic during the race".
+        assert_eq!(OK_CALLS.load(Ordering::Relaxed), 10_000);
     }
 }
