@@ -58,6 +58,30 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
          a growing counter with low (or zero) success/failure activity \
          is a signal that the upstream writer is doing unnecessary work."
     );
+    describe_histogram!(
+        "spoa_hub_config_reload_drain_duration_seconds",
+        "Wall-clock time spent in the drain phase of a config reload, \
+         waiting for plugins' in-flight background work to quiesce \
+         before shutdown. One observation per reload that actually \
+         reached the swap → drain → shutdown path (skipped reloads \
+         and failed reloads don't observe). A plot near zero is the \
+         common case (synchronous plugins). Approaching the \
+         configured drain timeout indicates a plugin (or upstream \
+         it depends on) is consistently slow — cross-check against \
+         spoa_hub_config_reload_drain_forced_total{plugin} to find \
+         which one."
+    );
+    describe_counter!(
+        "spoa_hub_config_reload_drain_forced_total",
+        "Plugins that did NOT report a clean drain within the reload \
+         drain budget and got force-shutdown anyway (losing whatever \
+         in-flight requests they still had outstanding). One \
+         increment per (reload, plugin) pair that hit the deadline. \
+         Labelled by plugin name. A growing counter on a specific \
+         plugin during heavy traffic is the signal that operators \
+         need to raise [hub] reload_drain_timeout_ms or that the \
+         plugin's upstream is slow."
+    );
 
     Ok(())
 }
@@ -89,6 +113,23 @@ pub fn record_config_reload_failure() {
 /// this dedup, every such rewrite would drop traffic mid-flight.
 pub fn record_config_reload_skipped() {
     counter!("spoa_hub_config_reload_skipped_total").increment(1);
+}
+
+/// Record the wall-clock duration of the drain phase of a config
+/// reload. Called once per reload that reaches swap → drain →
+/// shutdown. Skipped/failed reloads don't observe.
+pub fn record_config_reload_drain_duration(duration: Duration) {
+    histogram!("spoa_hub_config_reload_drain_duration_seconds").record(duration.as_secs_f64());
+}
+
+/// Record a plugin that did not drain cleanly within the reload
+/// budget. One increment per (reload, plugin) pair that timed out.
+/// Operators reading this on a specific plugin should either raise
+/// `[hub] reload_drain_timeout_ms` or investigate why the plugin's
+/// upstream is slow.
+pub fn record_config_reload_drain_forced(plugin: &str) {
+    counter!("spoa_hub_config_reload_drain_forced_total", "plugin" => plugin.to_owned())
+        .increment(1);
 }
 
 /// Update the age gauge from a "seconds since last success" value

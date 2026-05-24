@@ -217,6 +217,40 @@ impl Plugin {
         shutdown_fn(self.state);
     }
 
+    /// Block until the plugin's background work has drained or the
+    /// deadline elapses. Returns `true` for a clean drain, `false` for
+    /// a forced shutdown (deadline hit). v1/v2 plugins return `true`
+    /// immediately — they are synchronous-only and have no in-flight
+    /// state to wait for (the v3 vtable extension is what introduced
+    /// `drain` to the FFI; older plugins predate fire-and-forget
+    /// dispatch).
+    ///
+    /// `timeout` is rounded to milliseconds at the FFI boundary
+    /// (`u64`); sub-millisecond durations clamp to 0. Plugins
+    /// SHOULD treat the value as advisory but the hub measures
+    /// real-time against the same deadline so a plugin running past
+    /// it gets counted as a forced shutdown.
+    ///
+    /// Called by `apply_reload` between the registry swap and the
+    /// final `shutdown_all`. Not called on the new registry — drain
+    /// is always against the OLD instance whose in-flight work is
+    /// about to be torn down.
+    #[must_use]
+    pub fn drain(&self, timeout: std::time::Duration) -> bool {
+        // SAFETY: read_drain only touches the api_version field on
+        // pre-v3 plugins; on v3+ it reads the drain field which is
+        // present in the allocation. self.vtable is non-null and
+        // points at a valid PluginVTable for the plugin's lifetime.
+        let Some(drain_fn) =
+            (unsafe { haproxy_spoa_hub_plugin_api::PluginVTable::read_drain(self.vtable) })
+        else {
+            // Pre-v3 plugin — synchronous-only, drained by definition.
+            return true;
+        };
+        let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        drain_fn(self.state, timeout_ms)
+    }
+
     /// API version this plugin reports. Matches `PLUGIN_API_VERSION_V*`
     /// constants for known versions; future plugins may report higher
     /// values, in which case the hub uses only the fields it knows about.
@@ -335,16 +369,25 @@ impl Drop for Plugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haproxy_spoa_hub_plugin_api::PLUGIN_API_VERSION_V2;
 
     /// Loads the noop example plugin and asserts the v2 vtable plumbing
-    /// works end-to-end: `api_version` reports V2, the metric ctx box was
-    /// allocated by `load`, and Drop runs cleanly with the ctx still
-    /// alive (`destroy` must finish before the box drops, so the plugin
-    /// never observes a freed recorder ctx).
+    /// works end-to-end: `api_version` reports the current
+    /// `PLUGIN_API_VERSION` (whatever the workspace-built noop is
+    /// compiled against), the metric ctx box was allocated by `load`,
+    /// and Drop runs cleanly with the ctx still alive (`destroy` must
+    /// finish before the box drops, so the plugin never observes a
+    /// freed recorder ctx).
+    ///
+    /// Tracks `PLUGIN_API_VERSION` rather than pinning a specific
+    /// version constant so future v4/v5 bumps don't silently break
+    /// this assertion — the test asserts the SAME-CRATE invariant
+    /// (noop is in this workspace, so it must report the latest
+    /// version this workspace defines), not a specific value.
     #[test]
     #[allow(clippy::used_underscore_binding)]
-    fn noop_plugin_loads_at_v2_with_metric_ctx_installed() {
+    fn noop_plugin_loads_at_current_api_with_metric_ctx_installed() {
+        use haproxy_spoa_hub_plugin_api::PLUGIN_API_VERSION;
+
         let so_path = crate::test_support::workspace_target_dir().join("libnoop_plugin.so");
         if !so_path.exists() {
             // `cargo test --workspace` builds the example plugins,
@@ -357,15 +400,15 @@ mod tests {
         let plugin = unsafe { Plugin::load(&so_path) }.expect("load noop");
         assert_eq!(
             plugin.api_version(),
-            PLUGIN_API_VERSION_V2,
-            "noop is built against the current crate so it must report v2"
+            PLUGIN_API_VERSION,
+            "noop is built against the current crate so it must report the latest API version"
         );
         // The underscore-prefixed field is deliberate (the hub never
         // reads it from outside its Drop side effect) but the test
         // needs to verify it landed.
         assert!(
             plugin._metric_ctx.is_some(),
-            "v2 plugins must have a MetricCtx allocated by load"
+            "plugins at v2+ must have a MetricCtx allocated by load"
         );
         // Drop the plugin here; this exercises the shutdown → destroy →
         // metric_ctx drop → library drop sequence.

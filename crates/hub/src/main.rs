@@ -456,8 +456,41 @@ async fn apply_reload(
     };
 
     match load_result {
-        Ok(new_registry) => {
+        Ok((new_hub_config, new_registry)) => {
+            let drain_timeout = config::resolve_reload_drain_timeout(&new_hub_config);
             let old_registry = registry.swap(Arc::new(new_registry));
+
+            // Drain phase: wait for the old registry's in-flight
+            // plugin work to quiesce before we tear it down. v1/v2
+            // plugins return true immediately (synchronous, nothing
+            // in flight); v3+ plugins with fire-and-forget background
+            // work (mirror, otel) actually block here. See
+            // `config::resolve_reload_drain_timeout` for how the
+            // budget is computed.
+            if drain_timeout.is_zero() {
+                tracing::warn!(
+                    "reload_drain_timeout_ms = 0; skipping drain (in-flight work may be lost)"
+                );
+            } else {
+                let drain_started = Instant::now();
+                let results = old_registry.drain_all(drain_timeout);
+                let drain_duration = drain_started.elapsed();
+                metrics::record_config_reload_drain_duration(drain_duration);
+                for (plugin_name, drained_cleanly) in &results {
+                    if !drained_cleanly {
+                        metrics::record_config_reload_drain_forced(plugin_name);
+                    }
+                }
+                let forced = results.iter().filter(|(_, ok)| !ok).count();
+                tracing::info!(
+                    drain_ms = drain_duration.as_millis(),
+                    drained = results.len() - forced,
+                    forced,
+                    timeout_ms = drain_timeout.as_millis(),
+                    "drain complete, proceeding with shutdown"
+                );
+            }
+
             old_registry.shutdown_all();
             *last_reload_success.lock().await = Instant::now();
             if let Some(bytes) = new_bytes {
@@ -492,9 +525,12 @@ fn reload_is_noop(last: Option<&[u8]>, new: &[u8]) -> bool {
 /// `reload_plugins_from_bytes` instead, which guarantees the dedup
 /// snapshot stored on success matches the bytes the registry was
 /// built from.
-fn reload_plugins(config_path: &Path) -> anyhow::Result<registry::PluginRegistry> {
+fn reload_plugins(
+    config_path: &Path,
+) -> anyhow::Result<(config::HubConfig, registry::PluginRegistry)> {
     let hub_config = config::HubConfig::load(config_path)?;
-    build_registry_from_hub_config(&hub_config)
+    let registry = build_registry_from_hub_config(&hub_config)?;
+    Ok((hub_config, registry))
 }
 
 /// Rebuild the plugin registry from already-read config bytes. Lifts
@@ -506,11 +542,14 @@ fn reload_plugins(config_path: &Path) -> anyhow::Result<registry::PluginRegistry
 /// `config::ConfigError::Parse`; validation errors keep their
 /// validation prefix), so the caller doesn't need to distinguish
 /// which loader ran.
-fn reload_plugins_from_bytes(bytes: &[u8]) -> anyhow::Result<registry::PluginRegistry> {
+fn reload_plugins_from_bytes(
+    bytes: &[u8],
+) -> anyhow::Result<(config::HubConfig, registry::PluginRegistry)> {
     let content = std::str::from_utf8(bytes)
         .map_err(|e| anyhow::anyhow!("config is not valid UTF-8: {e}"))?;
     let hub_config = config::HubConfig::load_from_str(content)?;
-    build_registry_from_hub_config(&hub_config)
+    let registry = build_registry_from_hub_config(&hub_config)?;
+    Ok((hub_config, registry))
 }
 
 fn build_registry_from_hub_config(

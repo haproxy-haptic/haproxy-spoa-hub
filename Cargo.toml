@@ -5,6 +5,7 @@ members = [
     "crates/plugin-api",
     "examples/noop",
     "examples/delay",
+    "examples/drainable",
     "examples/echo",
     "examples/validating-noop",
     "examples/metrics-noop",
