@@ -48,6 +48,16 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
          trigger is stalled or every recent reload attempt failed — \
          cross-check against spoa_hub_config_reload_failure_total."
     );
+    describe_counter!(
+        "spoa_hub_config_reload_skipped_total",
+        "Config file changes that were detected but skipped because the \
+         file content matched the last successfully-loaded version \
+         (byte-identical write — common when an upstream controller \
+         rewrites the config every reconcile regardless of content). \
+         Skipping these avoids tearing down in-flight plugin work; \
+         a growing counter with low (or zero) success/failure activity \
+         is a signal that the upstream writer is doing unnecessary work."
+    );
 
     Ok(())
 }
@@ -67,6 +77,18 @@ pub fn record_config_reload_success() {
 /// last successful reload's age keeps growing until the next success.
 pub fn record_config_reload_failure() {
     counter!("spoa_hub_config_reload_failure_total").increment(1);
+}
+
+/// Record a config reload that was skipped because the file content
+/// matched the last successfully-loaded version. Skipping these is
+/// load-bearing: a reload tears down the in-flight plugin state, and
+/// fire-and-forget dispatchers (mirror, etc.) that haven't completed
+/// their background tokio task lose the request. Upstream writers
+/// that rewrite the file every reconcile (atomic-rename without
+/// content compare) trigger the file-watch unconditionally — without
+/// this dedup, every such rewrite would drop traffic mid-flight.
+pub fn record_config_reload_skipped() {
+    counter!("spoa_hub_config_reload_skipped_total").increment(1);
 }
 
 /// Update the age gauge from a "seconds since last success" value

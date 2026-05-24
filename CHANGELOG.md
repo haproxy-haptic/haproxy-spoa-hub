@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Config-reload path now skips when the file content is byte-identical to the last successfully-loaded version. The previous behaviour ran a full `reload_plugins → arc_swap → shutdown_all` cycle on every file-watch event, including no-op rewrites where an upstream controller atomically renames the same content over the existing file. Reload mid-dispatch tears down in-flight plugin state — fire-and-forget dispatchers (the mirror plugin's `state.runtime.spawn` HTTP requests) lose their background tokio tasks, surfacing as gateway-API conformance `HTTPRouteRequestMultipleMirrors` timing out waiting for the mirror log to land. Reproduced against haptic's gateway-conformance suite: spoa-hub log showed `"configuration loaded"` mid-test (10:48:15.713) between request dispatch (10:48:14.27) and the test's mirror-log poll. Skipping byte-identical reloads avoids the teardown for the common no-op-rewrite case. (Note: this is the workaround. The fundamental "reload must drain in-flight requests before swapping" is a separate, deeper fix that should land independently.)
+
+### Added
+
+- `spoa_hub_config_reload_skipped_total` counter exposes the dedup decision so operators can quantify how many of their reload triggers were no-op rewrites. A growing counter with low (or zero) success/failure activity is a signal that the upstream writer is doing unnecessary work.
+
 ## [0.6.1] - 2026-05-23
 
 ### Fixed

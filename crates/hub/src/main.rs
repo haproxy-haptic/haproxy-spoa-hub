@@ -261,12 +261,27 @@ fn setup_config_reload(
     // acceptable cost; the serialised-shutdown invariant matters more.
     let reload_lock = Arc::new(Mutex::new(()));
 
+    // Content of the config file at the last successful load. Used by
+    // apply_reload() to skip reloads that would re-load byte-identical
+    // content — upstream controllers (HAPTIC) rewrite the file on every
+    // reconcile via atomic-rename, and the file-watch triggers
+    // unconditionally on any inode change. Without this dedup, every
+    // such rewrite tears down the in-flight plugin state (fire-and-
+    // forget dispatchers like the mirror plugin lose their background
+    // tokio tasks mid-request — observed as gateway-API conformance's
+    // HTTPRouteRequestMultipleMirrors timing out waiting for the mirror
+    // log to land). Starts as None so the very first SIGHUP / first
+    // file-watch event after startup always runs a real load (we don't
+    // know what's on disk vs the embedded startup config).
+    let last_reload_bytes: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+
     // SIGHUP trigger.
     #[cfg(unix)]
     {
         let registry = Arc::clone(registry);
         let config_path = config_path.to_path_buf();
         let last_success = Arc::clone(&last_reload_success);
+        let last_bytes = Arc::clone(&last_reload_bytes);
         let reload_lock = Arc::clone(&reload_lock);
         tokio::spawn(async move {
             let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
@@ -274,7 +289,14 @@ fn setup_config_reload(
             loop {
                 sig.recv().await;
                 tracing::info!("received SIGHUP, reloading configuration");
-                apply_reload(&registry, &config_path, &last_success, &reload_lock).await;
+                apply_reload(
+                    &registry,
+                    &config_path,
+                    &last_success,
+                    &last_bytes,
+                    &reload_lock,
+                )
+                .await;
             }
         });
     }
@@ -302,11 +324,19 @@ fn setup_config_reload(
         let registry = Arc::clone(registry);
         let config_path = config_path.to_path_buf();
         let last_success = Arc::clone(&last_reload_success);
+        let last_bytes = Arc::clone(&last_reload_bytes);
         let reload_lock = Arc::clone(&reload_lock);
         tokio::spawn(async move {
             while watch_rx.recv().await.is_some() {
                 tracing::info!("config file change detected, reloading configuration");
-                apply_reload(&registry, &config_path, &last_success, &reload_lock).await;
+                apply_reload(
+                    &registry,
+                    &config_path,
+                    &last_success,
+                    &last_bytes,
+                    &reload_lock,
+                )
+                .await;
             }
         });
     }
@@ -364,14 +394,75 @@ async fn apply_reload(
     registry: &Arc<ArcSwap<registry::PluginRegistry>>,
     config_path: &Path,
     last_reload_success: &Arc<Mutex<Instant>>,
+    last_reload_bytes: &Arc<Mutex<Option<Vec<u8>>>>,
     reload_lock: &Arc<Mutex<()>>,
 ) {
     let _guard = reload_lock.lock().await;
-    match reload_plugins(config_path) {
+
+    // Content-dedup. Reload tears down in-flight plugin state — fire-
+    // and-forget dispatchers (mirror) that haven't completed their
+    // background tokio task lose the request. Skip when the new
+    // content is byte-identical to the last successfully-loaded
+    // version: a file-watch event for an atomic-rename rewrite of
+    // identical content is observable-by-inotify but semantically a
+    // no-op.
+    //
+    // Read the file ONCE so the dedup decision and the registry
+    // rebuild operate on identical bytes. The previous two-read
+    // pattern (dedup read + reload_plugins' own read) was TOCTOU-racy
+    // — an atomic-rename landing between the two reads would store
+    // stale bytes in last_reload_bytes against a freshly-loaded
+    // registry, and the NEXT reload's dedup would compare against
+    // the wrong baseline (Gitar review on !163). On I/O-error
+    // fallback we drop to the path-based loader; the second read
+    // will surface the same error with full context.
+    let new_bytes = match std::fs::read(config_path) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %config_path.display(),
+                "failed to read config for dedup check; falling through to a full reload (the real I/O error will surface from the loader)"
+            );
+            None
+        }
+    };
+
+    if let Some(ref bytes) = new_bytes {
+        let prev = last_reload_bytes.lock().await;
+        if reload_is_noop(prev.as_deref(), bytes) {
+            tracing::info!(
+                bytes = bytes.len(),
+                "config file change detected but content unchanged; skipping reload"
+            );
+            metrics::record_config_reload_skipped();
+            // Refresh the success age — the operator's intent ("the
+            // config I want is loaded") is still met, even though we
+            // didn't physically reload.
+            *last_reload_success.lock().await = Instant::now();
+            metrics::update_config_reload_age(0.0);
+            return;
+        }
+    }
+
+    // Build the registry from the bytes we just read (when available)
+    // so the dedup snapshot stored on success is guaranteed to match
+    // what the registry was built from. Fall back to a path-based
+    // load only when the pre-read failed — in that case there's
+    // nothing useful to cache anyway.
+    let load_result = match new_bytes.as_deref() {
+        Some(bytes) => reload_plugins_from_bytes(bytes),
+        None => reload_plugins(config_path),
+    };
+
+    match load_result {
         Ok(new_registry) => {
             let old_registry = registry.swap(Arc::new(new_registry));
             old_registry.shutdown_all();
             *last_reload_success.lock().await = Instant::now();
+            if let Some(bytes) = new_bytes {
+                *last_reload_bytes.lock().await = Some(bytes);
+            }
             metrics::record_config_reload_success();
             tracing::info!("configuration reloaded successfully");
         }
@@ -382,11 +473,49 @@ async fn apply_reload(
     }
 }
 
+/// Decide whether the bytes just read from the config file are
+/// byte-identical to what was last successfully reloaded. Pure
+/// function so the dedup decision can be unit-tested without standing
+/// up a real `PluginRegistry`. Returns true (skip the reload) only
+/// when both inputs are present AND equal; the startup case (no last
+/// content yet, `None`) always proceeds with a full reload.
+fn reload_is_noop(last: Option<&[u8]>, new: &[u8]) -> bool {
+    last == Some(new)
+}
+
 /// Re-read the config file and rebuild the plugin registry.
 /// On success, returns a new `PluginRegistry` ready to be swapped in.
+///
+/// Used by the I/O-error fallback path in `apply_reload` (when the
+/// pre-dedup read failed and we don't have bytes to pass to the
+/// from-bytes variant). The common path goes through
+/// `reload_plugins_from_bytes` instead, which guarantees the dedup
+/// snapshot stored on success matches the bytes the registry was
+/// built from.
 fn reload_plugins(config_path: &Path) -> anyhow::Result<registry::PluginRegistry> {
     let hub_config = config::HubConfig::load(config_path)?;
+    build_registry_from_hub_config(&hub_config)
+}
 
+/// Rebuild the plugin registry from already-read config bytes. Lifts
+/// the parse + plugin-loader pipeline off the filesystem path so the
+/// dedup read and the registry rebuild can share a single byte
+/// buffer (Gitar review on !163 — TOCTOU between two independent
+/// reads of `config_path`). Failures still surface the same error
+/// types as the path-based loader (parse errors are
+/// `config::ConfigError::Parse`; validation errors keep their
+/// validation prefix), so the caller doesn't need to distinguish
+/// which loader ran.
+fn reload_plugins_from_bytes(bytes: &[u8]) -> anyhow::Result<registry::PluginRegistry> {
+    let content = std::str::from_utf8(bytes)
+        .map_err(|e| anyhow::anyhow!("config is not valid UTF-8: {e}"))?;
+    let hub_config = config::HubConfig::load_from_str(content)?;
+    build_registry_from_hub_config(&hub_config)
+}
+
+fn build_registry_from_hub_config(
+    hub_config: &config::HubConfig,
+) -> anyhow::Result<registry::PluginRegistry> {
     let loaded = plugin_loader::load_all_plugins(
         &hub_config.plugin_dir,
         &hub_config.plugins,
@@ -399,4 +528,67 @@ fn reload_plugins(config_path: &Path) -> anyhow::Result<registry::PluginRegistry
 
     tracing::info!(count = loaded.len(), "plugins reloaded");
     Ok(registry::PluginRegistry::build(loaded)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reload_is_noop;
+
+    // Dedup decision: identical content is the precondition for skipping
+    // a reload. The chart-driven failure mode (HAPTIC rewriting
+    // spoa-hub-config.toml every reconcile with byte-identical content)
+    // is the case that motivated this whole helper — pin it.
+    #[test]
+    fn reload_is_noop_when_content_matches() {
+        let last = b"plugins = [\"mirror\"]\n";
+        let new = b"plugins = [\"mirror\"]\n";
+        assert!(reload_is_noop(Some(last), new));
+    }
+
+    // Any byte difference must trigger a real reload — including
+    // trailing-whitespace-only or newline-only edits (operators
+    // intentionally tweaking a config and expecting it to take effect).
+    #[test]
+    fn reload_is_noop_false_when_content_differs() {
+        let last = b"plugins = [\"mirror\"]\n";
+        let new = b"plugins = [\"mirror\", \"coraza\"]\n";
+        assert!(!reload_is_noop(Some(last), new));
+    }
+
+    // Startup case: no previous load tracked. The first reload after
+    // startup must always run — we don't know whether what's on disk
+    // matches the embedded startup-time load, so the dedup must
+    // proceed (`reload_is_noop` returns false → caller falls through
+    // to a real reload).
+    #[test]
+    fn reload_is_noop_false_on_first_load() {
+        let new = b"plugins = []\n";
+        assert!(!reload_is_noop(None, new));
+    }
+
+    // Whitespace difference still counts as a difference. Operators
+    // who change only formatting expect the reload to fire — letting
+    // it slip silently would obscure config errors that only become
+    // visible after a reload (e.g. typoed plugin name now in a stale
+    // section that "looks" unchanged on diff).
+    #[test]
+    fn reload_is_noop_false_on_whitespace_only_change() {
+        let last = b"plugins = [\"mirror\"]\n";
+        let new = b"plugins  =  [\"mirror\"]\n";
+        assert!(!reload_is_noop(Some(last), new));
+    }
+
+    // Empty file vs empty-last-known. Empty is a valid content state
+    // (the file existed but was truncated to zero bytes by an upstream
+    // writer between two reconciles); reload should not be skipped
+    // unless the previous content was ALSO empty.
+    #[test]
+    fn reload_is_noop_true_when_both_empty() {
+        assert!(reload_is_noop(Some(b""), b""));
+    }
+    #[test]
+    fn reload_is_noop_false_when_only_new_is_empty() {
+        let last = b"plugins = [\"mirror\"]\n";
+        assert!(!reload_is_noop(Some(last), b""));
+    }
 }

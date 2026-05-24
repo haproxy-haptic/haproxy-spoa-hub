@@ -81,7 +81,19 @@ pub enum ConfigError {
 impl HubConfig {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let content = fs::read_to_string(path)?;
-        let config: Self = toml::from_str(&content)?;
+        Self::load_from_str(&content)
+    }
+
+    /// Parse + validate a config from a TOML string already held in
+    /// memory. Used by the reload path so the bytes the dedup check
+    /// hashed are guaranteed to be the same bytes the registry was
+    /// built from — without this, a write landing between the dedup
+    /// read and the reload read would cache stale bytes against a
+    /// freshly-loaded registry, and the NEXT reload's dedup decision
+    /// would compare against the wrong baseline. (Gitar review on
+    /// hub MR !163.)
+    pub fn load_from_str(content: &str) -> Result<Self, ConfigError> {
+        let config: Self = toml::from_str(content)?;
         config.validate()?;
         Ok(config)
     }
@@ -232,6 +244,53 @@ mod tests {
         let (_f, path) = write_config(&cfg);
         let result = HubConfig::load(&path);
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    }
+
+    // Reload-dedup TOCTOU fix (Gitar review on !163): the from-str
+    // loader has to produce a fully-validated HubConfig from an
+    // in-memory buffer so the reload path can dedup-check and load
+    // from the same bytes without a second filesystem read. Pin that
+    // both happy and invalid inputs route through the same validation
+    // logic as the path-based loader.
+    #[test]
+    fn test_load_from_str_parses_valid_content() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
+        let cfg = format!(
+            "plugin_dir = \"{}\"\n\
+             [[listeners]]\n\
+             type = \"unix\"\n\
+             address = \"/tmp/test.sock\"\n\
+             [[plugins]]\n\
+             name = \"noop\"\n\
+             library = \"libnoop.so\"\n\
+             messages = [\"check\"]\n",
+            dir.path().display()
+        );
+        let result = HubConfig::load_from_str(&cfg);
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    }
+
+    #[test]
+    fn test_load_from_str_runs_same_validation_as_load() {
+        // Empty listeners should fail validation regardless of which
+        // entry point we used — pin that load_from_str isn't an
+        // "unvalidated" shortcut.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = format!(
+            "listeners = []\nplugin_dir = \"{}\"\nplugins = []\n",
+            dir.path().display()
+        );
+        let err = HubConfig::load_from_str(&cfg).unwrap_err();
+        assert!(err.to_string().contains("at least one listener"));
+    }
+
+    #[test]
+    fn test_load_from_str_surfaces_toml_parse_errors() {
+        let err = HubConfig::load_from_str("not valid = = toml ===").unwrap_err();
+        // toml::de::Error is wrapped via #[from]; just ensure it's not
+        // a Validation error.
+        assert!(matches!(err, ConfigError::Parse(_)));
     }
 
     #[test]
