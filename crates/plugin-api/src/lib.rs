@@ -45,7 +45,7 @@ pub use types::{
 };
 pub use vtable::{
     GET_PLUGIN_VTABLE_SYMBOL, GetPluginVTableFn, PLUGIN_API_VERSION, PLUGIN_API_VERSION_V1,
-    PLUGIN_API_VERSION_V2, PluginVTable,
+    PLUGIN_API_VERSION_V2, PLUGIN_API_VERSION_V3, PluginVTable,
 };
 
 /// Define a plugin and emit the FFI surface (vtable + entry symbol).
@@ -168,6 +168,8 @@ macro_rules! define_plugin {
 
             $(fn validate(&self, $vctx_param:ident : &PluginContext $(,)?) -> Vec<Diagnostic> $validate_body:block)?
 
+            $(fn drain(&self, $drain_timeout_param:ident : u64 $(,)?) -> bool $drain_body:block)?
+
             $(metrics_static = $metrics_static:path;)?
         }
     ) => {
@@ -211,6 +213,11 @@ macro_rules! define_plugin {
                     &self,
                     $vctx_param: &$crate::PluginContext,
                 ) -> ::std::vec::Vec<$crate::Diagnostic> $validate_body
+            )?
+
+            $(
+                #[allow(clippy::unnecessary_wraps, dead_code)]
+                fn __drain(&self, $drain_timeout_param: u64) -> bool $drain_body
             )?
         }
 
@@ -364,6 +371,24 @@ macro_rules! define_plugin {
                 }));
             }
 
+            extern "C" fn drain(_state: *const c_void, _timeout_ms: u64) -> bool {
+                // Dispatch to user-supplied `fn drain` if present;
+                // otherwise the default thunk returns true immediately
+                // (correct for synchronous plugins that complete all
+                // work inside `process()` — coraza, external-auth,
+                // sso-auth, fingerprinting, maxmind, ...).
+                //
+                // catch_unwind so a panic in a user-defined drain
+                // doesn't unwind through extern "C". On panic we
+                // return false — the hub treats that as a forced
+                // shutdown (counter incremented, in-flight work lost)
+                // which is the right outcome for a misbehaving plugin.
+                catch_unwind(AssertUnwindSafe(|| {
+                    $crate::__define_plugin_drain_thunk!(_state, _timeout_ms, $plugin_ty $(, $drain_body)?)
+                }))
+                .unwrap_or(false)
+            }
+
             #[allow(non_upper_case_globals)]
             static PLUGIN_VTABLE_INSTANCE: $crate::PluginVTable = $crate::PluginVTable {
                 api_version: $crate::PLUGIN_API_VERSION,
@@ -377,6 +402,7 @@ macro_rules! define_plugin {
                 config_schema,
                 validate,
                 set_metric_recorder,
+                drain,
             };
 
             #[unsafe(no_mangle)]
@@ -420,6 +446,26 @@ macro_rules! __define_plugin_validate_thunk {
         // SAFETY: state alive between init and destroy.
         let plugin = unsafe { &*$state.cast::<$plugin_ty>() };
         $crate::RVec::from(plugin.__validate($ctx))
+    }};
+}
+
+/// Internal helper used by `define_plugin!` to expand the optional
+/// `drain` arm. With body → call the impl; without → return true
+/// immediately (synchronous plugin, nothing in flight to wait for).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __define_plugin_drain_thunk {
+    ($state:ident, $timeout_ms:ident, $plugin_ty:ty) => {{
+        let _ = $state;
+        let _ = $timeout_ms;
+        true
+    }};
+    ($state:ident, $timeout_ms:ident, $plugin_ty:ty, $body:block) => {{
+        // SAFETY: state alive between init and destroy. Drain is
+        // called between the registry swap and shutdown — both are
+        // operations on still-live state, so &Self is fine.
+        let plugin = unsafe { &*$state.cast::<$plugin_ty>() };
+        plugin.__drain($timeout_ms)
     }};
 }
 

@@ -133,6 +133,54 @@ impl PluginRegistry {
             entry.instance.shutdown();
         }
     }
+
+    /// Call `drain()` on every loaded plugin sequentially, sharing a
+    /// single wall-clock budget across the set. Returns one
+    /// `(plugin_name, drained_cleanly)` entry per plugin so the caller
+    /// can record metrics and ERROR-log the names that hit the
+    /// deadline.
+    ///
+    /// Sharing a single deadline (rather than allocating `timeout`
+    /// per plugin) means a slow plugin doesn't get to eat the full
+    /// budget while leaving zero for everyone else — but it also
+    /// means later plugins in the iteration get less time than
+    /// earlier ones. That asymmetry is fine in practice: the
+    /// expected steady state is ≤2 plugins with in-flight state per
+    /// deployment (mirror, maybe otel) and either both have headroom
+    /// or only one is busy. Iteration order across the registry's
+    /// `HashMap` is NOT stable — operators who need a specific
+    /// priority can't control it by re-ordering `[plugins.*]`
+    /// blocks. A misbehaving plugin doesn't get to eat into another
+    /// plugin's budget because the operator can always raise
+    /// `[hub] reload_drain_timeout_ms`.
+    ///
+    /// Plugins with no in-flight state (v1/v2 synchronous majority,
+    /// and any v3+ plugin that hasn't overridden `drain`) return
+    /// immediately and don't consume budget.
+    #[must_use]
+    pub fn drain_all(&self, total_timeout: std::time::Duration) -> Vec<(String, bool)> {
+        let deadline = std::time::Instant::now() + total_timeout;
+        self.plugins
+            .iter()
+            .map(|(name, entry)| {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                tracing::debug!(
+                    plugin = %name,
+                    remaining_ms = remaining.as_millis(),
+                    "draining plugin"
+                );
+                let drained = entry.instance.drain(remaining);
+                if !drained {
+                    tracing::error!(
+                        plugin = %name,
+                        total_timeout_ms = total_timeout.as_millis(),
+                        "plugin did not drain within deadline; in-flight work will be lost on shutdown"
+                    );
+                }
+                (name.clone(), drained)
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

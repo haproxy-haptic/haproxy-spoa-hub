@@ -25,6 +25,18 @@ pub struct HubConfig {
     /// Defaults to 300 (5 minutes). Tokio's default is 10 seconds.
     #[serde(default = "default_blocking_keep_alive")]
     pub blocking_thread_keep_alive_secs: u64,
+    /// How long to wait for in-flight plugin work to drain after a
+    /// registry swap before forcing shutdown. `None` (the default)
+    /// derives the budget from `max(plugin.timeout_ms) * 1.5`, floored
+    /// at `1000ms` and capped at `30_000ms`. Set explicitly when an
+    /// operator's plugin set has long-tail dispatch latencies the
+    /// per-plugin `timeout_ms` doesn't fully capture (e.g. mirror's
+    /// HTTP fan-out completing well after the SPOE ACK).
+    ///
+    /// Set to 0 to opt out of draining entirely (legacy behaviour:
+    /// swap → shutdown immediately, losing in-flight fire-and-forget
+    /// work). Not recommended.
+    pub reload_drain_timeout_ms: Option<u64>,
     pub plugins: Vec<PluginConfig>,
 }
 
@@ -58,6 +70,43 @@ pub struct PluginConfig {
 
 fn default_timeout() -> u64 {
     100
+}
+
+/// Resolve the drain budget for `apply_reload`. Returns the explicit
+/// `[hub] reload_drain_timeout_ms` value if set; otherwise derives
+/// `max(plugin.timeout_ms) * 1.5`, clamped to `[1000ms, 30_000ms]`.
+///
+/// Why 1.5×: plugins with fire-and-forget background work
+/// (mirror, otel) typically finish their HTTP dispatch within their
+/// declared SPOE timeout — the timeout is the SPOE-side budget, but
+/// the actual upstream call can land slightly after the ACK was sent.
+/// 1.5× covers the common tail without making reloads slow.
+///
+/// Why floor `1000ms`: even synchronous plugins might be doing a
+/// blocking I/O in `process()` that's already in flight at swap time
+/// (rare but observed in coraza when `SecRules` with `pause:N`-style
+/// directives are loaded). 1s gives them time to return.
+///
+/// Why ceiling `30_000ms`: a misconfigured plugin shouldn't be able to
+/// block reloads indefinitely. 30s is well past any legitimate
+/// upstream-call timeout and short enough that operators waiting on
+/// a reload see one within a reasonable SLO.
+#[must_use]
+pub fn resolve_reload_drain_timeout(cfg: &HubConfig) -> std::time::Duration {
+    use std::time::Duration;
+    if let Some(explicit) = cfg.reload_drain_timeout_ms {
+        return Duration::from_millis(explicit);
+    }
+    let max_plugin = cfg
+        .plugins
+        .iter()
+        .map(|p| p.timeout_ms.unwrap_or(cfg.default_timeout_ms))
+        .max()
+        .unwrap_or(cfg.default_timeout_ms);
+    // (max_plugin * 3) / 2 = 1.5× without floats.
+    let derived = max_plugin.saturating_mul(3) / 2;
+    let clamped = derived.clamp(1_000, 30_000);
+    Duration::from_millis(clamped)
 }
 
 fn default_blocking_keep_alive() -> u64 {

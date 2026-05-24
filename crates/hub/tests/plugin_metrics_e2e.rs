@@ -27,7 +27,7 @@
 use abi_stable::std_types::RHashMap;
 use haproxy_spoa_hub::plugin::Plugin;
 use haproxy_spoa_hub::test_support::workspace_target_dir;
-use haproxy_spoa_hub_plugin_api::{PLUGIN_API_VERSION_V2, PluginContext, RString, SpoeMessage};
+use haproxy_spoa_hub_plugin_api::{PLUGIN_API_VERSION, PluginContext, RString, SpoeMessage};
 use metrics::{Key, Label};
 use metrics_util::CompositeKey;
 use metrics_util::MetricKind;
@@ -106,8 +106,8 @@ fn plugin_v2_metrics_emit_with_namespace_labels_and_correct_kind() {
     let mut plugin = unsafe { Plugin::load(&so_path) }.expect("load metrics-noop");
     assert_eq!(
         plugin.api_version(),
-        PLUGIN_API_VERSION_V2,
-        "metrics-noop is built against the current plugin-api so it must report v2"
+        PLUGIN_API_VERSION,
+        "metrics-noop is built against the current plugin-api so it must report the latest API version"
     );
 
     plugin

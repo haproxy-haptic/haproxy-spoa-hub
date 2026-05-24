@@ -44,10 +44,27 @@ pub const PLUGIN_API_VERSION_V1: u32 = 1;
 /// skips the install for v1 plugins).
 pub const PLUGIN_API_VERSION_V2: u32 = 2;
 
+/// API version v3: adds `drain` so the hub can wait for a plugin's
+/// fire-and-forget background work (mirror's `runtime.spawn`'d HTTP
+/// dispatches, otel's batched exporter queue, etc.) to quiesce before
+/// `shutdown` is invoked on a reload. Plugins that complete all work
+/// inside `process()` (coraza, external-auth, sso-auth, ...) get the
+/// `define_plugin!` macro's default thunk which returns immediately —
+/// no in-flight state, nothing to wait for. Plugins with background
+/// work override `drain` to block until their state is quiescent or
+/// the supplied deadline elapses.
+///
+/// Compat: v3 plugins keep loading on v2/v1 hubs (those hubs ignore
+/// the new field); v2/v1 plugins keep loading on v3 hubs (the hub
+/// gates access on `api_version >= 3` and skips the drain wait for
+/// older plugins — equivalent to today's behaviour, which is the
+/// right default since those plugins are all synchronous-only).
+pub const PLUGIN_API_VERSION_V3: u32 = 3;
+
 /// Latest API version this crate's `PluginVTable` exposes. Plugin
 /// authors set this as the `api_version` field. When future versions
 /// of this crate append a field, this constant bumps by 1.
-pub const PLUGIN_API_VERSION: u32 = PLUGIN_API_VERSION_V2;
+pub const PLUGIN_API_VERSION: u32 = PLUGIN_API_VERSION_V3;
 
 /// Symbol name the hub looks up via `dlsym` after `dlopen`.
 pub const GET_PLUGIN_VTABLE_SYMBOL: &[u8] = b"get_plugin_vtable\0";
@@ -151,6 +168,44 @@ pub struct PluginVTable {
     /// [`MetricRecorder`]: crate::MetricRecorder
     pub set_metric_recorder:
         extern "C" fn(state: *mut c_void, record_fn: RecordMetricFn, ctx: *const c_void),
+
+    // v3 additions — present iff api_version >= PLUGIN_API_VERSION_V3.
+    /// Block until the plugin's in-flight background work has completed
+    /// or `timeout_ms` milliseconds have elapsed. Called by the hub on
+    /// a config reload between the registry swap and the call to
+    /// `shutdown`, so plugins with fire-and-forget tasks (mirror's
+    /// `runtime.spawn`'d HTTP dispatches; otel's batched exporter
+    /// queue) can finish ACK'd requests before their runtime is torn
+    /// down.
+    ///
+    /// Returns `true` if the plugin reports it has nothing more in
+    /// flight (clean drain). Returns `false` if the timeout elapsed
+    /// while in-flight work was still pending (forced shutdown — the
+    /// hub will still proceed with `shutdown`, the open requests are
+    /// lost). Plugins MUST treat the timeout as advisory — going over
+    /// is acceptable in narrow margins, but the hub's overall reload
+    /// SLO depends on drain respecting the deadline.
+    ///
+    /// `process()` calls landing on this plugin instance AFTER drain
+    /// is invoked are still serviced; the hub's swap happens before
+    /// drain, so post-swap traffic goes to the NEW registry. Drain
+    /// concerns only work already in flight against this (now-old)
+    /// instance.
+    ///
+    /// Plugins with no background state (synchronous handlers that
+    /// complete inside `process()`) get the `define_plugin!` macro's
+    /// default thunk which returns `true` immediately — nothing to
+    /// wait for. Plugins that spawn background tasks SHOULD override
+    /// `drain` to wait on their in-flight counter.
+    ///
+    /// **Host access:** gated on `api_version >= PLUGIN_API_VERSION_V3`.
+    /// Reading this field on a v1 or v2 plugin's vtable is UB — those
+    /// allocations do not include these bytes. The hub treats older
+    /// plugins as "drained immediately" because those plugins have no
+    /// in-flight background state in practice (coraza, external-auth,
+    /// fingerprinting, maxmind, otel pre-v0.4, sso-auth all complete
+    /// their work inside `process()`).
+    pub drain: extern "C" fn(state: *const c_void, timeout_ms: u64) -> bool,
 }
 
 impl PluginVTable {
@@ -193,5 +248,33 @@ impl PluginVTable {
         // set_metric_recorder field. Reading the field directly (not
         // via `&PluginVTable`) avoids borrowing the whole struct.
         Some(unsafe { (*vtable_ptr).set_metric_recorder })
+    }
+
+    /// Read the v3 `drain` field, returning `None` for plugins built
+    /// against v1 or v2 (whose allocation doesn't include it). The
+    /// hub treats `None` as "drained immediately" — see the field's
+    /// doc comment for the rationale (older plugins are synchronous).
+    ///
+    /// # Safety
+    ///
+    /// `vtable_ptr` must be a non-null pointer to a `PluginVTable`
+    /// allocation produced by a published plugin (i.e. consistent with
+    /// the `api_version` field's claim about which fields are present).
+    /// On v1/v2 plugins this function reads only `api_version` and
+    /// returns `None` without touching past the relevant baseline.
+    #[must_use]
+    pub unsafe fn read_drain(
+        vtable_ptr: *const PluginVTable,
+    ) -> Option<extern "C" fn(state: *const c_void, timeout_ms: u64) -> bool> {
+        // SAFETY: caller guarantees vtable_ptr is at least 4 bytes long
+        // and that api_version accurately describes the layout.
+        let api_version = unsafe { Self::read_api_version(vtable_ptr) };
+        if api_version < PLUGIN_API_VERSION_V3 {
+            return None;
+        }
+        // SAFETY: api_version >= V3 implies the allocation includes the
+        // drain field. Reading the field directly (not via
+        // `&PluginVTable`) avoids borrowing the whole struct.
+        Some(unsafe { (*vtable_ptr).drain })
     }
 }
