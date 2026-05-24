@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "haproxy-spoa-hub"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "abi_stable",
  "anyhow",
