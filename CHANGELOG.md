@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-24
+
+### Added
+
+- **Drain phase on config reload** (`PLUGIN_API_VERSION` 2→3). The reload sequence is now `swap → drain → shutdown` rather than `swap → shutdown`. Plugins with fire-and-forget background work (mirror's `runtime.spawn`'d HTTP dispatches; otel's batched exporter queue) can opt into a `drain(timeout_ms) -> bool` override on the new vtable field to block until their in-flight tasks complete before the hub tears them down. Plugins that complete all work inside `process()` (coraza, external-auth, sso-auth, fingerprinting, maxmind) get the macro's default `drain` thunk which returns `true` immediately — no in-flight state, nothing to wait for. Closes the underlying "reload must drain in-flight requests before swapping" concern from #3 (the v0.6.2 content-dedup workaround covered ~99% of production triggers but legitimate config changes during traffic still tore down in-flight work).
+- New `drain` field on `PluginVTable` (v3 baseline). Host access gated on `api_version >= PLUGIN_API_VERSION_V3`; the `read_drain` accessor returns `None` for v1/v2 plugins, callers treat that as "drained immediately" — correct because those plugins predate fire-and-forget dispatch in this project. Append-only ABI evolution preserved: v3 plugins keep loading on v0.6.x and v0.5.x hubs (those hubs ignore the new field, no behavioural change for them), and v1/v2 plugins keep loading on v0.7.0 hubs (skip the drain wait — same outcome as today).
+- `PluginRegistry::drain_all(timeout: Duration) -> Vec<(String, bool)>` shares a single wall-clock budget across the loaded plugins and returns one clean/forced result per plugin. Same function `apply_reload` calls between the registry swap and `shutdown_all`.
+- `[hub] reload_drain_timeout_ms` config field (optional). `None` (the default) derives the budget from `max(plugin.timeout_ms) * 1.5`, clamped to `[1000ms, 30_000ms]`. Set to `0` to opt out of draining entirely (legacy `swap → shutdown` behaviour, not recommended).
+- `spoa_hub_config_reload_drain_duration_seconds` histogram and `spoa_hub_config_reload_drain_forced_total{plugin}` counter give operators a direct view of whether reloads are quiescing cleanly or hitting the timeout. The forced counter is labelled by plugin so the offending one is identifiable; a growing counter on a specific plugin during heavy traffic is the signal that operators need to raise the drain timeout or investigate that plugin's upstream.
+- New `examples/drainable` test plugin and `crates/hub/tests/test_drain.rs` integration test exercise the drain machinery against a real `.so`: three sequenced scenarios cover the quiescent registry (no wait), in-flight work (drain blocks then returns clean), and long-running work (drain times out, returns forced).
+
+### Changed
+
+- `PLUGIN_API_VERSION` constant is now `3` (was `2`). Plugins built against this crate report `api_version = 3` and are loaded with full drain semantics on v0.7.0 hubs.
+- `reload_plugins` and `reload_plugins_from_bytes` now return `(HubConfig, PluginRegistry)` so `apply_reload` has the parsed config available to derive the drain timeout per the new field's clamp rules. Public surface change at the `pub(crate)` level only — no impact on plugin authors.
+
+### Notes for plugin authors
+
+Plugins that spawn background work in `process()` and complete it asynchronously SHOULD override `drain` in their `define_plugin!` block to wait on their in-flight counter (or equivalent quiescence signal) up to the supplied `timeout_ms`. See `examples/drainable/src/lib.rs` for the canonical shape; the production mirror plugin's v0.4.0 release uses the same pattern against its `client.in_flight()` accessor.
+
 ## [0.6.2] - 2026-05-24
 
 ### Fixed
