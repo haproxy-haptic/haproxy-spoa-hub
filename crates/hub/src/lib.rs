@@ -1,6 +1,7 @@
 pub mod config;
 pub mod config_watcher;
 pub mod connection;
+pub mod crash_handler;
 pub mod dispatch;
 pub mod listener;
 pub mod metrics;
