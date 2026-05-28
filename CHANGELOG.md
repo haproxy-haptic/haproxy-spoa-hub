@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Fatal-signal backtrace handler. Installs an async-signal-safe `sigaction` for SIGSEGV / SIGBUS / SIGILL / SIGFPE / SIGABRT that writes a raw backtrace (via `libc::backtrace` + `backtrace_symbols_fd`) to stderr before re-raising the signal with the default disposition. Exit code stays `128 + signo` and any configured core-dump still lands. Closes the diagnostic gap when a plugin (or the hub itself) crashes under reload churn: the haptic e2e [3.3] shard on pipeline 2559668798 hit container exit code 139 with zero Rust panic / stack in the logs — by the time the operator inspects, all evidence is gone. The handler is signal-safe (no allocation, no formatted printing, no lock-bearing calls), so it can fire from a thread that was holding the malloc lock at the moment of the SIGSEGV without deadlocking.
+
 ## [0.7.0] - 2026-05-24
 
 ### Added

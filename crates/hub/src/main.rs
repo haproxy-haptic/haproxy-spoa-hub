@@ -8,7 +8,7 @@ use std::{
 use arc_swap::ArcSwap;
 use clap::Parser;
 use haproxy_spoa_hub::{
-    config, config_watcher, listener, metrics, plugin_loader, registry, validate,
+    config, config_watcher, crash_handler, listener, metrics, plugin_loader, registry, validate,
 };
 use tokio::{runtime, sync::Mutex};
 use tokio_util::sync::CancellationToken;
@@ -54,6 +54,16 @@ fn init_logging(log_level: &str) {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Install the fatal-signal backtrace handler BEFORE any plugin
+    // loading or runtime startup. Plugins are dlopen'd shared libraries
+    // — the most likely SIGSEGV source — so the handler needs to be
+    // armed before the first dlopen call. Failure to install is
+    // non-fatal: log to stderr (logging isn't initialised yet) and
+    // continue, so a missing libc::backtrace doesn't block startup.
+    if let Err(e) = crash_handler::install() {
+        eprintln!("warning: failed to install fatal-signal backtrace handler: {e}");
+    }
 
     // Load and validate configuration
     let hub_config = config::HubConfig::load(&cli.config)?;
