@@ -14,16 +14,22 @@
 //!
 //! ## Lifetime contract
 //!
-//! `MetricCtx` is owned by the `Plugin` struct and lives until the
-//! plugin's `destroy` returns. The plugin holds a `*const c_void` to
-//! it via the `MetricRecorder` helper; that pointer is valid for the
-//! plugin's full lifetime. The dispatcher derefs through that pointer
-//! on every event — UB if the box is freed while a plugin call is in
-//! flight, which the `Plugin` Drop ordering prevents (`destroy` runs
-//! before the box drops).
+//! `MetricCtx` is interned by plugin name and leaked for the **process
+//! lifetime** (see [`intern_metric_ctx`]) — it is NOT owned per `Plugin`
+//! instance. The plugin holds a `*const c_void` to it via the
+//! `MetricRecorder` helper and the dispatcher derefs through that
+//! pointer on every event. Because the ctx is never freed, that pointer
+//! stays valid across every config reload and for any in-flight
+//! `process()` that outlives its plugin generation — closing the
+//! use-after-free that a per-generation box would expose when a plugin's
+//! reload-surviving recorder slot still referenced a freed ctx (issue
+//! #4). The vtable's weaker contract — "ctx valid until `destroy`
+//! returns" — is trivially upheld.
 
+use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Mutex, PoisonError};
 
 use haproxy_spoa_hub_plugin_api::{MetricKind, MetricLabel, RSlice, RStr};
 use metrics::Label;
@@ -69,6 +75,59 @@ impl MetricCtx {
     pub fn name_prefix(&self) -> &str {
         &self.name_prefix
     }
+}
+
+/// Process-lifetime intern table mapping a plugin name to its single
+/// leaked [`MetricCtx`]. See [`intern_metric_ctx`] for why this must
+/// outlive every `Plugin` generation.
+static METRIC_CTX_INTERN: Mutex<Option<HashMap<String, &'static MetricCtx>>> = Mutex::new(None);
+
+/// Return the process-lifetime [`MetricCtx`] for a plugin name, creating
+/// (and intentionally leaking) it on first use.
+///
+/// # Why intern instead of one box per plugin instance
+///
+/// A plugin keeps its `MetricRecorder` in a process-wide `static` in its
+/// `.so` (the `metrics-noop` / production coraza pattern). The hub keeps
+/// the `.so` mapped across config reloads via `libloading` refcounting,
+/// so that static — and the single `ctx` pointer it holds — **survives
+/// every reload**.
+///
+/// If the hub allocated a fresh `Box<MetricCtx>` per plugin generation
+/// and freed it when that generation's `Plugin` dropped, the surviving
+/// recorder slot could be left pointing at freed memory: an in-flight
+/// `process()` on a still-live generation (kept alive past the hub's
+/// dispatch timeout by the non-cancellable `spawn_blocking`) would emit
+/// a metric, the plugin's recorder would hand the stale `ctx` to the
+/// hub's [`record_metric`], and the hub would dereference freed memory —
+/// a use-after-free that SIGSEGVs the hub (crash frame `record_metric`
+/// reached from the plugin's `emit`). This is the same UAF class that
+/// the plugin-side `MetricRecorder::install` REPLACE fix addressed, but
+/// closed here on the hub side so it holds **regardless of the plugin's
+/// recorder implementation** (including a plugin still carrying the old
+/// `OnceLock`-style install-once-then-no-op behaviour, or a transient
+/// generation dropped after install because a later plugin in the same
+/// reload failed to load).
+///
+/// The ctx only carries the `"plugin_<name>_"` prefix, which is
+/// identical for every generation of a given plugin name, so sharing one
+/// instance across generations is semantically exact. Leaking it is
+/// bounded: one tiny allocation per distinct plugin name ever loaded,
+/// reused across all reloads. The contract in
+/// [`crate::plugin::Plugin`]'s docs — "ctx valid until `destroy`
+/// returns" — is trivially upheld because the ctx is now valid for the
+/// entire process lifetime.
+pub fn intern_metric_ctx(plugin_name: &str) -> &'static MetricCtx {
+    let mut guard = METRIC_CTX_INTERN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let map = guard.get_or_insert_with(HashMap::new);
+    if let Some(&ctx) = map.get(plugin_name) {
+        return ctx;
+    }
+    let leaked: &'static MetricCtx = Box::leak(MetricCtx::boxed(plugin_name));
+    map.insert(plugin_name.to_owned(), leaked);
+    leaked
 }
 
 /// FFI entry-point a plugin invokes for every metric event. Matches

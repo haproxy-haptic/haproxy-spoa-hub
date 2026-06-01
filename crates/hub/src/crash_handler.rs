@@ -23,6 +23,24 @@
 //! no locks) — exactly what an async-signal-safe handler is allowed to
 //! do.
 //!
+//! ## Two reliability hazards this module guards against
+//!
+//! Both produced the field symptom "container exits 139, no backtrace":
+//!
+//! 1. **Lazy `libgcc_s` load.** glibc's `backtrace()` `dlopen()`s the
+//!    unwinder (`libgcc_s.so.1`) on its FIRST call. `dlopen` is not
+//!    async-signal-safe — if the first-ever `backtrace()` is the one
+//!    inside the handler, on a thread already holding the malloc lock
+//!    (likely for a heap use-after-free), it can deadlock and emit
+//!    nothing. [`install`] calls `prime_backtrace` up front to resolve
+//!    `libgcc_s` while single-threaded, so the in-signal path is a pure
+//!    lock-free stack walk.
+//! 2. **Concurrent multi-thread faults.** The hub runs plugin
+//!    `process()` on a blocking thread pool; two threads can fault at
+//!    once and interleave their `backtrace_symbols_fd` output into
+//!    unreadable mush. An `IN_HANDLER` atomic guard lets only the
+//!    first faulting thread print; the rest re-raise immediately.
+//!
 //! ## Output shape
 //!
 //! When a fatal signal fires, the handler writes:
@@ -62,11 +80,24 @@
 //! compromised and the only sensible action is to dump and die.
 
 use std::os::raw::{c_int, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Maximum stack frames we capture. 128 is a generous bound for any
 /// realistic SPOE / FFI call depth; the static array sits on stack so
 /// the cost is just frame space (≈ 1 KiB on a 64-bit target).
 const MAX_FRAMES: usize = 128;
+
+/// Set the instant any thread enters the fatal-signal handler. The hub
+/// is multi-threaded (tokio workers + the blocking pool that runs plugin
+/// `process()` calls — the most likely SIGSEGV site), so two threads can
+/// fault near-simultaneously. Without a guard their handlers would
+/// interleave `backtrace_symbols_fd` writes on fd 2 into unreadable mush
+/// and both race to reset the signal disposition. The first thread to
+/// win this flag prints its backtrace; any other faulting thread skips
+/// straight to re-raising so the process still dies with the right
+/// `128 + signo` code (it never goes back to `false` — once we are in a
+/// fatal handler the process is terminating regardless).
+static IN_HANDLER: AtomicBool = AtomicBool::new(false);
 
 /// Async-signal-safe sigaction handler.
 ///
@@ -76,6 +107,24 @@ const MAX_FRAMES: usize = 128;
 /// `signal`, `raise`). Allocator calls, locking, formatted printing —
 /// all forbidden.
 extern "C" fn handle_fatal_signal(sig: c_int) {
+    // Concurrent-fault / re-entry guard. If another thread is already
+    // writing a backtrace — or this is a nested fault inside the handler
+    // itself — don't interleave output on fd 2 or race the disposition
+    // reset; restore the default handler and re-raise so the process
+    // still terminates with the correct 128 + signo code.
+    //
+    // SAFETY/async-signal-safety: AtomicBool::swap lowers to a single
+    // lock-free atomic instruction on every target we ship, so it is
+    // safe to call from a signal handler. signal() and raise() are both
+    // on POSIX's async-signal-safe list.
+    if IN_HANDLER.swap(true, Ordering::SeqCst) {
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+        return;
+    }
+
     // The buffer holds raw frame addresses captured by libc::backtrace.
     // Allocated on stack to avoid touching the (possibly poisoned) heap.
     let mut frames: [*mut c_void; MAX_FRAMES] = [std::ptr::null_mut(); MAX_FRAMES];
@@ -163,6 +212,49 @@ fn format_signo(sig: c_int) {
     }
 }
 
+/// Force-load the unwinder + symbolizer so the in-signal backtrace path
+/// is allocation- and `dlopen`-free.
+///
+/// glibc's `backtrace()` lazily `dlopen()`s `libgcc_s.so.1` (the stack
+/// unwinder) on its **first** call. `dlopen` is NOT async-signal-safe:
+/// it allocates and takes the dynamic-loader and malloc locks. If the
+/// first-ever `backtrace()` happened inside the signal handler — on a
+/// thread that may already hold the malloc lock at the instant it
+/// faulted (very likely for a heap use-after-free) — that `dlopen` can
+/// deadlock or fault again, and the handler produces NO output. That is
+/// the intermittent "container exits 139, no backtrace" symptom from the
+/// field: whether a backtrace appeared depended purely on whether
+/// something else had already pulled in `libgcc_s` before the crash.
+///
+/// Calling `backtrace()` (and the fd symbolizer) once here, from
+/// `install()` while the process is still single-threaded and the locks
+/// are uncontended, resolves `libgcc_s` up front so every later
+/// in-signal call is just a lock-free stack walk into already-resident
+/// code. Best-effort: any failure is ignored (the handler still works in
+/// the common case where the faulting thread holds no allocator lock).
+fn prime_backtrace() {
+    let mut frames: [*mut c_void; 8] = [std::ptr::null_mut(); 8];
+    // 8 is a tiny const; the usize -> c_int cast is lossless.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let cap: c_int = frames.len() as c_int;
+    // SAFETY: backtrace writes up to `cap` return addresses into our
+    // stack buffer and returns the count. This first call is what pulls
+    // in libgcc_s.so.
+    let n = unsafe { libc::backtrace(frames.as_mut_ptr(), cap) };
+
+    // Warm the symbolizer too, routing its output to /dev/null so
+    // priming is silent. SAFETY: open/backtrace_symbols_fd/close are
+    // called with valid arguments; a failed open (negative fd) is
+    // skipped.
+    unsafe {
+        let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+        if devnull >= 0 {
+            libc::backtrace_symbols_fd(frames.as_ptr(), n, devnull);
+            libc::close(devnull);
+        }
+    }
+}
+
 /// Install the fatal-signal handler. Idempotent (re-installing replaces
 /// the previous disposition) but should be called exactly once from
 /// `main()` before any tokio runtime / plugin loading.
@@ -172,6 +264,12 @@ fn format_signo(sig: c_int) {
 /// failure is recoverable: the binary still runs, just without the
 /// backtrace capture, so the caller can log the error and continue.
 pub fn install() -> std::io::Result<()> {
+    // Resolve libgcc_s + the symbolizer NOW, before the handler can ever
+    // run on a thread holding the malloc/loader lock. This is the fix
+    // for the intermittent "no backtrace written" crashes — see
+    // `prime_backtrace`.
+    prime_backtrace();
+
     // SA_RESETHAND would auto-restore SIG_DFL on first delivery, but the
     // handler does that explicitly via signal() — we want the explicit
     // form so the order is unambiguous (capture → restore → raise),
