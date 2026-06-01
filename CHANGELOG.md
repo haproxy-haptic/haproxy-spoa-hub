@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-06-01
+
+### Fixed
+
+- **Use-after-free on config reload (SIGSEGV / exit 139).** Under a reload-storm the hub could crash with a backtrace whose fault frame is the hub's own `record_metric`, reached from a plugin's metric `emit`. Root cause: a dangling `MetricCtx` pointer. A plugin keeps its `MetricRecorder` in a `.so`-resident `static` that survives reloads (libloading keeps the image mapped), but the hub allocated a per-plugin-generation `Box<MetricCtx>` and freed it in `Plugin::Drop`. When an old generation dropped, its still-resident recorder slot — or an in-flight `process()` kept alive past the dispatch timeout by the non-cancellable `spawn_blocking` — could hand the freed ctx back to `record_metric`, dereferencing freed memory. The hub now interns `MetricCtx` by plugin name and leaks it for the process lifetime (`plugin_metrics::intern_metric_ctx`), so every generation of the same-named plugin shares one stable, never-freed pointer and the recorder slot can never dangle — independent of the plugin's own recorder implementation. This is the same UAF class as the v0.6.1 `MetricRecorder::install` REPLACE fix, now closed on the hub side so it also holds for a plugin still carrying install-once recorder behaviour. Closes #4. (The eager `shutdown_all()` on reload is *not* implicated — the `define_plugin!` macro's `shutdown` thunk is a no-op — and the per-connection dispatch path is refcount-sound: `destroy`/`dlclose` are gated by the `Arc<Plugin>` strong count held by the connection snapshot and the `spawn_blocking` clone.)
+- **Intermittent missing fatal-signal backtrace.** The v0.7.1 handler sometimes wrote nothing ("container exits 139, no backtrace"). glibc's `backtrace()` lazily `dlopen`s the unwinder `libgcc_s.so.1` on its first call, and `dlopen` is not async-signal-safe — when the first-ever `backtrace()` is the in-signal one on a thread already holding the malloc lock (likely for a heap use-after-free) it can deadlock and emit nothing. `install()` now primes `libgcc_s` + the symbolizer once while single-threaded, so every in-signal call is a pure lock-free stack walk, and an `IN_HANDLER` atomic re-entry guard prevents concurrent worker-thread faults from interleaving their `backtrace_symbols_fd` output. A self-fork integration test now crashes a spawned thread, mirroring the real crash site (the tokio blocking pool).
+
 ## [0.7.1] - 2026-05-28
 
 ### Added
