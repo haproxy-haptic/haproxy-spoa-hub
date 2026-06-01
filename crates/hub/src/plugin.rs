@@ -70,15 +70,28 @@ pub struct Plugin {
     /// Set to true on the first `shutdown()` call so subsequent calls
     /// (and the Drop impl's safety net) are no-ops at the FFI layer.
     shutdown_called: AtomicBool,
-    /// Per-plugin metric context handed to plugins (v2+) via
-    /// `set_metric_recorder`. `None` for v1 plugins, which never had
-    /// the recorder field. Held for its Drop side effect (frees the
-    /// box only after `destroy()` has returned, so the raw pointer
-    /// the plugin's `MetricRecorder` still has remains valid for the
-    /// entire `process()` window). Underscore-prefixed because the
-    /// hub never reads the field directly — only the plugin does,
-    /// via the raw pointer we handed it at install time.
-    _metric_ctx: Option<Box<crate::plugin_metrics::MetricCtx>>,
+    /// Reference to the process-lifetime
+    /// [`crate::plugin_metrics::MetricCtx`] this plugin's recorder was
+    /// installed with (`None` for v1 plugins, which never had the
+    /// recorder field). The ctx is interned by plugin name and leaked
+    /// for the process lifetime — NOT owned per `Plugin` — so it
+    /// outlives every plugin generation.
+    ///
+    /// This is load-bearing for reload safety: a plugin keeps its
+    /// `MetricRecorder` in a `.so`-resident `static` that survives
+    /// reloads (libloading keeps the image mapped), so that single
+    /// recorder slot must never point at a freed ctx. Interning
+    /// guarantees every generation of the same-named plugin shares one
+    /// never-freed ctx, so the slot can't dangle and the hub's
+    /// `record_metric` can't dereference freed memory mid-`process()`.
+    /// See `crate::plugin_metrics::intern_metric_ctx` and issue #4.
+    ///
+    /// Underscore-prefixed because the hub never reads it in normal
+    /// builds — the interned ctx is self-managing (process-lifetime), so
+    /// the `Plugin` no longer needs to hold it for any Drop side effect.
+    /// It is retained only as a record of which ctx `load` installed, so
+    /// tests can assert the reload-stable interning invariant.
+    _metric_ctx: Option<&'static crate::plugin_metrics::MetricCtx>,
     /// Held purely to keep the `.so` mapped. Dropped LAST after
     /// state is destroyed (Rust drops fields in declaration order).
     _library: libloading::Library,
@@ -171,21 +184,25 @@ impl Plugin {
 
         // Install the metric recorder on v2+ plugins. v1 plugins
         // never had the field, so we MUST gate this on api_version
-        // (reading the field on a v1 vtable is UB). The boxed ctx is
-        // retained on the Plugin struct; the plugin keeps a raw
-        // pointer into it via its own MetricRecorder helper, valid
-        // for the plugin's lifetime.
+        // (reading the field on a v1 vtable is UB).
         //
-        // SAFETY: name is at v1 baseline (always present), and we
-        // read it BEFORE installing the recorder so the resulting
-        // String is owned by the hub independent of the plugin's
-        // lifetime. read_set_metric_recorder is safe by construction:
-        // it gates on api_version internally and returns None for v1.
+        // The ctx is interned by plugin name and leaked for the process
+        // lifetime (see `plugin_metrics::intern_metric_ctx`) rather than
+        // boxed per `Plugin` — so a plugin's reload-surviving recorder
+        // slot can never be left pointing at a ctx freed when an old
+        // generation drops (issue #4). Every generation of the same
+        // plugin name gets the SAME stable pointer.
+        //
+        // SAFETY: name is at v1 baseline (always present), and we read
+        // it BEFORE installing the recorder so the interned ctx is keyed
+        // independent of the plugin's lifetime. read_set_metric_recorder
+        // is safe by construction: it gates on api_version internally
+        // and returns None for v1.
         let metric_ctx = unsafe {
             if let Some(set_recorder) = PluginVTable::read_set_metric_recorder(vtable) {
                 let name_fn = (*vtable).name;
-                let plugin_name = name_fn(state).as_str().to_owned();
-                let ctx = crate::plugin_metrics::MetricCtx::boxed(plugin_name);
+                let plugin_name = name_fn(state).as_str();
+                let ctx = crate::plugin_metrics::intern_metric_ctx(plugin_name);
                 set_recorder(state, crate::plugin_metrics::record_metric, ctx.as_ptr());
                 Some(ctx)
             } else {
@@ -257,6 +274,20 @@ impl Plugin {
     #[must_use]
     pub fn api_version(&self) -> u32 {
         self.api_version
+    }
+
+    /// Raw pointer to the [`crate::plugin_metrics::MetricCtx`] this
+    /// plugin's recorder was installed with (`None` for v1 plugins that
+    /// never get a recorder). Exposed for tests asserting the
+    /// reload-stable interning invariant: successive generations of the
+    /// same-named plugin MUST share one ctx pointer so the plugin's
+    /// `.so`-resident recorder slot can never dangle across a reload.
+    #[cfg(test)]
+    #[allow(clippy::used_underscore_binding)]
+    #[must_use]
+    pub(crate) fn metric_ctx_ptr(&self) -> Option<*const std::os::raw::c_void> {
+        self._metric_ctx
+            .map(crate::plugin_metrics::MetricCtx::as_ptr)
     }
 
     /// Plugin's display name. Allocates a `String` because the FFI
@@ -358,11 +389,14 @@ impl Drop for Plugin {
             destroy_fn(self.state);
         }
         self.state = std::ptr::null_mut();
-        // _metric_ctx and _library drop here. The Box<MetricCtx> drops
-        // BEFORE the Library (declaration order), which is fine: by
-        // this point destroy() has returned and no plugin code can
-        // call into the recorder anymore. The Library drops LAST so
-        // dlclose runs after every plugin allocation is freed.
+        // `_metric_ctx` is a `Copy` reference to a process-lifetime
+        // interned ctx (not owned here), so it is NOT freed when this
+        // Plugin drops — by design (issue #4): a sibling generation's
+        // still-mapped recorder slot, or an in-flight `process()` that
+        // outlived the dispatch timeout, must never dereference a freed
+        // ctx via the hub's `record_metric`. Only `_library` has a
+        // meaningful Drop (it `dlclose`s the `.so`); it drops LAST so
+        // unmapping happens after `destroy()` has returned.
     }
 }
 
@@ -373,10 +407,10 @@ mod tests {
     /// Loads the noop example plugin and asserts the v2 vtable plumbing
     /// works end-to-end: `api_version` reports the current
     /// `PLUGIN_API_VERSION` (whatever the workspace-built noop is
-    /// compiled against), the metric ctx box was allocated by `load`,
-    /// and Drop runs cleanly with the ctx still alive (`destroy` must
-    /// finish before the box drops, so the plugin never observes a
-    /// freed recorder ctx).
+    /// compiled against), and a `MetricCtx` was interned and installed
+    /// by `load`. The ctx is process-lifetime (interned, never freed
+    /// per generation), so the plugin never observes a freed recorder
+    /// ctx — see `metric_ctx_is_interned_and_survives_generation_drop`.
     ///
     /// Tracks `PLUGIN_API_VERSION` rather than pinning a specific
     /// version constant so future v4/v5 bumps don't silently break
@@ -384,7 +418,6 @@ mod tests {
     /// (noop is in this workspace, so it must report the latest
     /// version this workspace defines), not a specific value.
     #[test]
-    #[allow(clippy::used_underscore_binding)]
     fn noop_plugin_loads_at_current_api_with_metric_ctx_installed() {
         use haproxy_spoa_hub_plugin_api::PLUGIN_API_VERSION;
 
@@ -403,14 +436,68 @@ mod tests {
             PLUGIN_API_VERSION,
             "noop is built against the current crate so it must report the latest API version"
         );
-        // The underscore-prefixed field is deliberate (the hub never
-        // reads it from outside its Drop side effect) but the test
-        // needs to verify it landed.
         assert!(
-            plugin._metric_ctx.is_some(),
-            "plugins at v2+ must have a MetricCtx allocated by load"
+            plugin.metric_ctx_ptr().is_some(),
+            "plugins at v2+ must have a MetricCtx installed by load"
         );
         // Drop the plugin here; this exercises the shutdown → destroy →
-        // metric_ctx drop → library drop sequence.
+        // library drop sequence (the interned ctx is not freed here).
+    }
+
+    /// Regression test for the reload use-after-free (issue #4): the
+    /// `MetricCtx` a plugin's recorder points at MUST be stable across
+    /// reloads of the same-named plugin and MUST outlive any single
+    /// plugin generation.
+    ///
+    /// Why this matters: a plugin keeps its `MetricRecorder` in a
+    /// process-wide `static` in its `.so` (the `metrics-noop` /
+    /// production coraza pattern). The hub keeps the `.so` mapped across
+    /// reloads (libloading refcounting), so that static — and the single
+    /// `ctx` pointer it holds — survives every reload. If the hub handed
+    /// each plugin generation its own `Box<MetricCtx>`, dropping an old
+    /// generation would free a ctx that the surviving static recorder
+    /// slot (or an in-flight `process()` on another generation) could
+    /// still dereference through the hub's `record_metric` — a UAF that
+    /// segfaults the hub (frame `record_metric` ← plugin `emit`). The
+    /// fix interns the ctx by plugin name for the process lifetime; this
+    /// test pins that contract.
+    #[test]
+    fn metric_ctx_is_interned_and_survives_generation_drop() {
+        let so_path = crate::test_support::workspace_target_dir().join("libnoop_plugin.so");
+        if !so_path.exists() {
+            eprintln!("skipping: {} not built", so_path.display());
+            return;
+        }
+
+        // Generation 1.
+        // SAFETY: we trust our own build output.
+        let gen1 = unsafe { Plugin::load(&so_path) }.expect("load noop gen1");
+        let ptr1 = gen1
+            .metric_ctx_ptr()
+            .expect("v2+ plugin must have a MetricCtx installed");
+
+        // Generation 2 of the SAME plugin: dlopen returns the same
+        // mapped image and the same `.so`-resident recorder slot. The
+        // hub MUST install the SAME ctx pointer so a reload can never
+        // leave the slot pointing at a per-generation box.
+        // SAFETY: we trust our own build output.
+        let gen2 = unsafe { Plugin::load(&so_path) }.expect("load noop gen2");
+        let ptr2 = gen2.metric_ctx_ptr().unwrap();
+        assert_eq!(
+            ptr1, ptr2,
+            "successive generations of the same-named plugin must share one interned MetricCtx \
+             (got distinct per-generation pointers — a reload would dangle the recorder slot)"
+        );
+
+        // Dropping a generation MUST NOT free the shared ctx: a third
+        // generation loaded afterward still sees the identical pointer.
+        drop(gen2);
+        // SAFETY: we trust our own build output.
+        let gen3 = unsafe { Plugin::load(&so_path) }.expect("load noop gen3");
+        assert_eq!(
+            gen3.metric_ctx_ptr().unwrap(),
+            ptr1,
+            "interned MetricCtx must survive a plugin-generation drop"
+        );
     }
 }
