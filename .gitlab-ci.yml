@@ -628,7 +628,14 @@ publish-crate:
     - |
       LOCAL_VERSION=$(cargo metadata --no-deps --format-version=1 \
         | python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; print(next(p['version'] for p in pkgs if p['name']=='haproxy-spoa-hub-plugin-api'))")
-      PUBLISHED=$(curl -sf "https://crates.io/api/v1/crates/haproxy-spoa-hub-plugin-api" \
+      # crates.io's API rejects requests without a User-Agent (HTTP 403, per
+      # https://crates.io/data-access). Without one, `curl -sf` fails and
+      # PUBLISHED falls back to 0.0.0 — which makes this job spuriously try to
+      # re-publish an already-published version and die on "already exists on
+      # crates.io index", turning every hub-only release pipeline red.
+      PUBLISHED=$(curl -sf \
+        -H "User-Agent: haproxy-spoa-hub-ci (release pipeline; +https://gitlab.com/haproxy-haptic/haproxy-spoa-hub)" \
+        "https://crates.io/api/v1/crates/haproxy-spoa-hub-plugin-api" \
         | python3 -c "import sys,json; print(json.load(sys.stdin)['crate']['max_version'])" 2>/dev/null || echo "0.0.0")
       echo "Local: ${LOCAL_VERSION}, Published: ${PUBLISHED}"
       if [ "${LOCAL_VERSION}" = "${PUBLISHED}" ]; then
