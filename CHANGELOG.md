@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-05
+
 ### Fixed
 
 - **In-flight SPOE dispatches lost around a config reload (haptic race B / haptic issue #47).** `apply_reload` drained and retired the old registry immediately after the `arc_swap`, while NOTIFY frames that had loaded the pre-swap snapshot were still dispatching. `drain_all` therefore ran *before* those dispatches had enqueued their fire-and-forget background work (the mirror plugin's `runtime.spawn`'d HTTP request), observed nothing in flight, and the work silently died when the old plugin generation dropped — observed as ~50% mirror-rate flakiness on haptic's gateway-conformance shards, depending on which side of a reload each NOTIFY burst landed. The reload sequence is now **swap → quiesce → drain → shutdown** (`registry::swap_and_retire`): the atomic swap routes new frames to the new registry, the hub then waits for every dispatch still holding the old snapshot to finish (tracked via the snapshot `Arc`'s strong count; dispatch duration is bounded by the per-plugin timeouts), *then* drains plugins' background work, then shuts the old set down. The quiesce and drain phases share the existing `reload_drain_timeout_ms` budget; `0` still opts out of both (legacy swap → shutdown).
