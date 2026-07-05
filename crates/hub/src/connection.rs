@@ -167,10 +167,23 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
                 );
             }
         } else {
-            tracing::debug!(
+            // A NOTIFY for a message no plugin in the CURRENT
+            // configuration handles. Reachable two ways: haproxy's
+            // spoe.conf and the hub's TOML genuinely disagree
+            // (misconfiguration), or a config reload shrank the
+            // `messages` list while HAProxy's previous configuration
+            // generation keeps firing the removed message (e.g.
+            // `send-spoe-group` for a message an upstream controller's
+            // transient render dropped — haptic race B). SPOP has no
+            // message-level error frame — the ACK below just carries
+            // no actions — so the drop cannot be signalled
+            // in-protocol. Make it loud instead of silent: WARN plus
+            // a dedicated counter operators can alert on.
+            tracing::warn!(
                 message_name = %msg_name,
-                "no plugins registered for message"
+                "no plugins registered for message; NOTIFY dropped (ACK carries no actions)"
             );
+            metrics::record_message_unhandled(msg_name);
         }
 
         let elapsed = start.elapsed();

@@ -16,7 +16,29 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
         tracing::info!(%addr, "prometheus metrics endpoint started");
     }
 
+    describe_metrics();
+    Ok(())
+}
+
+/// Register the description text for every metric the hub emits.
+/// Split out of [`init_metrics`] so the exporter wiring and the
+/// (long) catalogue of descriptions stay independently readable.
+fn describe_metrics() {
     describe_counter!("spoa_messages_total", "Total SPOP messages processed");
+    describe_counter!(
+        "spoa_messages_unhandled_total",
+        "NOTIFY messages for which no plugin was registered in the \
+         current configuration. The hub still ACKs the frame (SPOP has \
+         no message-level error mechanism) but the message has no \
+         effect — from HAProxy's point of view the work is dropped. \
+         Labelled by message name. Steady growth means haproxy's SPOE \
+         engine (spoe.conf) and the hub's TOML disagree about the \
+         message set — either a misconfiguration, or a config reload \
+         shrank the hub's `messages` list while HAProxy's previous \
+         configuration generation keeps firing the removed message \
+         (e.g. `send-spoe-group` for a message dropped by an upstream \
+         controller's transient render)."
+    );
     describe_histogram!(
         "spoa_message_duration_seconds",
         "Per-message processing latency in seconds"
@@ -60,16 +82,30 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
     );
     describe_histogram!(
         "spoa_hub_config_reload_drain_duration_seconds",
-        "Wall-clock time spent in the drain phase of a config reload, \
-         waiting for plugins' in-flight background work to quiesce \
-         before shutdown. One observation per reload that actually \
-         reached the swap → drain → shutdown path (skipped reloads \
-         and failed reloads don't observe). A plot near zero is the \
-         common case (synchronous plugins). Approaching the \
+        "Wall-clock time spent retiring the previous registry on a \
+         config reload: waiting for in-flight dispatches holding the \
+         pre-swap registry snapshot to complete (quiesce) plus waiting \
+         for plugins' background work to drain, before shutdown. One \
+         observation per reload that actually reached the swap → \
+         quiesce → drain → shutdown path (skipped reloads and failed \
+         reloads don't observe). A plot near zero is the common case \
+         (synchronous plugins, idle traffic). Approaching the \
          configured drain timeout indicates a plugin (or upstream \
          it depends on) is consistently slow — cross-check against \
-         spoa_hub_config_reload_drain_forced_total{plugin} to find \
-         which one."
+         spoa_hub_config_reload_drain_forced_total{plugin} and \
+         spoa_hub_config_reload_quiesce_forced_total to find the \
+         phase and plugin responsible."
+    );
+    describe_counter!(
+        "spoa_hub_config_reload_quiesce_forced_total",
+        "Reloads where in-flight NOTIFY dispatches still held the \
+         pre-swap registry snapshot when the drain budget expired. The \
+         old plugin set was drained and shut down anyway, so those \
+         dispatches' fire-and-forget follow-up work may be lost. \
+         Dispatch duration is bounded by the per-plugin timeouts, so a \
+         growing counter means the drain budget is smaller than the \
+         slowest plugin's dispatch latency — raise \
+         [hub] reload_drain_timeout_ms or lower the plugin timeout."
     );
     describe_counter!(
         "spoa_hub_config_reload_drain_forced_total",
@@ -82,8 +118,6 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
          need to raise [hub] reload_drain_timeout_ms or that the \
          plugin's upstream is slow."
     );
-
-    Ok(())
 }
 
 /// Record a successful config reload. Increments the success counter
@@ -115,11 +149,20 @@ pub fn record_config_reload_skipped() {
     counter!("spoa_hub_config_reload_skipped_total").increment(1);
 }
 
-/// Record the wall-clock duration of the drain phase of a config
-/// reload. Called once per reload that reaches swap → drain →
-/// shutdown. Skipped/failed reloads don't observe.
+/// Record the wall-clock duration of retiring the previous registry
+/// on a config reload (quiesce wait + plugin drain). Called once per
+/// reload that reaches swap → quiesce → drain → shutdown.
+/// Skipped/failed reloads don't observe.
 pub fn record_config_reload_drain_duration(duration: Duration) {
     histogram!("spoa_hub_config_reload_drain_duration_seconds").record(duration.as_secs_f64());
+}
+
+/// Record a reload whose quiesce phase hit the deadline: at least one
+/// in-flight dispatch still held the pre-swap registry snapshot when
+/// the budget expired, and the old plugin set was drained and shut
+/// down anyway.
+pub fn record_config_reload_quiesce_forced() {
+    counter!("spoa_hub_config_reload_quiesce_forced_total").increment(1);
 }
 
 /// Record a plugin that did not drain cleanly within the reload
@@ -143,6 +186,14 @@ pub fn record_message_processed(message: &str, duration: Duration) {
     histogram!("spoa_message_duration_seconds", "message" => message.to_owned())
         .record(duration.as_secs_f64());
     counter!("spoa_messages_total", "message" => message.to_owned()).increment(1);
+}
+
+/// Record a NOTIFY message that no plugin in the current configuration
+/// is registered for. The frame is still acknowledged (SPOP has no
+/// message-level error mechanism) but the message had no effect —
+/// the work `HAProxy` asked for was dropped.
+pub fn record_message_unhandled(message: &str) {
+    counter!("spoa_messages_unhandled_total", "message" => message.to_owned()).increment(1);
 }
 
 pub fn record_plugin_error(plugin: &str) {

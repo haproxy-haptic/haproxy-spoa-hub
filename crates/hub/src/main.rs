@@ -262,13 +262,12 @@ fn setup_config_reload(
 
     // Mutex serialising apply_reload calls. SIGHUP and file-watch are
     // independent triggers; without this lock, two reloads racing would
-    // both call `registry.swap` then `shutdown_all()` on what they got
-    // back, and the loser would shut down a registry that just became
-    // (or briefly was) the active one — including any plugins still
-    // held by in-flight SPOE messages via Arc snapshots. The lock makes
-    // each apply_reload() observe a consistent before/after registry
-    // pair. Wasted file-read+dlopen work in the rare race window is an
-    // acceptable cost; the serialised-shutdown invariant matters more.
+    // both call `registry::swap_and_retire` and the loser would retire
+    // (quiesce + drain + shut down) a registry that just became (or
+    // briefly was) the active one. The lock makes each apply_reload()
+    // observe a consistent before/after registry pair. Wasted
+    // file-read+dlopen work in the rare race window is an acceptable
+    // cost; the serialised-retire invariant matters more.
     let reload_lock = Arc::new(Mutex::new(()));
 
     // Content of the config file at the last successful load. Used by
@@ -379,21 +378,19 @@ fn setup_config_reload(
 /// Apply a config reload triggered by SIGHUP or file-watch.
 ///
 /// Calls `reload_plugins` to re-read the config + rebuild the plugin
-/// registry, then atomically swaps the result into the shared
-/// `ArcSwap<PluginRegistry>`. On parse / plugin-init failure the
-/// previous registry stays in place — operators see the failure in
+/// registry, then hands the result to `registry::swap_and_retire`
+/// (swap → quiesce → drain → shutdown). On parse / plugin-init failure
+/// the previous registry stays in place — operators see the failure in
 /// logs and metrics, traffic keeps flowing on last-known-good rules.
 ///
 /// `reload_lock` serialises this function across the SIGHUP and
 /// file-watch trigger paths. Without it, two reloads racing would
-/// both call `registry.swap` then `shutdown_all()` on what they got
-/// back, and the loser would shut down a registry that just briefly
-/// was the active one — including any plugins still held by in-flight
-/// SPOE messages via `Arc` snapshots. We hold the lock across the
-/// entire pipeline (file read + dlopen + swap + `shutdown_all`) so each
+/// both call `swap_and_retire`, and the loser would retire a registry
+/// that just briefly was the active one. We hold the lock across the
+/// entire pipeline (file read + dlopen + swap + retire) so each
 /// reload sees a consistent before/after registry pair. The cost in
 /// the rare race window is one duplicated dlopen; the serialised-
-/// shutdown invariant matters more.
+/// retire invariant matters more.
 ///
 /// Both reload paths converge here so the metrics + last-success
 /// bookkeeping live in one place. Renaming this helper or splitting
@@ -468,40 +465,37 @@ async fn apply_reload(
     match load_result {
         Ok((new_hub_config, new_registry)) => {
             let drain_timeout = config::resolve_reload_drain_timeout(&new_hub_config);
-            let old_registry = registry.swap(Arc::new(new_registry));
-
-            // Drain phase: wait for the old registry's in-flight
-            // plugin work to quiesce before we tear it down. v1/v2
-            // plugins return true immediately (synchronous, nothing
-            // in flight); v3+ plugins with fire-and-forget background
-            // work (mirror, otel) actually block here. See
-            // `config::resolve_reload_drain_timeout` for how the
-            // budget is computed.
             if drain_timeout.is_zero() {
                 tracing::warn!(
-                    "reload_drain_timeout_ms = 0; skipping drain (in-flight work may be lost)"
+                    "reload_drain_timeout_ms = 0; skipping quiesce and drain \
+                     (in-flight work may be lost)"
                 );
-            } else {
-                let drain_started = Instant::now();
-                let results = old_registry.drain_all(drain_timeout);
-                let drain_duration = drain_started.elapsed();
-                metrics::record_config_reload_drain_duration(drain_duration);
-                for (plugin_name, drained_cleanly) in &results {
+            }
+
+            // Retire phase: swap → quiesce → drain → shutdown. The
+            // swap atomically routes new NOTIFY frames to the new
+            // registry; the quiesce wait lets dispatches that loaded
+            // the pre-swap snapshot finish (so their fire-and-forget
+            // background work is actually enqueued); the drain then
+            // waits for that background work; only then is the old
+            // plugin set shut down. See `registry::swap_and_retire`
+            // for the ordering rationale and
+            // `config::resolve_reload_drain_timeout` for how the
+            // budget is computed.
+            let report = registry::swap_and_retire(registry, new_registry, drain_timeout).await;
+
+            if !drain_timeout.is_zero() {
+                metrics::record_config_reload_drain_duration(report.retire_duration);
+                if !report.quiesced_cleanly {
+                    metrics::record_config_reload_quiesce_forced();
+                }
+                for (plugin_name, drained_cleanly) in &report.drain_results {
                     if !drained_cleanly {
                         metrics::record_config_reload_drain_forced(plugin_name);
                     }
                 }
-                let forced = results.iter().filter(|(_, ok)| !ok).count();
-                tracing::info!(
-                    drain_ms = drain_duration.as_millis(),
-                    drained = results.len() - forced,
-                    forced,
-                    timeout_ms = drain_timeout.as_millis(),
-                    "drain complete, proceeding with shutdown"
-                );
             }
 
-            old_registry.shutdown_all();
             *last_reload_success.lock().await = Instant::now();
             if let Some(bytes) = new_bytes {
                 *last_reload_bytes.lock().await = Some(bytes);

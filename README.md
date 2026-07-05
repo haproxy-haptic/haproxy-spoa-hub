@@ -16,7 +16,7 @@ HAProxy's [Stream Processing Offload Engine (SPOE)](https://www.haproxy.com/docu
 - **Per-plugin timeouts** — slow plugins are aborted and partial results from completed plugins are returned
 - **Variable namespacing** — plugin output variables are auto-prefixed (e.g., `geoip.country_code`) to prevent conflicts
 - **Pre-parsed data** — plugins receive typed, structured arguments instead of raw SPOP bytes
-- **Hot reload** — SIGHUP reloads configuration and swaps plugins without dropping connections
+- **Hot reload** — SIGHUP or a config-file change reloads configuration and swaps plugins without dropping connections; in-flight dispatches finish on the old plugin set before it is drained and torn down (swap → quiesce → drain → shutdown)
 - **Graceful shutdown** — SIGTERM drains in-flight messages before exiting
 - **Observability** — structured JSON logging and built-in Prometheus metrics endpoint
 
@@ -489,7 +489,7 @@ tests/integration/          Docker-based e2e tests
 - **Protocol**: The `spop` crate handles SPOE wire protocol encoding/decoding (HAPROXY-HELLO, NOTIFY/ACK, DISCONNECT)
 - **Plugin loading**: `abi_stable` provides type-safe FFI with load-time ABI verification via `load_from_file()`
 - **Dispatch**: Single-plugin path uses `spawn_blocking` directly. Multi-plugin parallel groups use `spawn_blocking` per plugin + `join_all` with per-plugin timeouts
-- **Registry**: `Arc<ArcSwap<PluginRegistry>>` enables lock-free SIGHUP reload — each connection loads the current registry snapshot when processing a message
+- **Registry**: `Arc<ArcSwap<PluginRegistry>>` enables lock-free reload — each connection loads the current registry snapshot when processing a NOTIFY frame. A reload swaps the new registry in atomically, then retires the old one in phases (`registry::swap_and_retire`): wait for in-flight dispatches still holding the pre-swap snapshot (quiesce), wait for plugins' fire-and-forget background work (drain), then shut the old set down
 - **Execution plans**: Topological sort of plugin dependency graphs per SPOE message. Independent plugins form parallel groups, dependent plugins run sequentially
 
 ## License

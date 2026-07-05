@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **In-flight SPOE dispatches lost around a config reload (haptic race B / haptic issue #47).** `apply_reload` drained and retired the old registry immediately after the `arc_swap`, while NOTIFY frames that had loaded the pre-swap snapshot were still dispatching. `drain_all` therefore ran *before* those dispatches had enqueued their fire-and-forget background work (the mirror plugin's `runtime.spawn`'d HTTP request), observed nothing in flight, and the work silently died when the old plugin generation dropped — observed as ~50% mirror-rate flakiness on haptic's gateway-conformance shards, depending on which side of a reload each NOTIFY burst landed. The reload sequence is now **swap → quiesce → drain → shutdown** (`registry::swap_and_retire`): the atomic swap routes new frames to the new registry, the hub then waits for every dispatch still holding the old snapshot to finish (tracked via the snapshot `Arc`'s strong count; dispatch duration is bounded by the per-plugin timeouts), *then* drains plugins' background work, then shuts the old set down. The quiesce and drain phases share the existing `reload_drain_timeout_ms` budget; `0` still opts out of both (legacy swap → shutdown).
+- **NOTIFY messages with no registered plugin were dropped silently** (DEBUG log, empty ACK, no metric). When a reload shrinks the `messages` list while HAProxy's previous configuration generation keeps firing a removed message (`send-spoe-group` from an upstream controller's transient render — the post-swap side of race B), every such NOTIFY vanished without a trace. SPOP has no message-level error frame, so the drop can't be signalled in-protocol; it is now loud: WARN log plus the new `spoa_messages_unhandled_total{message}` counter.
+
+### Added
+
+- `registry::swap_and_retire(shared, new_registry, budget) -> RetireReport` — the swap → quiesce → drain → shutdown pipeline as a library function (what `apply_reload` now calls), with per-phase results for metrics and logging.
+- `spoa_hub_config_reload_quiesce_forced_total` counter: reloads where in-flight dispatches still held the pre-swap registry snapshot when the drain budget expired (the old set was retired anyway; their fire-and-forget follow-up work may be lost).
+- `spoa_messages_unhandled_total{message}` counter: NOTIFY messages no plugin in the current configuration is registered for.
+- `examples/drainable` now also models the *loss* mode of fire-and-forget plugins: pending background jobs are cancelled when the plugin instance drops (mirror's runtime dying with the plugin state), with `dispatch_ms` / `start_file` / `complete_file` message args so tests can interleave a reload with an in-flight dispatch deterministically. New `crates/hub/tests/test_reload_quiesce.rs` integration test covers the quiesce ordering end-to-end over a real SPOP connection plus the unhandled-NOTIFY loudness guarantee.
+
 ## [0.7.2] - 2026-06-01
 
 ### Fixed

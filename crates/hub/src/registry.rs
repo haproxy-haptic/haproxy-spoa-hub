@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwap;
@@ -189,6 +189,134 @@ pub enum RegistryError {
     ExecutionPlan { message: String, reason: String },
 }
 
+/// Poll interval for the quiesce wait in [`swap_and_retire`]. 1ms keeps
+/// the added reload latency negligible against dispatch latencies
+/// (plugin timeouts are ≥ millisecond-scale) without busy-spinning.
+const QUIESCE_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+/// Report from [`swap_and_retire`]: what happened while retiring the
+/// previous registry, per phase, so the caller can record metrics and
+/// log the outcome.
+#[derive(Debug)]
+pub struct RetireReport {
+    /// Whether every in-flight dispatch holding the pre-swap registry
+    /// snapshot completed within the budget. `false` means the old
+    /// plugin set was drained and shut down while at least one NOTIFY
+    /// dispatch still held it — that dispatch's fire-and-forget
+    /// follow-up work may be lost. (Memory safety is unaffected either
+    /// way: the snapshot's `Arc`s keep the old plugins mapped until the
+    /// dispatch returns.)
+    pub quiesced_cleanly: bool,
+    /// Per-plugin results from [`PluginRegistry::drain_all`]. Empty
+    /// when the budget was zero (drain opt-out).
+    pub drain_results: Vec<(String, bool)>,
+    /// Wall-clock time spent retiring the old registry (quiesce wait
+    /// plus plugin drain).
+    pub retire_duration: Duration,
+}
+
+/// Swap `new_registry` in as the active registry and retire the old
+/// one: **swap → quiesce → drain → shutdown**.
+///
+/// 1. **Swap** — atomic. Every NOTIFY frame read after this point
+///    dispatches against the new registry.
+/// 2. **Quiesce** — wait for in-flight dispatches that loaded the
+///    pre-swap snapshot (`connection::handle_notify_frame`'s
+///    `load_full()`) to finish. Without this, the drain phase runs
+///    before an in-flight dispatch has enqueued its fire-and-forget
+///    background work (the mirror plugin's `runtime.spawn`'d HTTP
+///    request), observes nothing in flight, and the work silently dies
+///    when the old plugin generation drops — haptic's race B
+///    (in-flight `send-spoe-group` NOTIFYs lost around a reload).
+/// 3. **Drain** — [`PluginRegistry::drain_all`] with the remaining
+///    budget, so plugins' background work enqueued by the (now
+///    completed) dispatches gets to finish.
+/// 4. **Shutdown** — [`PluginRegistry::shutdown_all`] on the old set.
+///
+/// The quiesce wait polls the old registry `Arc`'s strong count: the
+/// caller-held handle returned by the swap is the only reference that
+/// is *not* an in-flight dispatch snapshot (the `ArcSwap` gave up its
+/// own reference in the swap, and connections never keep a snapshot
+/// beyond a single NOTIFY frame), so a strong count of 1 means every
+/// dispatch that started before the swap has finished. The wait is
+/// bounded by `budget`; dispatches themselves are bounded by the
+/// per-plugin timeouts, so the steady-state wait is at most one
+/// frame's dispatch latency.
+///
+/// `budget` is shared across the quiesce and drain phases (same
+/// philosophy as `drain_all`'s shared per-plugin deadline). A zero
+/// budget skips both phases — the documented
+/// `reload_drain_timeout_ms = 0` opt-out (legacy swap → shutdown
+/// behaviour; in-flight work may be lost).
+pub async fn swap_and_retire(
+    shared: &SharedRegistry,
+    new_registry: PluginRegistry,
+    budget: Duration,
+) -> RetireReport {
+    let old = shared.swap(Arc::new(new_registry));
+
+    if budget.is_zero() {
+        old.shutdown_all();
+        return RetireReport {
+            quiesced_cleanly: true,
+            drain_results: Vec::new(),
+            retire_duration: Duration::ZERO,
+        };
+    }
+
+    let started = Instant::now();
+    let deadline = started + budget;
+
+    let quiesced_cleanly = wait_for_snapshot_release(&old, deadline).await;
+    if !quiesced_cleanly {
+        tracing::error!(
+            budget_ms = budget.as_millis(),
+            "in-flight dispatches still hold the previous registry snapshot at the \
+             drain deadline; proceeding with drain + shutdown (their fire-and-forget \
+             follow-up work may be lost)"
+        );
+    }
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let drain_results = old.drain_all(remaining);
+
+    old.shutdown_all();
+
+    let retire_duration = started.elapsed();
+    let forced = drain_results.iter().filter(|(_, ok)| !ok).count();
+    tracing::info!(
+        retire_ms = retire_duration.as_millis(),
+        quiesced_cleanly,
+        drained = drain_results.len() - forced,
+        forced,
+        budget_ms = budget.as_millis(),
+        "previous registry retired"
+    );
+
+    RetireReport {
+        quiesced_cleanly,
+        drain_results,
+        retire_duration,
+    }
+}
+
+/// Wait until `old`'s strong count drops to 1 (only the caller's
+/// handle remains — no in-flight dispatch holds a snapshot anymore)
+/// or `deadline` passes. Returns whether the count reached 1.
+async fn wait_for_snapshot_release(old: &Arc<PluginRegistry>, deadline: Instant) -> bool {
+    loop {
+        if Arc::strong_count(old) == 1 {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            // One final check: a dispatch may have released its
+            // snapshot concurrently with the deadline expiring.
+            return Arc::strong_count(old) == 1;
+        }
+        tokio::time::sleep(QUIESCE_POLL_INTERVAL).await;
+    }
+}
+
 /// Build an execution plan by topologically sorting plugins into
 /// parallel groups based on their dependency declarations.
 fn build_execution_plan(
@@ -314,5 +442,70 @@ mod tests {
         // Both should be in a single parallel group since "x" is external
         assert_eq!(plan.groups.len(), 1);
         assert_eq!(plan.groups[0].len(), 2);
+    }
+
+    // --- swap_and_retire budget semantics ---------------------------
+    //
+    // The full in-flight-dispatch choreography (quiesce blocks until
+    // the last snapshot is released; fire-and-forget work survives the
+    // reload) lives in crates/hub/tests/test_reload_quiesce.rs. The
+    // tests here pin the budget edge cases against a real plugin.
+
+    use crate::test_support::load_noop_plugin;
+
+    #[tokio::test]
+    async fn swap_and_retire_zero_budget_skips_quiesce_and_drain() {
+        let shared = shared_registry(vec![load_noop_plugin()]).unwrap();
+        // Hold a snapshot: the documented `reload_drain_timeout_ms = 0`
+        // opt-out must NOT wait for it (legacy swap → shutdown).
+        let _snapshot = shared.load_full();
+        let report = swap_and_retire(
+            &shared,
+            PluginRegistry::build(vec![]).unwrap(),
+            Duration::ZERO,
+        )
+        .await;
+        assert!(report.quiesced_cleanly);
+        assert!(report.drain_results.is_empty());
+        assert_eq!(report.retire_duration, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn swap_and_retire_quiescent_registry_completes_promptly() {
+        let shared = shared_registry(vec![load_noop_plugin()]).unwrap();
+        let started = Instant::now();
+        let report = swap_and_retire(
+            &shared,
+            PluginRegistry::build(vec![]).unwrap(),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(report.quiesced_cleanly);
+        assert_eq!(report.drain_results.len(), 1);
+        assert!(report.drain_results[0].1, "noop drains clean");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "no snapshots held — retire must not burn the budget, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn swap_and_retire_reports_forced_quiesce_on_deadline() {
+        let shared = shared_registry(vec![load_noop_plugin()]).unwrap();
+        // A snapshot held past the whole budget: retire must give up
+        // at the deadline (bounded reload latency) and report it.
+        let snapshot = shared.load_full();
+        let report = swap_and_retire(
+            &shared,
+            PluginRegistry::build(vec![]).unwrap(),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(
+            !report.quiesced_cleanly,
+            "a still-held snapshot at the deadline must be reported as forced"
+        );
+        drop(snapshot);
     }
 }
