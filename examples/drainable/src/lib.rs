@@ -16,17 +16,43 @@
 //! the hub's `apply_reload` increments
 //! `spoa_hub_config_reload_drain_forced_total{plugin=drainable}`).
 //!
+//! To also model the *loss* mode of the real plugins — mirror's
+//! background HTTP dispatch dies when the plugin instance (and with it
+//! the state-owned tokio runtime) is dropped — the plugin cancels its
+//! pending background work in `Drop`: a job that wakes up after the
+//! plugin instance was dropped skips its completion side effect. The
+//! reload-quiesce integration test
+//! (`crates/hub/tests/test_reload_quiesce.rs`) uses this to prove the
+//! swap → quiesce → drain → shutdown ordering end-to-end via message
+//! args:
+//!
+//! - `dispatch_ms` (int, default 0): sleep *inside* `process()` before
+//!   the background work is enqueued — widens the SPOE dispatch window
+//!   so a test can deterministically interleave a reload with an
+//!   in-flight dispatch.
+//! - `sleep_ms` (int, default 100): how long the background job runs
+//!   after `process()` returned.
+//! - `start_file` (string, optional): written at `process()` entry so
+//!   a test can observe "dispatch is in flight" without guessing at
+//!   scheduling.
+//! - `complete_file` (string, optional): written by the background job
+//!   on completion — unless the plugin was dropped first, in which
+//!   case the job's side effect is lost (the mirror-model loss).
+//!
 //! Macro-hygiene note: the `define_plugin!` macro's body doesn't have
-//! a `self` token bound to the plugin instance, so state lives in a
-//! module-level `AtomicI64`. Same shape as the production mirror
-//! plugin's `STATE.client.in_flight` — but kept primitive here so the
-//! plugin can be loaded multiple times in one test process without an
-//! init guard interfering (dlopen on the same .so returns the same
-//! handle; the static is effectively process-scoped).
+//! a `self` token bound to the plugin instance, so state lives in
+//! module-level atomics. Same shape as the production mirror plugin's
+//! `STATE.client.in_flight` — but kept primitive here so the plugin
+//! can be loaded multiple times in one test process without an init
+//! guard interfering (dlopen on the same .so returns the same handle;
+//! the statics are effectively process-scoped). Consequence: the
+//! cancellation flag is shared across generations too — `init()`
+//! resets it, so tests must fully retire one generation before
+//! loading the next (which the sequenced test scenarios do).
 
 #![allow(non_camel_case_types, non_local_definitions)]
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,8 +65,26 @@ use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeValue, TxnVariable, defi
 /// no other test is mid-dispatch when they assert on drain semantics.
 pub static IN_FLIGHT: AtomicI64 = AtomicI64::new(0);
 
+/// Set when the plugin instance is dropped. Background jobs check it
+/// before performing their completion side effect, modelling a
+/// fire-and-forget dispatcher whose executor dies with the plugin
+/// (the mirror plugin's state-owned tokio runtime aborts its spawned
+/// tasks when the runtime is dropped). Reset in `init()` so a fresh
+/// generation starts alive.
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug)]
 struct DrainablePlugin;
+
+impl Drop for DrainablePlugin {
+    fn drop(&mut self) {
+        // Model the mirror plugin's teardown: dropping the plugin
+        // state kills its executor, and with it every background job
+        // that hasn't completed yet. Jobs observe this via CANCELLED
+        // and skip their completion side effect.
+        CANCELLED.store(true, Ordering::SeqCst);
+    }
+}
 
 define_plugin!(DrainablePlugin, {
     fn new() -> Self {
@@ -55,7 +99,10 @@ define_plugin!(DrainablePlugin, {
         // we want the plugin to load cleanly even on the second-and-
         // later loads in the same test process. The counter resets
         // naturally between tests because each test sequences its
-        // dispatches and drains before asserting.
+        // dispatches and drains before asserting. The cancellation
+        // flag is reset here so a new generation starts alive even if
+        // a previous generation's Drop poisoned the shared static.
+        CANCELLED.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -78,12 +125,41 @@ define_plugin!(DrainablePlugin, {
             .and_then(|v| u64::try_from(v).ok())
             .unwrap_or(100);
 
+        // Observable "dispatch entered process()" marker, written
+        // BEFORE the dispatch delay so tests can wait for the file
+        // instead of guessing at scheduling.
+        if let Some(path) = message.get_string("start_file") {
+            std::fs::write(path, b"started")?;
+        }
+
+        // In-process dispatch latency: the window between the hub
+        // reading the NOTIFY frame and the fire-and-forget work being
+        // enqueued. Real plugins spend this on argument parsing and
+        // request building; making it configurable lets tests
+        // interleave a reload deterministically.
+        let dispatch_ms = message
+            .get_int("dispatch_ms")
+            .and_then(|v| u64::try_from(v).ok())
+            .unwrap_or(0);
+        if dispatch_ms > 0 {
+            thread::sleep(Duration::from_millis(dispatch_ms));
+        }
+
+        let complete_file = message.get_string("complete_file").map(ToOwned::to_owned);
+
         // Bump the counter BEFORE spawning so a same-instant drain
         // call observes the work. Decrement happens at the end of the
         // spawned closure — never before the sleep returns.
         IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(sleep_ms));
+            // Completion side effect is lost if the plugin was dropped
+            // while the job was still running — the mirror-model loss.
+            if !CANCELLED.load(Ordering::SeqCst) {
+                if let Some(path) = complete_file {
+                    let _ = std::fs::write(path, b"completed");
+                }
+            }
             IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         });
 

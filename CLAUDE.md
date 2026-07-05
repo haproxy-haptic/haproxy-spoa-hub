@@ -46,6 +46,12 @@ cd tests/integration && make test    # Docker integration tests (SIGTERM, SIGHUP
   parallel groups use `spawn_blocking` per plugin + `join_all` with per-plugin
   timeouts.
 - **Registry**: `Arc<ArcSwap<PluginRegistry>>` enables lock-free SIGHUP reload.
+  Reloads retire the old registry in phases (`registry::swap_and_retire`):
+  swap (atomic; new frames see the new registry) → quiesce (wait for in-flight
+  dispatches still holding the pre-swap snapshot, tracked via the snapshot
+  `Arc`'s strong count) → drain (plugins' fire-and-forget background work) →
+  shutdown. Never reorder these — draining before the quiesce loses background
+  work that in-flight dispatches haven't enqueued yet (haptic race B).
 - **Variable namespacing**: Plugin output variables are auto-prefixed with the
   plugin name (e.g., `noop.result`).
 - **Execution plans**: Topological sort of plugin dependencies per SPOE message;
