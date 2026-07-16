@@ -5,6 +5,8 @@ release/
 *.rs.bk
 *.rlib
 *.prof*
+# Intentional crash-handler integration tests may leave kernel core dumps.
+core.*
 
 # IDE
 .idea/

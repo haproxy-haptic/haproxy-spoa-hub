@@ -1,6 +1,6 @@
 //! Loaded plugin handle.
 //!
-//! Owns the dlopened library (so the `.so` stays mapped), the
+//! Owns a reference to the dlopened library, the
 //! `*const PluginVTable` pointer the plugin handed back via
 //! `get_plugin_vtable`, and the opaque `*mut c_void` state pointer
 //! produced by the plugin's `create` function.
@@ -12,16 +12,29 @@
 //! state is only mutated during init (single-threaded) and `process`
 //! takes `&self` (concurrent calls share an immutable borrow).
 //!
-//! # Drop order
+//! # Library lifetime
 //!
-//! `Drop` for `Plugin` runs `shutdown` then `destroy` on the plugin's
-//! state, then drops the `Library` (which `dlclose`s the `.so`). The
-//! field declaration order in this struct enforces this — Rust drops
-//! fields in declaration order, so put `_library` LAST.
+//! A successfully opened plugin library remains mapped until the hub process
+//! exits. Config reload still runs `shutdown` and `destroy` for each retired
+//! plugin instance, but it must never `dlclose` arbitrary plugin code: a
+//! plugin may own process-global statics, TLS destructors, foreign runtimes,
+//! or background threads that outlive an individual instance. Coraza embeds
+//! the Go runtime and reliably segfaulted when its last generation was
+//! removed from the config and `dlclose` unmapped that runtime.
+//!
+//! The library cache retains every successful loader handle for the process
+//! lifetime. Reloading configuration at the same canonical path reuses its
+//! primary mapping; deploying new plugin code therefore requires restarting
+//! the hub, which is already the safe operational model for replacing `.so`
+//! files.
 
+use std::collections::HashMap;
 use std::os::raw::c_void;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use abi_stable::std_types::{ROption, RVec};
 use haproxy_spoa_hub_plugin_api::{
@@ -60,6 +73,76 @@ pub enum PluginLoadError {
     CreateFailed { path: String, reason: String },
 }
 
+struct CachedLibrary {
+    primary: Arc<libloading::Library>,
+    // A concurrent or constructor-reentrant first load can open the same
+    // canonical path before `primary` is published. Keep those loader handles
+    // too: dropping even a duplicate successful handle would violate the
+    // process-lifetime no-dlclose contract.
+    additional_handles: Vec<Arc<libloading::Library>>,
+}
+
+type LibraryCache = Mutex<HashMap<PathBuf, CachedLibrary>>;
+
+/// Process-lifetime plugin-library mappings, keyed by canonical path.
+///
+/// The normal path retains one loader handle per library path. A concurrent or
+/// constructor-reentrant first load may create additional handles; those are
+/// retained too so no successful `dlopen` is ever paired with `dlclose`. The
+/// cache is intentionally never cleared: unloading arbitrary plugin code
+/// safely is not a contract the host can enforce.
+fn library_cache() -> &'static LibraryCache {
+    static CACHE: OnceLock<LibraryCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Open `lib_path` once and retain its mapping for the process lifetime.
+///
+/// # Safety
+///
+/// Loading a shared library executes arbitrary initializers. The caller must
+/// trust `lib_path` as a hub plugin. Unlike `libloading::Library::new`, this
+/// helper guarantees that successful initialization is never followed by
+/// `dlclose` while the process is alive.
+unsafe fn load_library(lib_path: &Path) -> Result<Arc<libloading::Library>, libloading::Error> {
+    let cache_key = std::fs::canonicalize(lib_path).unwrap_or_else(|_| lib_path.to_path_buf());
+    {
+        let cache = library_cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(library) = cache.get(&cache_key) {
+            return Ok(Arc::clone(&library.primary));
+        }
+    }
+
+    // SAFETY: upheld by this function's caller. Do not hold the cache mutex
+    // here: dlopen executes arbitrary plugin constructors, which may re-enter
+    // plugin loading for this or another path.
+    let opened = Arc::new(unsafe { libloading::Library::new(lib_path) }?);
+
+    let mut cache = library_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match cache.entry(cache_key) {
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            // Another load published the path while this dlopen was running.
+            // Reuse its primary handle, but retain ours as well: allowing it
+            // to drop would call dlclose on successfully initialized plugin
+            // code, precisely what this cache exists to prevent.
+            let primary = Arc::clone(&entry.get().primary);
+            entry.get_mut().additional_handles.push(opened);
+            Ok(primary)
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(CachedLibrary {
+                primary: Arc::clone(&opened),
+                additional_handles: Vec::new(),
+            });
+            Ok(opened)
+        }
+    }
+}
+
 /// Loaded plugin handle. Cloning this is intentionally not provided —
 /// only one `Plugin` may own a given state pointer. Wrap in `Arc` for
 /// shared ownership across worker threads.
@@ -92,9 +175,10 @@ pub struct Plugin {
     /// It is retained only as a record of which ctx `load` installed, so
     /// tests can assert the reload-stable interning invariant.
     _metric_ctx: Option<&'static crate::plugin_metrics::MetricCtx>,
-    /// Held purely to keep the `.so` mapped. Dropped LAST after
-    /// state is destroyed (Rust drops fields in declaration order).
-    _library: libloading::Library,
+    /// Per-instance reference to the process-lifetime cached mapping. The
+    /// cache keeps one additional strong reference after this instance drops,
+    /// so plugin code and foreign runtimes are never unmapped during reload.
+    _library: Arc<libloading::Library>,
 }
 
 // SAFETY: The plugin's `process` method takes `&self` and the macro
@@ -131,13 +215,13 @@ impl Plugin {
         let path_str = lib_path.display().to_string();
 
         // SAFETY: dlopen is inherently unsafe; we trust the operator's
-        // configured plugin path. libloading's Library::new wraps dlopen.
-        let library = unsafe { libloading::Library::new(lib_path) }.map_err(|source| {
-            PluginLoadError::DlOpen {
+        // configured plugin path. load_library also keeps every successful
+        // mapping alive until process exit, avoiding unsafe unload routines.
+        let library =
+            unsafe { load_library(lib_path) }.map_err(|source| PluginLoadError::DlOpen {
                 path: path_str.clone(),
                 source,
-            }
-        })?;
+            })?;
 
         // dlsym for the entry symbol. SAFETY: signature must match
         // GetPluginVTableFn — that's the contract every plugin honors.
@@ -394,9 +478,9 @@ impl Drop for Plugin {
         // Plugin drops — by design (issue #4): a sibling generation's
         // still-mapped recorder slot, or an in-flight `process()` that
         // outlived the dispatch timeout, must never dereference a freed
-        // ctx via the hub's `record_metric`. Only `_library` has a
-        // meaningful Drop (it `dlclose`s the `.so`); it drops LAST so
-        // unmapping happens after `destroy()` has returned.
+        // ctx via the hub's `record_metric`. Dropping this instance's
+        // `_library` Arc cannot unmap the `.so`: the process-lifetime cache
+        // permanently retains another strong reference.
     }
 }
 
