@@ -174,6 +174,13 @@ depends_on = ["ja3"]  # runs after ja3, receives ja3.hash in message args
 
 Plugins are standalone Rust crates compiled to shared libraries. You only need the `haproxy-spoa-hub-plugin-api` crate — no access to the hub source code required.
 
+The hub keeps every successfully opened plugin library mapped until process
+exit. Config reloads still create, initialize, drain, shut down, and destroy
+plugin instances, but never `dlclose` arbitrary plugin code: plugins may embed
+foreign runtimes or retain process-global callbacks that cannot be unloaded
+safely. Replace a plugin `.so` by rolling or restarting the hub process; do not
+expect a config reload to activate new code at the same library path.
+
 ### 1. Create the crate
 
 ```bash

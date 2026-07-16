@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Removing a plugin during config reload could crash the hub during `dlclose` (SIGSEGV / exit 139).** The hub now retains one shared-library mapping per canonical plugin path until process exit while still running each retired instance's `shutdown` and `destroy` hooks. A plugin host cannot prove arbitrary library termination routines are safe: Coraza embeds the Go runtime, and removing its last configured generation reliably unmapped live runtime code immediately after the hub logged a successful registry retirement. Process-lifetime mappings also protect plugin statics, TLS destructors, and background callbacks from executing against unloaded code. Replacing plugin binaries requires a hub restart; configuration and instance state remain hot-reloadable.
+
 ## [0.7.3] - 2026-07-05
 
 ### Fixed
