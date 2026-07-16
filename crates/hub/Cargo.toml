@@ -1,6 +1,6 @@
 [package]
 name = "haproxy-spoa-hub"
-version = "0.7.3"
+version = "0.7.4"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
