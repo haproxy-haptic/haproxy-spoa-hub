@@ -11,7 +11,7 @@ use spop::{actions::VarScope as SpopVarScope, types::TypedData};
 
 use crate::{
     metrics,
-    registry::{ExecutionPlan, PluginRegistry},
+    registry::{ExecutionPlan, PluginAdmission, PluginRegistry},
 };
 
 /// Result of `tokio::time::timeout(spawn_blocking(plugin.process()))`.
@@ -27,6 +27,35 @@ type PluginCallResult = Result<
 
 /// Alias for the extra-args map threaded through the dispatch pipeline.
 type ArgMap = RHashMap<RString, SpoeValue>;
+
+const HUB_STATUS_VARIABLE: &str = "__status";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PluginStatus {
+    Ok,
+    Error,
+    Timeout,
+    Overloaded,
+    Skipped,
+}
+
+impl PluginStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+            Self::Timeout => "timeout",
+            Self::Overloaded => "overloaded",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+struct PluginOutcome {
+    name: String,
+    status: PluginStatus,
+    result: Option<ProcessingResult>,
+}
 
 /// Prefix for hub control args. Args with this prefix are consumed by
 /// the hub and stripped from the message before plugins see them.
@@ -158,7 +187,6 @@ fn expand_skip_cascade(
                 reason = %skipped_name,
                 "plugin skipped (dependency cascade)"
             );
-            metrics::record_plugin_skip(name);
         }
     }
 }
@@ -167,6 +195,31 @@ fn expand_skip_cascade(
 pub struct DispatchResult {
     /// All collected transaction variables with namespace prefixes applied.
     pub variables: Vec<(VarScope, String, SpoeValue)>,
+}
+
+fn append_plugin_variables(
+    plugin_name: &str,
+    result: ProcessingResult,
+    expose_to_dependents: bool,
+    extra_args: &mut Option<ArgMap>,
+    variables: &mut Vec<(VarScope, String, SpoeValue)>,
+) {
+    for var in result.variables {
+        if var.name.as_str() == HUB_STATUS_VARIABLE {
+            tracing::debug!(
+                plugin = %plugin_name,
+                "plugin attempted to set reserved host status variable"
+            );
+            continue;
+        }
+        let prefixed_name = format!("{plugin_name}.{}", var.name);
+        if expose_to_dependents {
+            extra_args
+                .get_or_insert_with(RHashMap::new)
+                .insert(prefixed_name.as_str().into(), var.value.clone());
+        }
+        variables.push((var.scope, prefixed_name, var.value));
+    }
 }
 
 /// Dispatch a message through the execution plan, running independent
@@ -187,6 +240,7 @@ pub async fn dispatch_message(
     let mut extra_args = None;
 
     for (group_idx, group) in plan.groups.iter().enumerate() {
+        let is_last_group = group_idx + 1 == plan.groups.len();
         // Filter out skipped plugins and cascade to dependents in a single pass.
         // Cascade is safe here: plugins in the same group are independent
         // (topologically), so expanding the skip set cannot affect this group.
@@ -196,6 +250,19 @@ pub async fn dispatch_message(
                 tracing::debug!(plugin = %name, "plugin skipped");
                 metrics::record_plugin_skip(name);
                 expand_skip_cascade(name, registry, &mut plugins_to_skip);
+
+                // A skipped plugin is part of this message's execution plan,
+                // so report it explicitly. This distinguishes intentional or
+                // dependency-driven skips from plugins that are not configured
+                // for the message at all.
+                let status_name = format!("{name}.{HUB_STATUS_VARIABLE}");
+                let status_value = SpoeValue::String(PluginStatus::Skipped.as_str().into());
+                if !is_last_group {
+                    extra_args
+                        .get_or_insert_with(RHashMap::new)
+                        .insert(status_name.as_str().into(), status_value.clone());
+                }
+                variables.push((VarScope::Transaction, status_name, status_value));
             } else {
                 active_plugins.push(name.as_str());
             }
@@ -213,17 +280,33 @@ pub async fn dispatch_message(
         )
         .await;
 
-        let is_last_group = group_idx + 1 == plan.groups.len();
-        for (plugin_name, result) in group_results {
-            for var in result.variables {
-                let prefixed_name = format!("{plugin_name}.{}", var.name);
-                if !is_last_group {
-                    extra_args
-                        .get_or_insert_with(RHashMap::new)
-                        .insert(prefixed_name.as_str().into(), var.value.clone());
-                }
-                variables.push((var.scope, prefixed_name, var.value));
+        for outcome in group_results {
+            let plugin_name = outcome.name;
+            if outcome.status != PluginStatus::Ok {
+                expand_skip_cascade(&plugin_name, registry, &mut plugins_to_skip);
             }
+
+            if let Some(result) = outcome.result {
+                append_plugin_variables(
+                    &plugin_name,
+                    result,
+                    !is_last_group,
+                    &mut extra_args,
+                    &mut variables,
+                );
+            }
+
+            // Status is host-owned. Plugin variables named `__status` were
+            // discarded above, so the ACK contains exactly one authoritative
+            // status value for this plugin.
+            let status_name = format!("{plugin_name}.{HUB_STATUS_VARIABLE}");
+            let status_value = SpoeValue::String(outcome.status.as_str().into());
+            if !is_last_group {
+                extra_args
+                    .get_or_insert_with(RHashMap::new)
+                    .insert(status_name.as_str().into(), status_value.clone());
+            }
+            variables.push((VarScope::Transaction, status_name, status_value));
         }
     }
 
@@ -244,7 +327,7 @@ async fn execute_group(
     message: &SpoeMessage,
     extra_args: Option<&ArgMap>,
     registry: &PluginRegistry,
-) -> Vec<(String, ProcessingResult)> {
+) -> Vec<PluginOutcome> {
     let mut futures = Vec::with_capacity(group.len());
 
     // Build the merged message once (only allocates when extra_args is Some)
@@ -261,27 +344,129 @@ async fn execute_group(
         };
 
         let instance = Arc::clone(&entry.instance);
+        let admission = Arc::clone(&entry.admission);
         let msg = Arc::clone(&base_msg);
         let timeout = entry.timeout;
 
-        // Launch on blocking thread pool immediately
-        let handle = tokio::task::spawn_blocking(move || instance.process(&msg));
-
-        // Create a future that wraps the handle with a timeout
         let name = plugin_name.to_owned();
-        futures.push(async move {
-            let start = Instant::now();
-            let result = tokio::time::timeout(timeout, handle).await;
-            handle_plugin_result(name, result, start, timeout)
-        });
+        futures.push(execute_plugin(name, instance, msg, admission, timeout));
     }
 
     // Await all plugin futures concurrently
     futures::future::join_all(futures)
         .await
         .into_iter()
-        .flatten()
         .collect()
+}
+
+/// One in-flight gauge observation tied to the blocking closure's actual
+/// lifetime. A Tokio timeout drops only the `JoinHandle`; it does not cancel the
+/// work, so decrementing in the async waiter would under-report saturation and
+/// let operators believe capacity had recovered while CPU was still occupied.
+struct InFlightGuard {
+    plugin: String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        metrics::record_plugin_in_flight_delta(&self.plugin, -1.0);
+    }
+}
+
+async fn execute_plugin(
+    name: String,
+    instance: Arc<crate::plugin::Plugin>,
+    message: Arc<SpoeMessage>,
+    admission: Arc<PluginAdmission>,
+    timeout: Duration,
+) -> PluginOutcome {
+    let start = Instant::now();
+    let deadline = start + timeout;
+
+    let permit = match Arc::clone(&admission.permits).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(tokio::sync::TryAcquireError::NoPermits) => {
+            if admission.max_queue == 0 || !admission.try_enter_queue() {
+                // Overload is attacker-triggerable and already accounted by a
+                // bounded-cardinality metric. Keep request-path logging at
+                // debug so saturation cannot become a log-amplification DoS.
+                tracing::debug!(plugin = %name, "plugin overloaded; bounded queue is full");
+                metrics::record_plugin_overload(&name);
+                return PluginOutcome {
+                    name,
+                    status: PluginStatus::Overloaded,
+                    result: None,
+                };
+            }
+
+            metrics::record_plugin_queued_delta(&name, 1.0);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let queue_budget = admission
+                .queue_timeout
+                .map_or(remaining, |configured| configured.min(remaining));
+            let acquired =
+                tokio::time::timeout(queue_budget, Arc::clone(&admission.permits).acquire_owned())
+                    .await;
+            admission.leave_queue();
+            metrics::record_plugin_queued_delta(&name, -1.0);
+
+            match acquired {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    tracing::error!(plugin = %name, "plugin admission gate closed");
+                    metrics::record_plugin_error(&name);
+                    return PluginOutcome {
+                        name,
+                        status: PluginStatus::Error,
+                        result: None,
+                    };
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        plugin = %name,
+                        queue_timeout_ms = queue_budget.as_millis(),
+                        "plugin queue wait timed out"
+                    );
+                    metrics::record_plugin_queue_timeout(&name);
+                    return PluginOutcome {
+                        name,
+                        status: PluginStatus::Overloaded,
+                        result: None,
+                    };
+                }
+            }
+        }
+        Err(tokio::sync::TryAcquireError::Closed) => {
+            tracing::error!(plugin = %name, "plugin admission gate closed");
+            metrics::record_plugin_error(&name);
+            return PluginOutcome {
+                name,
+                status: PluginStatus::Error,
+                result: None,
+            };
+        }
+    };
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        metrics::record_plugin_timeout(&name);
+        return PluginOutcome {
+            name,
+            status: PluginStatus::Timeout,
+            result: None,
+        };
+    }
+
+    metrics::record_plugin_in_flight_delta(&name, 1.0);
+    let guard_name = name.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _in_flight = InFlightGuard { plugin: guard_name };
+        instance.process(&message)
+    });
+
+    let result = tokio::time::timeout(remaining, handle).await;
+    handle_plugin_result(name, result, start, timeout)
 }
 
 /// Classify and log the outcome of a single plugin `spawn_blocking` + timeout call.
@@ -290,7 +475,7 @@ fn handle_plugin_result(
     result: PluginCallResult,
     start: Instant,
     timeout: Duration,
-) -> Option<(String, ProcessingResult)> {
+) -> PluginOutcome {
     let elapsed_us = start.elapsed().as_micros();
     match result {
         Ok(Ok(Ok(processing_result))) => {
@@ -300,17 +485,28 @@ fn handle_plugin_result(
                 variables = processing_result.variables.len(),
                 "plugin completed"
             );
-            Some((name, processing_result))
+            PluginOutcome {
+                name,
+                status: PluginStatus::Ok,
+                result: Some(processing_result),
+            }
         }
         Ok(Ok(Err(e))) => {
-            tracing::error!(
+            // A plugin error can be caused by request data. The error counter
+            // and host-owned status carry the operational signal without
+            // emitting one production log line per hostile request.
+            tracing::debug!(
                 plugin = %name,
                 error = %e,
                 latency_us = elapsed_us,
                 "plugin returned error"
             );
             metrics::record_plugin_error(&name);
-            None
+            PluginOutcome {
+                name,
+                status: PluginStatus::Error,
+                result: None,
+            }
         }
         Ok(Err(join_err)) => {
             tracing::error!(
@@ -319,16 +515,24 @@ fn handle_plugin_result(
                 "plugin task panicked"
             );
             metrics::record_plugin_error(&name);
-            None
+            PluginOutcome {
+                name,
+                status: PluginStatus::Error,
+                result: None,
+            }
         }
         Err(_) => {
-            tracing::warn!(
+            tracing::debug!(
                 plugin = %name,
                 timeout_ms = %timeout.as_millis(),
                 "plugin timed out"
             );
             metrics::record_plugin_timeout(&name);
-            None
+            PluginOutcome {
+                name,
+                status: PluginStatus::Timeout,
+                result: None,
+            }
         }
     }
 }
@@ -448,7 +652,10 @@ mod tests {
     // The following tests exercise the async dispatch logic with real
     // plugin instances. They require the noop plugin .so to be built.
 
-    use crate::{plugin_loader::LoadedPlugin, test_support::load_noop_plugin};
+    use crate::{
+        plugin_loader::LoadedPlugin,
+        test_support::{load_noop_plugin, load_test_plugins, plugin_config},
+    };
 
     #[tokio::test]
     async fn test_dispatch_single_plugin_returns_prefixed_vars() {
@@ -470,6 +677,136 @@ mod tests {
             name.starts_with("noop."),
             "expected noop. prefix, got: {name}"
         );
+        assert!(result.variables.iter().any(|(_, name, value)| {
+            name == "noop.__status"
+                && matches!(value, SpoeValue::String(status) if status.as_str() == "ok")
+        }));
+    }
+
+    #[test]
+    fn reserved_status_variable_is_never_forwarded() {
+        let plugin_name = "untrusted";
+        let plugin_result = ProcessingResult::from_vars(vec![
+            haproxy_spoa_hub_plugin_api::TxnVariable::transaction(
+                HUB_STATUS_VARIABLE,
+                SpoeValue::String("ok".into()),
+            ),
+            haproxy_spoa_hub_plugin_api::TxnVariable::transaction(
+                "result",
+                SpoeValue::String("safe".into()),
+            ),
+        ]);
+        let mut variables = Vec::new();
+        let mut extra_args = Some(RHashMap::new());
+
+        append_plugin_variables(
+            plugin_name,
+            plugin_result,
+            true,
+            &mut extra_args,
+            &mut variables,
+        );
+
+        assert_eq!(variables.len(), 1);
+        assert_eq!(variables[0].1, "untrusted.result");
+        assert!(
+            !extra_args
+                .as_ref()
+                .unwrap()
+                .contains_key("untrusted.__status")
+        );
+    }
+
+    #[tokio::test]
+    async fn saturated_plugin_returns_explicit_overload_status() {
+        let mut plugin = load_noop_plugin();
+        plugin.max_concurrency = 1;
+        plugin.max_queue = 0;
+        let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
+        let plan = registry.plan_for_message("test-msg").unwrap();
+        let admission = Arc::clone(&registry.get_plugin("noop").unwrap().admission);
+        let _held = Arc::clone(&admission.permits)
+            .try_acquire_owned()
+            .expect("single permit should be available");
+
+        let result = dispatch_message(&make_message("test-msg", vec![]), plan, &registry).await;
+
+        assert!(result.variables.iter().any(|(_, name, value)| {
+            name == "noop.__status"
+                && matches!(value, SpoeValue::String(status) if status.as_str() == "overloaded")
+        }));
+        assert_eq!(
+            result.variables.len(),
+            1,
+            "an overloaded plugin must not return plugin-owned variables"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_plugin_returns_overload_when_queue_wait_times_out() {
+        let mut plugin = load_noop_plugin();
+        plugin.max_concurrency = 1;
+        plugin.max_queue = 1;
+        plugin.queue_timeout = Some(Duration::from_millis(1));
+        let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
+        let plan = registry.plan_for_message("test-msg").unwrap();
+        let admission = Arc::clone(&registry.get_plugin("noop").unwrap().admission);
+        let _held = Arc::clone(&admission.permits)
+            .try_acquire_owned()
+            .expect("single permit should be available");
+
+        let result = dispatch_message(&make_message("test-msg", vec![]), plan, &registry).await;
+
+        assert!(result.variables.iter().any(|(_, name, value)| {
+            name == "noop.__status"
+                && matches!(value, SpoeValue::String(status) if status.as_str() == "overloaded")
+        }));
+        assert_eq!(
+            admission.queued(),
+            0,
+            "queue timeout must release its reservation and queued gauge observation"
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_plugin_keeps_its_permit_until_blocking_call_returns() {
+        let mut config = plugin_config("delay", "libdelay_plugin.so", &["test-msg"], 5);
+        config.max_concurrency = Some(1);
+        config.max_queue = 0;
+        let registry = Arc::new(
+            PluginRegistry::build(load_test_plugins(&[config], 100))
+                .expect("delay plugin registry should build"),
+        );
+        let plan = registry
+            .plan_for_message("test-msg")
+            .expect("delay plugin should handle test-msg");
+        let admission = Arc::clone(&registry.get_plugin("delay").unwrap().admission);
+
+        let result = dispatch_message(
+            &make_message("test-msg", vec![("delay_ms", SpoeValue::Int32(500))]),
+            plan,
+            &registry,
+        )
+        .await;
+
+        assert!(result.variables.iter().any(|(_, name, value)| {
+            name == "delay.__status"
+                && matches!(value, SpoeValue::String(status) if status.as_str() == "timeout")
+        }));
+        assert_eq!(
+            admission.permits.available_permits(),
+            0,
+            "the blocking call must retain its permit after the caller times out"
+        );
+
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(2),
+            Arc::clone(&admission.permits).acquire_owned(),
+        )
+        .await
+        .expect("the delay plugin should eventually return")
+        .expect("the admission gate should remain open");
+        drop(recovered);
     }
 
     #[test]
@@ -574,6 +911,9 @@ mod tests {
             messages: vec!["msg".into()],
             depends_on: depends_on.iter().map(|&d| d.into()).collect(),
             timeout: Duration::from_millis(100),
+            max_concurrency: 1,
+            max_queue: 0,
+            queue_timeout: None,
         }
     }
 
@@ -611,9 +951,51 @@ mod tests {
 
         let result = dispatch_message(&msg, plan, &registry).await;
         assert!(
-            result.variables.is_empty(),
-            "expected no variables when plugin is skipped, got: {:?}",
-            result.variables.len()
+            result.variables.iter().any(|(_, name, value)| {
+                name == "noop.__status"
+                    && matches!(value, SpoeValue::String(status) if status.as_str() == "skipped")
+            }),
+            "skipped plugin must publish an explicit host-owned status"
+        );
+        assert_eq!(result.variables.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn timed_out_dependency_skips_dependent_with_explicit_status() {
+        let mut upstream = plugin_config("delay", "libdelay_plugin.so", &["test-msg"], 5);
+        upstream.max_concurrency = Some(1);
+        upstream.max_queue = 0;
+        let mut dependent = plugin_config("noop", "libnoop_plugin.so", &["test-msg"], 100);
+        dependent.depends_on = vec!["delay".into()];
+        let registry = Arc::new(
+            PluginRegistry::build(load_test_plugins(&[upstream, dependent], 100))
+                .expect("dependency registry should build"),
+        );
+        let plan = registry
+            .plan_for_message("test-msg")
+            .expect("both plugins should handle test-msg");
+
+        let result = dispatch_message(
+            &make_message("test-msg", vec![("delay_ms", SpoeValue::Int32(500))]),
+            plan,
+            &registry,
+        )
+        .await;
+
+        assert!(result.variables.iter().any(|(_, name, value)| {
+            name == "delay.__status"
+                && matches!(value, SpoeValue::String(status) if status.as_str() == "timeout")
+        }));
+        assert!(result.variables.iter().any(|(_, name, value)| {
+            name == "noop.__status"
+                && matches!(value, SpoeValue::String(status) if status.as_str() == "skipped")
+        }));
+        assert!(
+            result
+                .variables
+                .iter()
+                .all(|(_, name, _)| name != "noop.result"),
+            "a dependent must not execute without successful upstream output"
         );
     }
 }

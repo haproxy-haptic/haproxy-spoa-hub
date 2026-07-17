@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-plugin `max_concurrency`, `max_queue`, and `queue_timeout_ms` admission controls plus a derived or explicit `max_blocking_threads` process cap. Excess work now returns a host-owned `<plugin>.__status=overloaded` variable instead of entering Tokio's unbounded blocking queue; timeout, error, and dependency-driven `skipped` outcomes are likewise explicit. Failed or skipped dependencies cascade `skipped` to transitive dependents. Timed-out blocking calls retain their permit until they actually finish.
+- Prometheus overload, queue-timeout, queued, and actual in-flight plugin metrics.
+- Request-triggerable plugin overload, timeout, and error events stay at debug log level; bounded-cardinality metrics provide the production signal without log-amplification exposure.
+- Explicit blocking-pool caps below the sum of admitted plugin concurrency are rejected instead of silently reintroducing Tokio's unmetered internal queue.
+
+### Fixed
+
+- `define_plugin!` now captures method receiver identifiers, allowing plugin bodies to use instance state through `self`. This removes the need for process-global state that could leak configuration across hot-reload generations. The source-only macro change ships as plugin API 0.7.1 and does not change the vtable ABI.
+
 ## [0.7.4] - 2026-07-16
 
 ### Fixed

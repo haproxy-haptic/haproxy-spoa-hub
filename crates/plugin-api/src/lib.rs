@@ -152,23 +152,23 @@ macro_rules! define_plugin {
         $plugin_ty:ty, {
             fn new() -> Self $new_body:block
 
-            fn init(&mut self, $ctx_param:ident : &PluginContext $(,)?)
+            fn init(&mut $init_self:ident, $ctx_param:ident : &PluginContext $(,)?)
                 -> Result<(), Box<dyn std::error::Error + Send + Sync>> $init_body:block
 
-            fn name(&self) -> &str $name_body:block
+            fn name(&$name_self:ident) -> &str $name_body:block
 
-            fn version(&self) -> &str $version_body:block
+            fn version(&$version_self:ident) -> &str $version_body:block
 
             fn process(
-                &self,
+                &$process_self:ident,
                 $msg_param:ident : &SpoeMessage $(,)?
             ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> $process_body:block
 
-            $(fn config_schema(&self) -> Option<&str> $schema_body:block)?
+            $(fn config_schema(&$schema_self:ident) -> Option<&str> $schema_body:block)?
 
-            $(fn validate(&self, $vctx_param:ident : &PluginContext $(,)?) -> Vec<Diagnostic> $validate_body:block)?
+            $(fn validate(&$validate_self:ident, $vctx_param:ident : &PluginContext $(,)?) -> Vec<Diagnostic> $validate_body:block)?
 
-            $(fn drain(&self, $drain_timeout_param:ident : u64 $(,)?) -> bool $drain_body:block)?
+            $(fn drain(&$drain_self:ident, $drain_timeout_param:ident : u64 $(,)?) -> bool $drain_body:block)?
 
             $(metrics_static = $metrics_static:path;)?
         }
@@ -182,20 +182,20 @@ macro_rules! define_plugin {
 
             #[allow(clippy::unnecessary_wraps, dead_code)]
             fn __init(
-                &mut self,
+                &mut $init_self,
                 $ctx_param: &$crate::PluginContext,
             ) -> ::std::result::Result<(), ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>>
                 $init_body
 
             #[allow(dead_code)]
-            fn __name(&self) -> &'static str $name_body
+            fn __name(&$name_self) -> &'static str $name_body
 
             #[allow(dead_code)]
-            fn __version(&self) -> &'static str $version_body
+            fn __version(&$version_self) -> &'static str $version_body
 
             #[allow(clippy::unnecessary_wraps, dead_code)]
             fn __process(
-                &self,
+                &$process_self,
                 $msg_param: &$crate::SpoeMessage,
             ) -> ::std::result::Result<
                 $crate::ProcessingResult,
@@ -204,20 +204,20 @@ macro_rules! define_plugin {
 
             $(
                 #[allow(clippy::unnecessary_wraps, dead_code)]
-                fn __config_schema(&self) -> ::std::option::Option<&'static str> $schema_body
+                fn __config_schema(&$schema_self) -> ::std::option::Option<&'static str> $schema_body
             )?
 
             $(
                 #[allow(clippy::unnecessary_wraps, dead_code)]
                 fn __validate(
-                    &self,
+                    &$validate_self,
                     $vctx_param: &$crate::PluginContext,
                 ) -> ::std::vec::Vec<$crate::Diagnostic> $validate_body
             )?
 
             $(
                 #[allow(clippy::unnecessary_wraps, dead_code)]
-                fn __drain(&self, $drain_timeout_param: u64) -> bool $drain_body
+                fn __drain(&$drain_self, $drain_timeout_param: u64) -> bool $drain_body
             )?
         }
 
@@ -474,13 +474,10 @@ macro_rules! __define_plugin_drain_thunk {
 /// named static `MetricRecorder`; without → ignore (the plugin doesn't
 /// emit metrics).
 ///
-/// Why a static and not a `&self` accessor: Rust macro hygiene doesn't
-/// let `$body:block` bodies inside `define_plugin!` reference `self`
-/// (the `self` token in the body resolves through the macro's hygiene
-/// context, not the function's receiver — see the existing pattern
-/// where every other plugin uses a `static OnceLock<State>` for the
-/// same reason). A path arm avoids the limitation cleanly and matches
-/// the convention every other plugin already follows.
+/// The recorder remains a static because callbacks may run from any plugin
+/// thread and need a process-stable address. Other plugin state should live on
+/// the plugin struct: `define_plugin!` captures each receiver identifier, so
+/// author bodies can use `self` normally.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __define_plugin_metrics_thunk {
@@ -513,3 +510,87 @@ impl std::fmt::Display for PluginPanicError {
 }
 
 impl std::error::Error for PluginPanicError {}
+
+#[cfg(test)]
+mod stateful_macro_tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct StatefulPlugin {
+        value: i32,
+    }
+
+    define_plugin!(StatefulPlugin, {
+        fn new() -> Self {
+            StatefulPlugin { value: 1 }
+        }
+
+        fn init(
+            &mut self,
+            context: &PluginContext,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.value = context
+                .get_config("value")
+                .and_then(ConfigValue::as_integer)
+                .unwrap_or(1) as i32;
+            Ok(())
+        }
+
+        fn name(&self) -> &str {
+            let _ = self.value;
+            "stateful-test"
+        }
+
+        fn version(&self) -> &str {
+            let _ = self.value;
+            "0.0.0"
+        }
+
+        fn process(
+            &self,
+            _message: &SpoeMessage,
+        ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(ProcessingResult::single(TxnVariable::transaction(
+                "value",
+                SpoeValue::Int32(self.value),
+            )))
+        }
+
+        fn config_schema(&self) -> Option<&str> {
+            let _ = self.value;
+            None
+        }
+
+        fn validate(&self, _context: &PluginContext) -> Vec<Diagnostic> {
+            let _ = self.value;
+            Vec::new()
+        }
+
+        fn drain(&self, _timeout_ms: u64) -> bool {
+            self.value > 0
+        }
+    });
+
+    #[test]
+    fn author_bodies_can_read_and_write_instance_state() {
+        let mut config = RHashMap::new();
+        config.insert("value".into(), ConfigValue::Integer(42));
+        let context = PluginContext {
+            name: "stateful-test".into(),
+            config,
+        };
+        let message = SpoeMessage {
+            name: "test".into(),
+            args: RHashMap::new(),
+            stream_id: 1,
+            frame_id: 1,
+        };
+
+        let mut plugin = StatefulPlugin::__new();
+        plugin.__init(&context).expect("init should succeed");
+        let result = plugin.__process(&message).expect("process should succeed");
+
+        assert!(matches!(result.variables[0].value, SpoeValue::Int32(42)));
+        assert!(plugin.__drain(0));
+    }
+}

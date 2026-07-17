@@ -47,12 +47,36 @@ fn describe_metrics() {
         "spoa_active_connections",
         "Current number of active SPOP connections"
     );
+    describe_plugin_metrics();
+    describe_reload_metrics();
+}
+
+fn describe_plugin_metrics() {
     describe_counter!("spoa_plugin_errors_total", "Total plugin processing errors");
     describe_counter!("spoa_plugin_timeouts_total", "Total plugin timeout events");
     describe_counter!(
-        "spoa_plugin_skips_total",
-        "Plugins skipped via hub.skip_plugins arg"
+        "spoa_plugin_overloads_total",
+        "Plugin calls rejected because the configured concurrency and bounded queue were full"
     );
+    describe_counter!(
+        "spoa_plugin_queue_timeouts_total",
+        "Plugin calls rejected after their bounded queue wait expired"
+    );
+    describe_gauge!(
+        "spoa_plugin_in_flight",
+        "Plugin calls actually executing, including timed-out blocking calls that have not returned"
+    );
+    describe_gauge!(
+        "spoa_plugin_queued",
+        "Plugin calls currently waiting for a bounded concurrency permit"
+    );
+    describe_counter!(
+        "spoa_plugin_skips_total",
+        "Plugins skipped via hub.skip_plugins or failed dependency"
+    );
+}
+
+fn describe_reload_metrics() {
     describe_counter!(
         "spoa_hub_config_reload_success_total",
         "Successful config reloads (SIGHUP or file-watch trigger)"
@@ -202,6 +226,22 @@ pub fn record_plugin_error(plugin: &str) {
 
 pub fn record_plugin_timeout(plugin: &str) {
     counter!("spoa_plugin_timeouts_total", "plugin" => plugin.to_owned()).increment(1);
+}
+
+pub fn record_plugin_overload(plugin: &str) {
+    counter!("spoa_plugin_overloads_total", "plugin" => plugin.to_owned()).increment(1);
+}
+
+pub fn record_plugin_queue_timeout(plugin: &str) {
+    counter!("spoa_plugin_queue_timeouts_total", "plugin" => plugin.to_owned()).increment(1);
+}
+
+pub fn record_plugin_in_flight_delta(plugin: &str, delta: f64) {
+    gauge!("spoa_plugin_in_flight", "plugin" => plugin.to_owned()).increment(delta);
+}
+
+pub fn record_plugin_queued_delta(plugin: &str, delta: f64) {
+    gauge!("spoa_plugin_queued", "plugin" => plugin.to_owned()).increment(delta);
 }
 
 pub fn record_plugin_skip(plugin: &str) {

@@ -13,7 +13,7 @@ HAProxy's [Stream Processing Offload Engine (SPOE)](https://www.haproxy.com/docu
 **Key features:**
 
 - **Parallel plugin execution** — independent plugins run concurrently, with topological sorting for dependency chains
-- **Per-plugin timeouts** — slow plugins are aborted and partial results from completed plugins are returned
+- **Bounded plugin execution** — per-plugin concurrency and queue limits reject overload explicitly; timed-out calls retain capacity until their blocking work actually returns
 - **Variable namespacing** — plugin output variables are auto-prefixed (e.g., `geoip.country_code`) to prevent conflicts
 - **Pre-parsed data** — plugins receive typed, structured arguments instead of raw SPOP bytes
 - **Hot reload** — SIGHUP or a config-file change reloads configuration and swaps plugins without dropping connections; in-flight dispatches finish on the old plugin set before it is drained and torn down (swap → quiesce → drain → shutdown)
@@ -135,6 +135,12 @@ messages = ["check-request"]
 depends_on = ["ja3"]  # runs after ja3, receives ja3.hash in message args
 ```
 
+A dependent executes only after every declared dependency returns `ok`. If an
+upstream plugin errors, times out, is overloaded, or is skipped, all transitive
+dependents are skipped without entering the blocking pool. Every plugin in the
+message's execution plan still publishes a host-owned status: `ok`, `error`,
+`timeout`, `overloaded`, or `skipped`.
+
 ## Configuration Reference
 
 ### Top-Level Fields
@@ -148,6 +154,7 @@ depends_on = ["ja3"]  # runs after ja3, receives ja3.hash in message args
 | `worker_threads` | integer | no | num CPUs | Tokio runtime worker threads |
 | `max_connections` | integer | no | unlimited | Maximum concurrent SPOP connections |
 | `blocking_thread_keep_alive_secs` | integer | no | 300 | How long idle blocking pool threads stay alive before being reaped. Higher values avoid thread re-creation overhead (~10-50µs) on bursty traffic. Tokio's built-in default is 10 seconds. |
+| `max_blocking_threads` | integer | no | sum of plugin concurrency limits | Process-wide blocking-pool cap. When set, it must be at least the sum of resolved plugin concurrency limits so admitted work cannot enter Tokio's unmetered internal queue. |
 
 ### `[[listeners]]`
 
@@ -165,7 +172,22 @@ depends_on = ["ja3"]  # runs after ja3, receives ja3.hash in message args
 | `messages` | array | yes | — | SPOE message names this plugin handles |
 | `depends_on` | array | no | `[]` | Plugin names that must complete before this one |
 | `timeout_ms` | integer | no | `default_timeout_ms` | Per-plugin timeout override |
+| `max_concurrency` | integer | no | available CPUs | Maximum simultaneously executing calls for this plugin. Timed-out calls keep occupying a slot until they actually return. |
+| `max_queue` | integer | no | `0` | Maximum calls waiting for a concurrency slot. Zero rejects excess work immediately. |
+| `queue_timeout_ms` | integer | no | remaining `timeout_ms` | Maximum queue wait when `max_queue > 0`; the total call still cannot exceed `timeout_ms`. |
 | `params` | table | no | `{}` | Typed parameters passed to `init()` (supports nested tables, arrays, and all TOML types) |
+
+The defaults favor bounded latency under overload: each plugin is limited to
+the host's available parallelism and has no queue. CPU-heavy plugins such as a
+WAF should normally set `max_concurrency` to the CPU capacity reserved for the
+hub. Add a small queue only when absorbing a short burst is preferable to an
+immediate overload verdict; never use it as a substitute for horizontal
+scaling.
+
+Overload, queue-timeout, timeout, and plugin-error outcomes are exported as
+bounded-cardinality Prometheus metrics and host-owned status variables. Their
+per-request log entries are debug-level so hostile traffic cannot turn an
+already bounded execution path into a production log-amplification attack.
 
 !!! note
     Top-level keys (`plugin_dir`, `default_timeout_ms`, etc.) must appear **before** any `[[listeners]]` or `[[plugins]]` table arrays in the TOML file.
@@ -209,11 +231,13 @@ Define your plugin struct, then register it with `define_plugin!`. The macro gen
 use haproxy_spoa_hub_plugin_api::*;
 
 #[derive(Debug)]
-struct MyPlugin;
+struct MyPlugin {
+    db_path: String,
+}
 
 define_plugin!(MyPlugin, {
     fn new() -> Self {
-        MyPlugin
+        MyPlugin { db_path: String::new() }
     }
 
     fn init(
@@ -221,9 +245,10 @@ define_plugin!(MyPlugin, {
         context: &PluginContext,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Access per-plugin configuration from [plugins.params]
-        let db_path = context.get_config("db_path")
+        self.db_path = context.get_config("db_path")
             .and_then(|v| v.as_str())
-            .ok_or("missing required config: db_path")?;
+            .ok_or("missing required config: db_path")?
+            .to_owned();
         Ok(())
     }
 
@@ -384,7 +409,7 @@ acl allowlisted src -f /etc/haproxy/allowlist.txt
 http-request set-var(txn.skip_plugins) str("rate-limiter") if allowlisted
 ```
 
-Skipped plugins incur zero processing overhead (no thread pool scheduling, no FFI call). If a skipped plugin has dependents (declared via `depends_on`), those dependents are automatically skipped too.
+Skipped plugins incur zero processing overhead (no thread pool scheduling, no FFI call) and publish `<plugin>.__status=skipped`. If a skipped or unsuccessfully completed plugin has dependents (declared via `depends_on`), those dependents are automatically skipped too. This prevents a dependent from running with missing or invalid upstream arguments.
 
 The hub logs skipped plugins at debug level and records a `spoa_plugin_skips_total` Prometheus counter with a `plugin` label.
 
@@ -441,6 +466,10 @@ metrics_addr = "0.0.0.0:9090"
 | `spoa_active_connections` | gauge | — | Current active SPOP connections |
 | `spoa_plugin_errors_total` | counter | `plugin`, `kind` | Plugin processing errors (`kind`: `transient` or `permanent`) |
 | `spoa_plugin_timeouts_total` | counter | `plugin` | Plugin timeout events |
+| `spoa_plugin_overloads_total` | counter | `plugin` | Calls rejected because the per-plugin queue was full |
+| `spoa_plugin_queue_timeouts_total` | counter | `plugin` | Queued calls that did not acquire capacity in time |
+| `spoa_plugin_in_flight` | gauge | `plugin` | Plugin calls still executing, including calls whose caller timed out |
+| `spoa_plugin_queued` | gauge | `plugin` | Calls waiting for a plugin concurrency slot |
 | `spoa_plugin_skips_total` | counter | `plugin` | Plugins skipped via `hub.skip_plugins` |
 
 All metrics carry a `service="haproxy-spoa-hub"` global label.
@@ -495,7 +524,7 @@ tests/integration/          Docker-based e2e tests
 
 - **Protocol**: The `spop` crate handles SPOE wire protocol encoding/decoding (HAPROXY-HELLO, NOTIFY/ACK, DISCONNECT)
 - **Plugin loading**: `abi_stable` provides type-safe FFI with load-time ABI verification via `load_from_file()`
-- **Dispatch**: Single-plugin path uses `spawn_blocking` directly. Multi-plugin parallel groups use `spawn_blocking` per plugin + `join_all` with per-plugin timeouts
+- **Dispatch**: Every plugin has a bounded admission gate before `spawn_blocking`. Independent plugins run concurrently via `join_all`; a timeout detaches the caller but deliberately keeps the plugin's concurrency permit until the blocking call returns
 - **Registry**: `Arc<ArcSwap<PluginRegistry>>` enables lock-free reload — each connection loads the current registry snapshot when processing a NOTIFY frame. A reload swaps the new registry in atomically, then retires the old one in phases (`registry::swap_and_retire`): wait for in-flight dispatches still holding the pre-swap snapshot (quiesce), wait for plugins' fire-and-forget background work (drain), then shut the old set down
 - **Execution plans**: Topological sort of plugin dependency graphs per SPOE message. Independent plugins form parallel groups, dependent plugins run sequentially
 

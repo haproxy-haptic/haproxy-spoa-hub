@@ -1,10 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwap;
+use tokio::sync::Semaphore;
 
 use crate::plugin::Plugin;
 use crate::plugin_loader::LoadedPlugin;
@@ -42,6 +46,58 @@ pub struct ExecutionPlan {
 pub struct PluginEntry {
     pub instance: Arc<Plugin>,
     pub timeout: Duration,
+    pub admission: Arc<PluginAdmission>,
+}
+
+/// Per-plugin admission state shared by every connection and message plan.
+/// A permit is moved into the blocking closure, so a timed-out (and therefore
+/// detached) `spawn_blocking` call still consumes capacity until the plugin
+/// actually returns.
+pub struct PluginAdmission {
+    pub(crate) permits: Arc<Semaphore>,
+    pub(crate) max_queue: usize,
+    pub(crate) queue_timeout: Option<Duration>,
+    queued: AtomicUsize,
+}
+
+impl PluginAdmission {
+    fn new(max_concurrency: usize, max_queue: usize, queue_timeout: Option<Duration>) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(max_concurrency)),
+            max_queue,
+            queue_timeout,
+            queued: AtomicUsize::new(0),
+        }
+    }
+
+    /// Reserve one bounded queue slot. A compare-exchange loop prevents a
+    /// burst from overshooting the configured cap.
+    pub(crate) fn try_enter_queue(&self) -> bool {
+        let mut current = self.queued.load(Ordering::Acquire);
+        loop {
+            if current >= self.max_queue {
+                return false;
+            }
+            match self.queued.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub(crate) fn leave_queue(&self) {
+        self.queued.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        self.queued.load(Ordering::Acquire)
+    }
 }
 
 /// Registry of loaded plugins and their execution plans per message.
@@ -70,6 +126,9 @@ impl PluginRegistry {
                 messages,
                 depends_on,
                 timeout,
+                max_concurrency,
+                max_queue,
+                queue_timeout,
                 ..
             } = plugin;
             for msg in messages {
@@ -87,7 +146,18 @@ impl PluginRegistry {
                     .push(name.clone());
             }
             depends_on_map.insert(name.clone(), depends_on);
-            plugins.insert(name, PluginEntry { instance, timeout });
+            plugins.insert(
+                name,
+                PluginEntry {
+                    instance,
+                    timeout,
+                    admission: Arc::new(PluginAdmission::new(
+                        max_concurrency,
+                        max_queue,
+                        queue_timeout,
+                    )),
+                },
+            );
         }
 
         let mut message_plans = HashMap::with_capacity(message_to_plugins.len());
@@ -380,6 +450,27 @@ fn build_execution_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_reservations_never_exceed_the_configured_cap() {
+        let admission = Arc::new(PluginAdmission::new(1, 2, None));
+        let contenders = (0..32)
+            .map(|_| {
+                let admission = Arc::clone(&admission);
+                std::thread::spawn(move || admission.try_enter_queue())
+            })
+            .collect::<Vec<_>>();
+
+        let admitted = contenders
+            .into_iter()
+            .map(|thread| thread.join().expect("queue contender should not panic"))
+            .filter(|admitted| *admitted)
+            .count();
+
+        assert_eq!(admitted, 2);
+        admission.leave_queue();
+        assert!(admission.try_enter_queue());
+    }
 
     fn make_deps(deps: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
         deps.iter()

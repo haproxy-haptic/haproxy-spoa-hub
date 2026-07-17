@@ -34,6 +34,9 @@ pub fn plugin_config(
         messages: messages.iter().map(|&m| m.into()).collect(),
         depends_on: vec![],
         timeout_ms: Some(timeout_ms),
+        max_concurrency: None,
+        max_queue: 0,
+        queue_timeout_ms: None,
         params: toml::Table::new(),
     }
 }

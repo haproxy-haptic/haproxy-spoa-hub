@@ -9,11 +9,13 @@ define HAProxy SPOE agent plugins as independently compiled shared libraries.
 #![allow(non_camel_case_types, non_local_definitions)]
 use haproxy_spoa_hub_plugin_api::*;
 
-#[derive(Debug)]
-struct MyPlugin;
+#[derive(Debug, Default)]
+struct MyPlugin {
+    requests: std::sync::atomic::AtomicU64,
+}
 
 define_plugin!(MyPlugin, {
-    fn new() -> Self { MyPlugin }
+    fn new() -> Self { MyPlugin::default() }
 
     fn init(&mut self, _context: &PluginContext)
         -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -28,10 +30,18 @@ define_plugin!(MyPlugin, {
         &self,
         message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
+        self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(ProcessingResult { variables: vec![].into() })
     }
 });
 ```
+
+State belongs on the plugin instance. A hub reload constructs and initializes a
+new instance before atomically swapping registries, so failed initialization
+cannot mutate the generation that is still serving requests. Use interior
+mutability for state changed by `process(&self, ...)`; avoid process-global
+mutable statics, which break reload isolation and prevent old generations from
+being reclaimed safely.
 
 Your plugin crate must set `crate-type = ["cdylib", "rlib"]` in `Cargo.toml`.
 

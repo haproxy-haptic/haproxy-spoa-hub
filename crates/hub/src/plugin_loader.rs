@@ -44,6 +44,9 @@ pub struct LoadedPlugin {
     pub messages: Vec<String>,
     pub depends_on: Vec<String>,
     pub timeout: Duration,
+    pub max_concurrency: usize,
+    pub max_queue: usize,
+    pub queue_timeout: Option<Duration>,
 }
 
 /// Convert a `toml::Value` into an FFI-safe `ConfigValue`.
@@ -233,6 +236,9 @@ pub fn load_plugin(
         messages: config.messages.clone(),
         depends_on: config.depends_on.clone(),
         timeout: Duration::from_millis(config.timeout_ms.unwrap_or(default_timeout_ms)),
+        max_concurrency: crate::config::resolve_plugin_concurrency(config),
+        max_queue: config.max_queue,
+        queue_timeout: config.queue_timeout_ms.map(Duration::from_millis),
     })
 }
 
