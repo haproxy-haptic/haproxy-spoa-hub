@@ -8,11 +8,10 @@
 //! `plugin_<plugin>_` name prefix and labels.
 //!
 //! Plugin authors writing their first metric-emitting plugin can read
-//! this as the canonical small example. Note the `static METRICS`
-//! pattern: `define_plugin!` body blocks can't reference `self` (Rust
-//! macro hygiene puts `self` out of scope), so plugins reach state
-//! through a static, exactly as every other plugin in the repo does
-//! for its own state.
+//! this as the canonical small example. Metric recorders remain static
+//! because their callback address must be process-stable; ordinary mutable
+//! configuration belongs on the plugin struct and is available through
+//! `self`.
 #![allow(non_camel_case_types, non_local_definitions)]
 
 use haproxy_spoa_hub_plugin_api::{

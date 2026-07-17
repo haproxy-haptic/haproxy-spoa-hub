@@ -1,4 +1,19 @@
-.PHONY: verify-release
+.PHONY: build test fmt lint check verify-release
+
+build:
+	cargo build --workspace
+
+test: build
+	cargo test --workspace
+
+fmt:
+	cargo fmt
+
+lint:
+	cargo fmt -- --check
+	cargo clippy --workspace -- -D warnings
+
+check: lint test
 
 verify-release:
 ifndef VERSION

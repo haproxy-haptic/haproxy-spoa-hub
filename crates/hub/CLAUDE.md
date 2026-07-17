@@ -78,14 +78,17 @@ cargo bench -p haproxy-spoa-hub --bench dispatch_bench    # Dispatch latency
 
 ## Dispatch
 
-`dispatch.rs` uses a single execution path for all group sizes: all
-`spawn_blocking` calls are launched up front, then
-`futures::future::join_all` with per-plugin timeouts. This gives true
-thread-level parallelism on the blocking thread pool.
+`dispatch.rs` uses a single execution path for all group sizes. Each plugin
+first passes a bounded per-plugin admission gate, then admitted calls are
+launched with `spawn_blocking` and independent calls are joined with
+`futures::future::join_all`. This gives true thread-level parallelism without
+an unbounded blocking queue.
 
 `spawn_blocking` (not direct inline calls) is used so that
 `tokio::time::timeout` works even if a plugin blocks (e.g.,
-`thread::sleep`).
+`thread::sleep`). Tokio cannot cancel a blocking call: after an async timeout,
+the call retains its admission permit and in-flight metric until the blocking
+closure actually exits.
 
 ## spop Crate Notes
 

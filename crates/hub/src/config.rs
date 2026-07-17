@@ -25,6 +25,11 @@ pub struct HubConfig {
     /// Defaults to 300 (5 minutes). Tokio's default is 10 seconds.
     #[serde(default = "default_blocking_keep_alive")]
     pub blocking_thread_keep_alive_secs: u64,
+    /// Maximum number of Tokio blocking-pool threads. When omitted, the hub
+    /// derives a finite bound by summing every plugin's resolved concurrency.
+    /// This is defense in depth; per-plugin admission gates remain the primary
+    /// overload control.
+    pub max_blocking_threads: Option<usize>,
     /// How long to wait for in-flight plugin work to drain after a
     /// registry swap before forcing shutdown. `None` (the default)
     /// derives the budget from `max(plugin.timeout_ms) * 1.5`, floored
@@ -62,6 +67,16 @@ pub struct PluginConfig {
     #[serde(default)]
     pub depends_on: Vec<String>,
     pub timeout_ms: Option<u64>,
+    /// Maximum calls from this plugin that may execute concurrently. Defaults
+    /// to the process's available parallelism.
+    pub max_concurrency: Option<usize>,
+    /// Number of calls allowed to wait for a concurrency permit. Zero (the
+    /// default) rejects excess work immediately instead of building latency.
+    #[serde(default)]
+    pub max_queue: usize,
+    /// Maximum queue wait. When omitted, queued calls share the plugin's total
+    /// timeout budget. Has no effect while `max_queue` is zero.
+    pub queue_timeout_ms: Option<u64>,
     /// Typed parameters from the `[plugins.params]` TOML table.
     /// Supports nested tables, arrays, and all native TOML value types.
     #[serde(default)]
@@ -117,6 +132,33 @@ fn default_log_level() -> String {
     "info".into()
 }
 
+/// Resolve one plugin's concurrency without relying on Tokio's much larger
+/// blocking-pool default. `available_parallelism` is fallible in restricted
+/// containers; one worker is always safe.
+#[must_use]
+pub fn resolve_plugin_concurrency(plugin: &PluginConfig) -> usize {
+    plugin
+        .max_concurrency
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
+}
+
+/// Resolve the process-wide blocking-pool cap. The derived value permits every
+/// plugin's admitted calls to execute without entering Tokio's internal,
+/// unmetered blocking queue. Operators should assign per-plugin concurrency as
+/// resource budgets; the explicit override is primarily restart-time defense
+/// in depth and must not be lower than the sum if queue-free dispatch matters.
+#[must_use]
+pub fn resolve_max_blocking_threads(config: &HubConfig) -> usize {
+    config.max_blocking_threads.unwrap_or_else(|| {
+        config
+            .plugins
+            .iter()
+            .map(resolve_plugin_concurrency)
+            .fold(0usize, usize::saturating_add)
+            .max(1)
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read config file: {0}")]
@@ -160,6 +202,12 @@ impl HubConfig {
             ));
         }
 
+        if self.max_blocking_threads == Some(0) {
+            return Err(ConfigError::Validation(
+                "max_blocking_threads must be positive".into(),
+            ));
+        }
+
         if !self.plugin_dir.is_dir() {
             return Err(ConfigError::Validation(format!(
                 "plugin_dir '{}' is not a directory",
@@ -189,6 +237,34 @@ impl HubConfig {
                 return Err(ConfigError::Validation(format!(
                     "plugin '{}': timeout_ms must be positive",
                     plugin.name
+                )));
+            }
+
+            if plugin.max_concurrency == Some(0) {
+                return Err(ConfigError::Validation(format!(
+                    "plugin '{}': max_concurrency must be positive",
+                    plugin.name
+                )));
+            }
+
+            if plugin.queue_timeout_ms == Some(0) {
+                return Err(ConfigError::Validation(format!(
+                    "plugin '{}': queue_timeout_ms must be positive when set",
+                    plugin.name
+                )));
+            }
+        }
+
+        if let Some(configured) = self.max_blocking_threads {
+            let admitted = self
+                .plugins
+                .iter()
+                .map(resolve_plugin_concurrency)
+                .fold(0usize, usize::saturating_add)
+                .max(1);
+            if configured < admitted {
+                return Err(ConfigError::Validation(format!(
+                    "max_blocking_threads ({configured}) must be at least the sum of resolved plugin max_concurrency values ({admitted})"
                 )));
             }
         }
@@ -442,6 +518,107 @@ mod tests {
         let (_f, path) = write_config(&cfg);
         let config = HubConfig::load(&path).unwrap();
         assert!(config.plugins[0].params.is_empty());
+    }
+
+    #[test]
+    fn test_plugin_admission_controls_parse_and_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
+        let cfg = format!(
+            "plugin_dir = \"{}\"\n\
+             max_blocking_threads = 7\n\
+             [[listeners]]\n\
+             type = \"unix\"\n\
+             address = \"/tmp/test.sock\"\n\
+             [[plugins]]\n\
+             name = \"noop\"\n\
+             library = \"libnoop.so\"\n\
+             messages = [\"check\"]\n\
+             max_concurrency = 3\n\
+             max_queue = 4\n\
+             queue_timeout_ms = 2\n",
+            dir.path().display()
+        );
+
+        let config = HubConfig::load_from_str(&cfg).unwrap();
+        assert_eq!(resolve_plugin_concurrency(&config.plugins[0]), 3);
+        assert_eq!(config.plugins[0].max_queue, 4);
+        assert_eq!(config.plugins[0].queue_timeout_ms, Some(2));
+        assert_eq!(resolve_max_blocking_threads(&config), 7);
+    }
+
+    #[test]
+    fn test_blocking_pool_defaults_to_sum_of_plugin_concurrency() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
+        let cfg = format!(
+            "plugin_dir = \"{}\"\n\
+             [[listeners]]\n\
+             type = \"unix\"\n\
+             address = \"/tmp/test.sock\"\n\
+             [[plugins]]\n\
+             name = \"small\"\n\
+             library = \"libnoop.so\"\n\
+             messages = [\"check\"]\n\
+             max_concurrency = 2\n\
+             [[plugins]]\n\
+             name = \"large\"\n\
+             library = \"libnoop.so\"\n\
+             messages = [\"check\"]\n\
+             max_concurrency = 5\n",
+            dir.path().display()
+        );
+
+        let config = HubConfig::load_from_str(&cfg).unwrap();
+        assert_eq!(resolve_max_blocking_threads(&config), 7);
+    }
+
+    #[test]
+    fn test_explicit_blocking_pool_cannot_undercut_admitted_concurrency() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
+        let cfg = format!(
+            "plugin_dir = \"{}\"\n\
+             max_blocking_threads = 6\n\
+             [[listeners]]\n\
+             type = \"unix\"\n\
+             address = \"/tmp/test.sock\"\n\
+             [[plugins]]\n\
+             name = \"small\"\n\
+             library = \"libnoop.so\"\n\
+             messages = [\"check\"]\n\
+             max_concurrency = 2\n\
+             [[plugins]]\n\
+             name = \"large\"\n\
+             library = \"libnoop.so\"\n\
+             messages = [\"check\"]\n\
+             max_concurrency = 5\n",
+            dir.path().display()
+        );
+
+        let error = HubConfig::load_from_str(&cfg).expect_err("undersized pool must fail");
+        assert!(error.to_string().contains("must be at least the sum"));
+    }
+
+    #[test]
+    fn test_zero_plugin_concurrency_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("libnoop.so"), b"fake").unwrap();
+        let cfg = format!(
+            "plugin_dir = \"{}\"\n\
+             [[listeners]]\n\
+             type = \"unix\"\n\
+             address = \"/tmp/test.sock\"\n\
+             [[plugins]]\n\
+             name = \"noop\"\n\
+             library = \"libnoop.so\"\n\
+             messages = [\"check\"]\n\
+             max_concurrency = 0\n",
+            dir.path().display()
+        );
+
+        let err = HubConfig::load_from_str(&cfg).unwrap_err();
+        assert!(err.to_string().contains("max_concurrency must be positive"));
     }
 
     #[test]

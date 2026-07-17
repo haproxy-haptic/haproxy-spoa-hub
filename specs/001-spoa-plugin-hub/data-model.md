@@ -30,6 +30,7 @@ Deserialized from the TOML configuration file.
 | metrics_addr | Option\<SocketAddr\> | Prometheus endpoint bind address |
 | log_level | String | Default log level (env-filter syntax) |
 | default_timeout_ms | u64 | Default per-plugin timeout |
+| max_blocking_threads | Option\<usize\> | Process-wide blocking-pool cap, resolved at startup |
 
 ### ListenerConfig
 
@@ -49,6 +50,9 @@ Maps a plugin `.so` to one or more SPOE message names.
 | messages | Vec\<String\> | SPOE message names this plugin handles |
 | depends_on | Vec\<String\> | Plugin names that must complete before this one |
 | timeout_ms | Option\<u64\> | Per-plugin timeout override |
+| max_concurrency | Option\<usize\> | Maximum calls executing concurrently |
+| max_queue | usize | Maximum calls waiting for capacity |
+| queue_timeout_ms | Option\<u64\> | Maximum admission-queue wait |
 
 ### Plugin (runtime)
 
@@ -63,9 +67,14 @@ A loaded and initialized plugin instance.
 | messages | Vec\<String\> | SPOE messages this plugin handles |
 | depends_on | Vec\<String\> | Dependency plugin names |
 | timeout | Duration | Effective timeout for this plugin |
+| admission | PluginAdmission | Shared bounded concurrency and queue state |
 
 **Lifecycle**: Created during plugin loading at startup. Destroyed on
 shutdown (or on SIGHUP removal in the reload scenario).
+
+The admission permit is owned by the blocking closure, not by its async
+waiter. A caller timeout therefore cannot make a still-running plugin appear
+idle or admit replacement work beyond the configured concurrency cap.
 
 ### PluginRegistry
 

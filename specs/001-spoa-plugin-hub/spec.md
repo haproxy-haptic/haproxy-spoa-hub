@@ -71,6 +71,9 @@ both variables appear in the ACK response.
    results from the first, **When** a NOTIFY frame arrives, **Then**
    the two independent plugins run in parallel, the dependent plugin
    runs after its dependency completes, and all results are returned.
+4. **Given** a plugin whose dependency errors, times out, is overloaded, or is
+   skipped, **When** a NOTIFY frame arrives, **Then** the dependent does not
+   execute and returns the host-owned status `skipped`.
 
 ---
 
@@ -216,10 +219,11 @@ new work.
 - What happens when HAProxy disconnects mid-message? The hub MUST
   cancel in-flight plugin work for that connection and free resources.
 - What happens when plugin execution exceeds a configured timeout? The
-  hub MUST abort the timed-out plugin, return results from all plugins
-  that completed within their deadline, and log the timeout with the
-  plugin name and elapsed time. Fast plugins are never penalized by
-  slow ones.
+  hub MUST return an explicit timeout status and results from plugins
+  that completed within their deadline. Because blocking native plugin
+  calls cannot be cancelled safely, the call retains its bounded
+  concurrency slot until it actually returns. Excess calls are rejected
+  with an explicit overload status instead of accumulating unbounded work.
 
 ## Requirements *(mandatory)*
 
@@ -257,7 +261,10 @@ new work.
 - **FR-012**: The hub MUST enforce per-plugin execution timeouts,
   configurable per plugin. When a plugin exceeds its timeout, the hub
   MUST return partial results from all plugins that completed in time
-  rather than failing the entire message.
+  rather than failing the entire message. The hub MUST enforce bounded
+  per-plugin concurrency and queue capacity, retain capacity for timed-out
+  blocking calls until they return, and emit a host-owned status for success,
+  error, timeout, and overload.
 - **FR-013**: The hub MUST catch plugin panics at the FFI boundary and
   convert them to logged errors without crashing the hub process.
 - **FR-014**: The hub MUST support graceful shutdown on SIGTERM/SIGINT,
@@ -316,7 +323,7 @@ new work.
 ### Session 2026-03-30
 
 - Q: How should the hub handle transaction variable name conflicts between plugins? → A: Namespace-prefixed — variables are auto-prefixed with the plugin name (e.g., `geoip.country_code`), making conflicts structurally impossible.
-- Q: How should the hub handle overload when plugins can't keep up? → A: Per-plugin timeout with partial results — each plugin has a deadline; timed-out plugins are aborted and results from completed plugins are returned.
+- Q: How should the hub handle overload when plugins can't keep up? → A: Bound per-plugin concurrency and queue capacity, return explicit overload or timeout status, and retain capacity until non-cancellable blocking calls actually return.
 - Q: What configuration file format should the hub use? → A: TOML — Rust ecosystem standard, clean syntax, strong serde support.
 - Q: What observability output format and destination should the hub use? → A: Structured JSON to stderr for logs, plus a built-in Prometheus metrics endpoint on a configurable port.
 - Q: How does a dependent plugin receive output from its dependencies? → A: Dependency output merged into input — upstream plugin's namespace-prefixed variables are added as additional named arguments alongside the original SPOE message data.

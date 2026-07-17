@@ -75,6 +75,7 @@ fn main() -> anyhow::Result<()> {
     let mut rt_builder = runtime::Builder::new_multi_thread();
     rt_builder
         .enable_all()
+        .max_blocking_threads(config::resolve_max_blocking_threads(&hub_config))
         .thread_keep_alive(std::time::Duration::from_secs(
             hub_config.blocking_thread_keep_alive_secs,
         ));
@@ -94,6 +95,10 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     if let Some(threads) = hub_config.worker_threads {
         tracing::info!(worker_threads = threads, "custom worker thread count");
     }
+    tracing::info!(
+        max_blocking_threads = config::resolve_max_blocking_threads(&hub_config),
+        "bounded blocking pool configured"
+    );
 
     // --check mode: validate and exit
     if cli.check {
@@ -124,13 +129,9 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
 
     tracing::info!(count = loaded.len(), "all plugins loaded");
 
-    // Pre-warm the blocking thread pool so threads are parked and ready
-    // before the first SPOP message arrives. The count matches the number
-    // of async worker threads, since each worker can submit one
-    // spawn_blocking call concurrently.
-    let prewarm_count = hub_config
-        .worker_threads
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, std::num::NonZero::get));
+    // Pre-warm every configured blocking-pool thread so first traffic does not
+    // pay thread creation latency.
+    let prewarm_count = config::resolve_max_blocking_threads(&hub_config);
     let handles: Vec<_> = (0..prewarm_count)
         .map(|_| tokio::task::spawn_blocking(|| {}))
         .collect();

@@ -39,16 +39,10 @@
 //!   on completion — unless the plugin was dropped first, in which
 //!   case the job's side effect is lost (the mirror-model loss).
 //!
-//! Macro-hygiene note: the `define_plugin!` macro's body doesn't have
-//! a `self` token bound to the plugin instance, so state lives in
-//! module-level atomics. Same shape as the production mirror plugin's
-//! `STATE.client.in_flight` — but kept primitive here so the plugin
-//! can be loaded multiple times in one test process without an init
-//! guard interfering (dlopen on the same .so returns the same handle;
-//! the statics are effectively process-scoped). Consequence: the
-//! cancellation flag is shared across generations too — `init()`
-//! resets it, so tests must fully retire one generation before
-//! loading the next (which the sequenced test scenarios do).
+//! This fixture intentionally keeps process-global atomics because its tests
+//! observe them from outside the plugin instance. Production plugins should
+//! keep generation-owned state on their struct; `define_plugin!` supports
+//! normal `self` access.
 
 #![allow(non_camel_case_types, non_local_definitions)]
 
