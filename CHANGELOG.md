@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-18
+
 ### Added
 
 - Per-plugin `max_concurrency`, `max_queue`, and `queue_timeout_ms` admission controls plus a derived or explicit `max_blocking_threads` process cap. Excess work now returns a host-owned `<plugin>.__status=overloaded` variable instead of entering Tokio's unbounded blocking queue; timeout, error, and dependency-driven `skipped` outcomes are likewise explicit. Failed or skipped dependencies cascade `skipped` to transitive dependents. Timed-out blocking calls retain their permit until they actually finish.
