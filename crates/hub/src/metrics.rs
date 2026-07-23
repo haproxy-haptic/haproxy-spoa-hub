@@ -10,6 +10,10 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
                 metrics_exporter_prometheus::Matcher::Prefix("spoa_message_duration".into()),
                 &[0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
             )?
+            .set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Prefix("spoa_plugin_duration".into()),
+                &[0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
+            )?
             .add_global_label("service", "haproxy-spoa-hub");
 
         builder.install()?;
@@ -61,6 +65,10 @@ fn describe_plugin_metrics() {
     describe_counter!(
         "spoa_plugin_queue_timeouts_total",
         "Plugin calls rejected after their bounded queue wait expired"
+    );
+    describe_histogram!(
+        "spoa_plugin_duration_seconds",
+        "Per-plugin service time (process() duration, excluding permit wait) in seconds"
     );
     describe_gauge!(
         "spoa_plugin_in_flight",
@@ -242,6 +250,15 @@ pub fn record_plugin_in_flight_delta(plugin: &str, delta: f64) {
 
 pub fn record_plugin_queued_delta(plugin: &str, delta: f64) {
     gauge!("spoa_plugin_queued", "plugin" => plugin.to_owned()).increment(delta);
+}
+
+/// Per-plugin service time (the `process()` duration, excluding permit wait).
+/// Feeds the adaptive concurrency controller (ADR-0002) and provides the
+/// per-plugin latency signal that `spoa_message_duration_seconds` (labelled by
+/// message, not plugin) cannot.
+pub fn record_plugin_duration(plugin: &str, duration: Duration) {
+    histogram!("spoa_plugin_duration_seconds", "plugin" => plugin.to_owned())
+        .record(duration.as_secs_f64());
 }
 
 pub fn record_plugin_skip(plugin: &str) {

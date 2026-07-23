@@ -1,3 +1,4 @@
+pub mod adaptive;
 pub mod config;
 pub mod config_watcher;
 pub mod connection;
