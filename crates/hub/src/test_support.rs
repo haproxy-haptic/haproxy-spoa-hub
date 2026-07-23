@@ -38,6 +38,11 @@ pub fn plugin_config(
         max_queue: 0,
         queue_timeout_ms: None,
         adaptive_concurrency: false,
+        adaptive_initial: None,
+        adaptive_min_limit: None,
+        adaptive_tolerance: None,
+        adaptive_smoothing: None,
+        adaptive_long_window: None,
         params: toml::Table::new(),
     }
 }

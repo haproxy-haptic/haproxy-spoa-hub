@@ -937,12 +937,8 @@ mod tests {
         cfg.adaptive_concurrency = true;
         cfg.max_concurrency = Some(16); // deterministic ceiling, independent of core count
         cfg.max_queue = 64; // workers wait for a permit instead of being rejected
-        cfg.params.insert(
-            "adaptive_initial".into(),
-            toml::Value::Integer(i64::try_from(INITIAL).unwrap()),
-        );
-        cfg.params
-            .insert("adaptive_long_window".into(), toml::Value::Float(100.0));
+        cfg.adaptive_initial = Some(INITIAL); // start low so growth is observable
+        cfg.adaptive_long_window = Some(100.0);
 
         let plugin = load_test_plugins(&[cfg], 1000)
             .into_iter()

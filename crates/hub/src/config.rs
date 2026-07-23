@@ -83,10 +83,38 @@ pub struct PluginConfig {
     /// plugin's service time. Off by default (fixed `max_concurrency`).
     #[serde(default)]
     pub adaptive_concurrency: bool,
+    /// Gradient2 tunable overrides for the adaptive controller. These are
+    /// top-level `[[plugins]]` fields, NOT `[plugins.params]` entries, because
+    /// `params` is the plugin's own config table and a strict plugin schema
+    /// would reject unknown keys and fail to load. Each is optional.
+    #[serde(default)]
+    pub adaptive_initial: Option<usize>,
+    #[serde(default)]
+    pub adaptive_min_limit: Option<usize>,
+    #[serde(default)]
+    pub adaptive_tolerance: Option<f64>,
+    #[serde(default)]
+    pub adaptive_smoothing: Option<f64>,
+    #[serde(default)]
+    pub adaptive_long_window: Option<f64>,
     /// Typed parameters from the `[plugins.params]` TOML table.
     /// Supports nested tables, arrays, and all native TOML value types.
     #[serde(default)]
     pub params: toml::Table,
+}
+
+impl PluginConfig {
+    /// Collect this plugin's adaptive tunable overrides for the controller.
+    #[must_use]
+    pub fn adaptive_tunables(&self) -> crate::adaptive::AdaptiveTunables {
+        crate::adaptive::AdaptiveTunables {
+            initial: self.adaptive_initial,
+            min_limit: self.adaptive_min_limit,
+            tolerance: self.adaptive_tolerance,
+            smoothing: self.adaptive_smoothing,
+            long_window: self.adaptive_long_window,
+        }
+    }
 }
 
 fn default_timeout() -> u64 {
@@ -156,7 +184,11 @@ pub fn resolve_plugin_concurrency(plugin: &PluginConfig) -> usize {
 #[must_use]
 pub fn resolve_plugin_ceiling(plugin: &PluginConfig) -> usize {
     if plugin.adaptive_concurrency {
-        crate::adaptive::AdaptiveConfig::resolve(plugin.max_concurrency, &plugin.params).max_limit
+        crate::adaptive::AdaptiveConfig::resolve(
+            plugin.max_concurrency,
+            &plugin.adaptive_tunables(),
+        )
+        .max_limit
     } else {
         resolve_plugin_concurrency(plugin)
     }
@@ -414,6 +446,32 @@ mod tests {
         );
         let result = HubConfig::load_from_str(&cfg);
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    }
+
+    #[test]
+    fn adaptive_tunables_are_top_level_not_in_params() {
+        // Regression: adaptive tuning must live at the top level of `[[plugins]]`,
+        // never in `[plugins.params]` — that table is the plugin's own config and
+        // a strict plugin schema (e.g. coraza) would reject unknown keys and fail
+        // to load the whole plugin.
+        let cfg = "\
+            plugin_dir = \"/x\"\n\
+            [[listeners]]\ntype = \"unix\"\naddress = \"/tmp/s\"\n\
+            [[plugins]]\n\
+            name = \"coraza\"\nlibrary = \"lib.so\"\nmessages = [\"check\"]\n\
+            adaptive_concurrency = true\n\
+            adaptive_initial = 16\n\
+            max_concurrency = 48\n\
+            [plugins.params]\n\
+            directives = \"SecRuleEngine On\"\n";
+        let parsed: HubConfig = toml::from_str(cfg).unwrap();
+        let p = &parsed.plugins[0];
+        assert_eq!(p.adaptive_initial, Some(16));
+        assert!(
+            !p.params.contains_key("adaptive_initial"),
+            "adaptive_initial must not leak into the plugin's params table"
+        );
+        assert_eq!(p.adaptive_tunables().initial, Some(16));
     }
 
     #[test]
