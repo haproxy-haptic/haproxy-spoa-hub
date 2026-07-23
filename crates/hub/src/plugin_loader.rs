@@ -243,7 +243,10 @@ pub fn load_plugin(
         max_queue: config.max_queue,
         queue_timeout: config.queue_timeout_ms.map(Duration::from_millis),
         adaptive: config.adaptive_concurrency.then(|| {
-            crate::adaptive::AdaptiveConfig::resolve(config.max_concurrency, &config.params)
+            crate::adaptive::AdaptiveConfig::resolve(
+                config.max_concurrency,
+                &config.adaptive_tunables(),
+            )
         }),
     })
 }

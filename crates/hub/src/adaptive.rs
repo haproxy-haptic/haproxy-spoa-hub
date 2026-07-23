@@ -57,38 +57,41 @@ pub struct AdaptiveConfig {
 /// constant is a safe default for chart-less/standalone usage.
 const DEFAULT_MAX_LIMIT: usize = 64;
 
+/// Per-plugin Gradient2 tunable overrides, sourced from **top-level**
+/// `[[plugins]]` fields — NOT `[plugins.params]`. `[plugins.params]` is the
+/// plugin's own config table (validated against the plugin's schema), so putting
+/// hub-level knobs there makes a strict plugin (e.g. coraza, `additionalProperties:
+/// false`) reject its whole config and fail to load. Each field is optional; `None`
+/// keeps the Gradient2 default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AdaptiveTunables {
+    pub initial: Option<usize>,
+    pub min_limit: Option<usize>,
+    pub tolerance: Option<f64>,
+    pub smoothing: Option<f64>,
+    pub long_window: Option<f64>,
+}
+
 impl AdaptiveConfig {
-    /// Build a config for a plugin: `max_concurrency` (if set) is the ceiling;
-    /// otherwise `DEFAULT_MAX_LIMIT`, a flat backstop (not core-derived — see that
-    /// constant's docs for why). Gradient2 tunables can be overridden via the
-    /// plugin's `params` table.
+    /// Build a config for a plugin: `max_concurrency` (if set) is the ceiling,
+    /// otherwise `DEFAULT_MAX_LIMIT` (a flat backstop, not core-derived — see that
+    /// constant's docs). Gradient2 tunables come from top-level plugin fields via
+    /// [`AdaptiveTunables`]; each unset one uses the Netflix default.
     #[must_use]
-    pub fn resolve(max_concurrency: Option<usize>, params: &toml::Table) -> Self {
+    pub fn resolve(max_concurrency: Option<usize>, t: &AdaptiveTunables) -> Self {
         let max_limit = max_concurrency.unwrap_or(DEFAULT_MAX_LIMIT).max(1);
-        let initial = params
-            .get("adaptive_initial")
-            .and_then(toml::Value::as_integer)
-            .and_then(|v| usize::try_from(v).ok())
-            .unwrap_or(4)
-            .clamp(1, max_limit);
-        let param_f64 = |key: &str, default: f64| -> f64 {
-            params
-                .get(key)
-                .and_then(toml::Value::as_float)
-                .unwrap_or(default)
-        };
         Self {
-            min_limit: params
-                .get("adaptive_min_limit")
-                .and_then(toml::Value::as_integer)
-                .and_then(|v| usize::try_from(v).ok())
-                .unwrap_or(1)
-                .clamp(1, max_limit),
+            min_limit: t.min_limit.unwrap_or(1).clamp(1, max_limit),
             max_limit,
-            initial,
-            tolerance: param_f64("adaptive_tolerance", 1.5).max(1.0),
-            smoothing: param_f64("adaptive_smoothing", 0.2).clamp(0.01, 1.0),
-            long_window: param_f64("adaptive_long_window", 600.0).max(1.0),
+            // Default start = min(16, ceiling): a proven-safe concurrency, so
+            // startup and every config-reload cold-start (which rebuilds the
+            // admission state) begin at a level that absorbs a burst instead of
+            // fail-closing it before the controller grows — never worse than the
+            // old fixed default, and still clamped to a tiny ceiling.
+            initial: t.initial.unwrap_or(max_limit.min(16)).clamp(1, max_limit),
+            tolerance: t.tolerance.unwrap_or(1.5).max(1.0),
+            smoothing: t.smoothing.unwrap_or(0.2).clamp(0.01, 1.0),
+            long_window: t.long_window.unwrap_or(600.0).max(1.0),
         }
     }
 }
@@ -298,18 +301,22 @@ mod tests {
         // No explicit max_concurrency -> the flat backstop, independent of how
         // many cores the host reports (the whole point of not using
         // available_parallelism()).
-        let c = AdaptiveConfig::resolve(None, &toml::Table::new());
+        let c = AdaptiveConfig::resolve(None, &AdaptiveTunables::default());
         assert_eq!(c.max_limit, DEFAULT_MAX_LIMIT);
         // Explicit max_concurrency is the ceiling verbatim.
         assert_eq!(
-            AdaptiveConfig::resolve(Some(8), &toml::Table::new()).max_limit,
+            AdaptiveConfig::resolve(Some(8), &AdaptiveTunables::default()).max_limit,
             8
         );
-        // Params still tune the controller; initial/min are clamped to the ceiling.
-        let mut params = toml::Table::new();
-        params.insert("adaptive_initial".into(), toml::Value::Integer(1000));
-        params.insert("adaptive_min_limit".into(), toml::Value::Integer(1000));
-        let clamped = AdaptiveConfig::resolve(Some(8), &params);
+        // Tunables come from top-level fields; initial/min are clamped to the ceiling.
+        let clamped = AdaptiveConfig::resolve(
+            Some(8),
+            &AdaptiveTunables {
+                initial: Some(1000),
+                min_limit: Some(1000),
+                ..Default::default()
+            },
+        );
         assert_eq!(clamped.initial, 8);
         assert_eq!(clamped.min_limit, 8);
     }
