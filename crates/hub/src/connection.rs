@@ -14,13 +14,10 @@ use tokio_util::codec::Framed;
 
 use haproxy_spoa_hub_plugin_api::SpoeMessage;
 
-/// Upper bound on concurrently-processed NOTIFY frames per connection.
-///
-/// This is an anti-runaway guard, not the primary throttle: the peer's
-/// pipelining window and each plugin's admission semaphore are normally the
-/// tighter limits. It caps memory if a peer floods NOTIFY frames without
-/// reading ACKs, and doubles as the ACK channel depth.
-const MAX_INFLIGHT_PER_CONN: usize = 256;
+/// Buffer depth for the per-connection ACK writer channel. Completed ACKs queue
+/// here until the writer drains them; the shared in-flight gate bounds how many
+/// can be outstanding, so this only needs headroom for a burst.
+const ACK_CHANNEL_CAP: usize = 256;
 
 use crate::{
     dispatch::{
@@ -30,6 +27,23 @@ use crate::{
     registry::SharedRegistry,
 };
 
+/// RAII guard for the `spoa_inflight_frames` gauge: +1 on construction, -1 on
+/// drop, so the gauge tracks frames actually in flight even if a task panics.
+struct InflightGuard;
+
+impl InflightGuard {
+    fn new() -> Self {
+        metrics::record_inflight_delta(1.0);
+        Self
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        metrics::record_inflight_delta(-1.0);
+    }
+}
+
 /// Handle a single SPOP connection from `HAProxy`.
 ///
 /// This function runs for the lifetime of the connection, processing
@@ -38,56 +52,27 @@ use crate::{
 /// Accepts a `SharedRegistry` (`Arc<ArcSwap<PluginRegistry>>`) so that
 /// a registry swap (e.g., on SIGHUP) is picked up on the next message
 /// without interrupting the connection.
-pub async fn handle_connection<S>(stream: S, registry: SharedRegistry)
+///
+/// `inflight` is a **process-wide** gate shared by every connection. The read
+/// loop takes one permit per NOTIFY frame before spawning its processing task
+/// and holds it until the task completes, so the total number of frames in
+/// flight across the whole hub is bounded by the gate's capacity. When the gate
+/// is full the loop stops reading, the socket buffer fills, and the peer is
+/// backpressured — the excess queues in the peer's buffers (graceful) rather
+/// than flooding the hub's admission queues (which would overload).
+pub async fn handle_connection<S>(stream: S, registry: SharedRegistry, inflight: Arc<Semaphore>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let mut framed = Framed::new(stream, SpopCodec);
 
-    // Step 1: Wait for HAPROXY-HELLO
-    let hello_frame = match framed.next().await {
-        Some(Ok(frame)) if frame.frame_type() == &FrameType::HaproxyHello => frame,
-        Some(Ok(frame)) => {
-            tracing::error!(
-                frame_type = ?frame.frame_type(),
-                "expected HAPROXY-HELLO, got different frame"
-            );
-            return;
-        }
-        Some(Err(e)) => {
-            tracing::error!(error = %e, "error reading HAPROXY-HELLO");
-            return;
-        }
-        None => {
-            tracing::debug!("connection closed before handshake");
-            return;
-        }
+    // Steps 1-2: SPOP handshake (HAPROXY-HELLO -> AGENT-HELLO).
+    let Some(is_healthcheck) = perform_handshake(&mut framed).await else {
+        return;
     };
-
-    // Parse the HaproxyHello payload
-    let haproxy_hello = match HaproxyHello::try_from(hello_frame.payload()) {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to parse HAPROXY-HELLO");
-            return;
-        }
-    };
-
-    // Step 2: Send AGENT-HELLO (also used for health checks)
-    let agent_hello = AgentHello {
-        version: spop::Version::new(2, 0, 0),
-        max_frame_size: haproxy_hello.max_frame_size,
-        capabilities: vec![FrameCapabilities::Pipelining],
-    };
-    if let Err(e) = framed.send(Box::new(agent_hello)).await {
-        tracing::error!(error = %e, "failed to send AGENT-HELLO");
+    if is_healthcheck {
         return;
     }
-
-    if haproxy_hello.healthcheck.unwrap_or_default() {
-        return;
-    }
-
     tracing::debug!("SPOP handshake completed");
 
     // Step 3: Process NOTIFY frames concurrently.
@@ -110,21 +95,28 @@ where
     // the sink back once drained, so a final AGENT-DISCONNECT can follow the
     // last in-flight ACK (SPOP forbids frames after it). The bounded channel
     // doubles as backpressure.
-    let (ack_tx, ack_rx) = mpsc::channel::<Box<dyn SpopFrame>>(MAX_INFLIGHT_PER_CONN);
+    let (ack_tx, ack_rx) = mpsc::channel::<Box<dyn SpopFrame>>(ACK_CHANNEL_CAP);
     let writer = spawn_ack_writer(sink, ack_rx);
 
-    // Cap concurrent in-flight frames per connection (anti-runaway); per-plugin
-    // admission bounds the actual plugin concurrency underneath this.
-    let inflight = Arc::new(Semaphore::new(MAX_INFLIGHT_PER_CONN));
     let mut disconnecting = false;
+    // One-frame look-ahead. While backpressured on the in-flight gate we still
+    // poll the reader so a HAPROXY-DISCONNECT or a connection close is acted on
+    // immediately instead of stalling behind the permit wait. Holding at most
+    // one frame keeps this from reading far ahead, which would defeat the
+    // socket-level backpressure.
+    let mut pending: Option<Box<dyn SpopFrame>> = None;
 
-    while let Some(frame_result) = reader.next().await {
-        let frame = match frame_result {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::error!(error = %e, "error reading frame");
-                break;
-            }
+    'read: loop {
+        let frame = match pending.take() {
+            Some(frame) => frame,
+            None => match reader.next().await {
+                Some(Ok(frame)) => frame,
+                Some(Err(e)) => {
+                    tracing::error!(error = %e, "error reading frame");
+                    break;
+                }
+                None => break, // connection closed
+            },
         };
 
         match frame.frame_type() {
@@ -134,15 +126,56 @@ where
                 break;
             }
             FrameType::Notify => {
-                // Backpressure: stop reading new frames once the in-flight cap
-                // is reached (the peer's pipelining window is usually tighter).
-                let Ok(permit) = Arc::clone(&inflight).acquire_owned().await else {
-                    break; // semaphore closed: shutting down
+                // Take a shared in-flight permit before spawning. When the gate
+                // is full this awaits — the loop stops reading, the socket fills,
+                // and the peer is backpressured (the excess queues in HAProxy
+                // rather than overloading the hub).
+                let permit = match Arc::clone(&inflight).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(tokio::sync::TryAcquireError::Closed) => break,
+                    Err(tokio::sync::TryAcquireError::NoPermits) => {
+                        // Backpressured. Wait for a permit, but stay responsive
+                        // to a disconnect / connection close arriving meanwhile.
+                        // `biased` makes a ready permit always win the race, which
+                        // preserves the backpressure.
+                        metrics::record_backpressure_wait();
+                        tokio::select! {
+                            biased;
+                            permit = Arc::clone(&inflight).acquire_owned() => match permit {
+                                Ok(permit) => permit,
+                                Err(_) => break 'read, // gate closed: shutting down
+                            },
+                            next = reader.next() => match next {
+                                None => break 'read, // connection closed
+                                Some(Err(e)) => {
+                                    tracing::error!(error = %e, "error reading frame while backpressured");
+                                    break 'read;
+                                }
+                                Some(Ok(f))
+                                    if f.frame_type() == &FrameType::HaproxyDisconnect =>
+                                {
+                                    tracing::debug!("HAProxy disconnected (while backpressured)");
+                                    disconnecting = true;
+                                    break 'read;
+                                }
+                                // A NOTIFY arrived while we waited: hold it (one
+                                // deep) and block for the current frame's permit.
+                                Some(Ok(f)) => {
+                                    pending = Some(f);
+                                    match Arc::clone(&inflight).acquire_owned().await {
+                                        Ok(permit) => permit,
+                                        Err(_) => break 'read,
+                                    }
+                                }
+                            },
+                        }
+                    }
                 };
                 let registry = registry.clone();
                 let ack_tx = ack_tx.clone();
                 tokio::spawn(async move {
                     let _permit = permit; // released when this frame completes
+                    let _inflight = InflightGuard::new(); // gauge +1 / -1 on drop
                     let ack = handle_notify_frame(frame, &registry).await;
                     // The writer is gone only if the connection already failed.
                     let _ = ack_tx.send(Box::new(ack)).await;
@@ -171,6 +204,54 @@ where
             let _ = sink.send(Box::new(disconnect)).await;
         }
     }
+}
+
+/// Perform the SPOP handshake: read HAPROXY-HELLO and reply with AGENT-HELLO
+/// (advertising the `pipelining` capability). Returns `Some(is_healthcheck)` on
+/// success — the caller returns early for a health-check connection — or `None`
+/// if the handshake failed, in which case the caller drops the connection.
+async fn perform_handshake<S>(framed: &mut Framed<S, SpopCodec>) -> Option<bool>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let hello_frame = match framed.next().await {
+        Some(Ok(frame)) if frame.frame_type() == &FrameType::HaproxyHello => frame,
+        Some(Ok(frame)) => {
+            tracing::error!(
+                frame_type = ?frame.frame_type(),
+                "expected HAPROXY-HELLO, got different frame"
+            );
+            return None;
+        }
+        Some(Err(e)) => {
+            tracing::error!(error = %e, "error reading HAPROXY-HELLO");
+            return None;
+        }
+        None => {
+            tracing::debug!("connection closed before handshake");
+            return None;
+        }
+    };
+
+    let haproxy_hello = match HaproxyHello::try_from(hello_frame.payload()) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to parse HAPROXY-HELLO");
+            return None;
+        }
+    };
+
+    let agent_hello = AgentHello {
+        version: spop::Version::new(2, 0, 0),
+        max_frame_size: haproxy_hello.max_frame_size,
+        capabilities: vec![FrameCapabilities::Pipelining],
+    };
+    if let Err(e) = framed.send(Box::new(agent_hello)).await {
+        tracing::error!(error = %e, "failed to send AGENT-HELLO");
+        return None;
+    }
+
+    Some(haproxy_hello.healthcheck.unwrap_or_default())
 }
 
 /// Spawn the per-connection ACK writer.

@@ -58,12 +58,13 @@ async fn spawn_server_and_connect<S>(
     server_stream: impl std::future::Future<Output = S> + Send + 'static,
     client_stream: impl std::future::Future<Output = S>,
     registry: haproxy_spoa_hub::registry::SharedRegistry,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
 ) -> (SpopClient<S>, JoinHandle<()>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let server = tokio::spawn(async move {
-        haproxy_spoa_hub::connection::handle_connection(server_stream.await, registry).await;
+        haproxy_spoa_hub::connection::handle_connection(server_stream.await, registry, gate).await;
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     let client = SpopClient::handshake(client_stream.await)
@@ -78,6 +79,18 @@ pub async fn start_server_and_connect(
     socket_path: &str,
     registry: haproxy_spoa_hub::registry::SharedRegistry,
 ) -> (SpopClient<tokio::net::UnixStream>, JoinHandle<()>) {
+    // Large gate: it doesn't throttle these tests; a small gate is exercised
+    // explicitly by the backpressure test via `start_server_and_connect_gated`.
+    start_server_and_connect_gated(socket_path, registry, 1024).await
+}
+
+/// Like [`start_server_and_connect`] but with an explicit in-flight gate size,
+/// so a test can force backpressure (gate smaller than the pipelined frames).
+pub async fn start_server_and_connect_gated(
+    socket_path: &str,
+    registry: haproxy_spoa_hub::registry::SharedRegistry,
+    gate: usize,
+) -> (SpopClient<tokio::net::UnixStream>, JoinHandle<()>) {
     let listener = UnixListener::bind(socket_path).expect("failed to bind socket");
     spawn_server_and_connect(
         async move { listener.accept().await.unwrap().0 },
@@ -87,6 +100,7 @@ pub async fn start_server_and_connect(
                 .expect("failed to connect")
         },
         registry,
+        std::sync::Arc::new(tokio::sync::Semaphore::new(gate)),
     )
     .await
 }
@@ -108,6 +122,7 @@ pub async fn start_tcp_server_and_connect(
                 .expect("failed to connect")
         },
         registry,
+        std::sync::Arc::new(tokio::sync::Semaphore::new(1024)),
     )
     .await
 }

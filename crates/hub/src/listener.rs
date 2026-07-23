@@ -40,21 +40,34 @@ pub async fn start_listeners(
         Arc::new(Semaphore::new(n))
     });
 
+    // Process-wide in-flight gate: bound the total NOTIFY frames being processed
+    // to the usable CPU count. Plugins run CPU-bound work (WAF evaluation, token
+    // verification) that shares these cores, so admitting more in flight than
+    // cores only thrashes without adding throughput. When the gate is full the
+    // connection read loops stop reading and HAProxy is backpressured, so the
+    // excess queues in HAProxy's buffers (graceful) instead of overloading the
+    // hub's per-plugin admission queues.
+    let gate_size = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    tracing::info!(inflight_gate = gate_size, "in-flight gate enabled");
+    let inflight_gate = Arc::new(Semaphore::new(gate_size));
+    metrics::set_inflight_gate_capacity(gate_size as u64);
+
     let mut handles = Vec::with_capacity(configs.len());
 
     for config in configs {
         let registry = Arc::clone(&registry);
         let shutdown = shutdown.clone();
         let semaphore = conn_semaphore.clone();
+        let inflight_gate = Arc::clone(&inflight_gate);
         let address = config.address.clone();
         let listener_type = config.listener_type;
         handles.push(tokio::spawn(async move {
             let result = match listener_type {
                 ListenerType::Unix => {
-                    run_unix_listener(&address, registry, shutdown, semaphore).await
+                    run_unix_listener(&address, registry, shutdown, semaphore, inflight_gate).await
                 }
                 ListenerType::Tcp => {
-                    run_tcp_listener(&address, registry, shutdown, semaphore).await
+                    run_tcp_listener(&address, registry, shutdown, semaphore, inflight_gate).await
                 }
             };
             if let Err(e) = result {
@@ -67,6 +80,17 @@ pub async fn start_listeners(
     for handle in handles {
         handle.await?;
     }
+
+    // Listeners have stopped accepting. Close the gates so any connection task
+    // parked on `acquire_owned().await` — a read loop backpressured on the
+    // in-flight gate, or a connection waiting on the connection limit — unblocks
+    // immediately (its acquire returns `Err`, the loop breaks) rather than
+    // waiting out the drain timeout below. In-flight permits already held stay
+    // valid, so running work still completes.
+    if let Some(s) = &conn_semaphore {
+        s.close();
+    }
+    inflight_gate.close();
 
     // Wait for in-flight connections to drain (up to 30s)
     let drain_timeout = Duration::from_secs(30);
@@ -93,8 +117,12 @@ pub async fn start_listeners(
 }
 
 /// Spawn a connection handler with semaphore-gated concurrency and metrics tracking.
-fn spawn_connection<S>(stream: S, registry: &SharedRegistry, semaphore: Option<&Arc<Semaphore>>)
-where
+fn spawn_connection<S>(
+    stream: S,
+    registry: &SharedRegistry,
+    semaphore: Option<&Arc<Semaphore>>,
+    inflight_gate: &Arc<Semaphore>,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let count = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -102,12 +130,23 @@ where
 
     let registry = Arc::clone(registry);
     let permit = semaphore.map(Arc::clone);
+    let inflight_gate = Arc::clone(inflight_gate);
     tokio::spawn(async move {
         let _permit = match permit {
-            Some(s) => Some(s.acquire_owned().await.expect("semaphore closed")),
+            // A closed semaphore means the hub is shutting down: abandon this
+            // connection instead of panicking, releasing the active-connection
+            // slot we reserved above.
+            Some(s) => {
+                let Ok(p) = s.acquire_owned().await else {
+                    let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
+                    metrics::update_active_connections(count);
+                    return;
+                };
+                Some(p)
+            }
             None => None,
         };
-        handle_connection(stream, registry).await;
+        handle_connection(stream, registry, inflight_gate).await;
         let count = ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed) - 1;
         metrics::update_active_connections(count);
     });
@@ -122,6 +161,7 @@ async fn accept_loop<L, S>(
     transport: &str,
     registry: &SharedRegistry,
     semaphore: Option<&Arc<Semaphore>>,
+    inflight_gate: &Arc<Semaphore>,
     shutdown: &CancellationToken,
 ) where
     L: Accept<Stream = S>,
@@ -131,7 +171,7 @@ async fn accept_loop<L, S>(
         tokio::select! {
             result = listener.accept_stream() => {
                 match result {
-                    Ok(stream) => spawn_connection(stream, registry, semaphore),
+                    Ok(stream) => spawn_connection(stream, registry, semaphore, inflight_gate),
                     Err(e) => tracing::error!(
                         error = %e, %transport, "failed to accept connection"
                     ),
@@ -173,6 +213,7 @@ async fn run_unix_listener(
     registry: SharedRegistry,
     shutdown: CancellationToken,
     semaphore: Option<Arc<Semaphore>>,
+    inflight_gate: Arc<Semaphore>,
 ) -> anyhow::Result<()> {
     // Clean up stale socket file
     if Path::new(path).exists() {
@@ -185,7 +226,15 @@ async fn run_unix_listener(
     fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
 
     tracing::info!(transport = "unix", address = %path, "listening");
-    accept_loop(&listener, "unix", &registry, semaphore.as_ref(), &shutdown).await;
+    accept_loop(
+        &listener,
+        "unix",
+        &registry,
+        semaphore.as_ref(),
+        &inflight_gate,
+        &shutdown,
+    )
+    .await;
     Ok(())
 }
 
@@ -194,10 +243,19 @@ async fn run_tcp_listener(
     registry: SharedRegistry,
     shutdown: CancellationToken,
     semaphore: Option<Arc<Semaphore>>,
+    inflight_gate: Arc<Semaphore>,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(transport = "tcp", address = %addr, "listening");
-    accept_loop(&listener, "tcp", &registry, semaphore.as_ref(), &shutdown).await;
+    accept_loop(
+        &listener,
+        "tcp",
+        &registry,
+        semaphore.as_ref(),
+        &inflight_gate,
+        &shutdown,
+    )
+    .await;
     Ok(())
 }
 
