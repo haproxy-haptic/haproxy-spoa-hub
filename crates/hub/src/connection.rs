@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use futures::{SinkExt, StreamExt};
@@ -8,9 +9,18 @@ use spop::{
     frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities, HaproxyHello},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::codec::Framed;
 
 use haproxy_spoa_hub_plugin_api::SpoeMessage;
+
+/// Upper bound on concurrently-processed NOTIFY frames per connection.
+///
+/// This is an anti-runaway guard, not the primary throttle: the peer's
+/// pipelining window and each plugin's admission semaphore are normally the
+/// tighter limits. It caps memory if a peer floods NOTIFY frames without
+/// reading ACKs, and doubles as the ACK channel depth.
+const MAX_INFLIGHT_PER_CONN: usize = 256;
 
 use crate::{
     dispatch::{
@@ -80,8 +90,35 @@ where
 
     tracing::debug!("SPOP handshake completed");
 
-    // Step 3: Process frames
-    while let Some(frame_result) = framed.next().await {
+    // Step 3: Process NOTIFY frames concurrently.
+    //
+    // The hub advertises the `pipelining` capability, so HAProxy multiplexes
+    // many in-flight requests over a small pool of connections and streams
+    // NOTIFY frames without waiting for each ACK. Processing them serially
+    // (read -> await dispatch -> ACK -> read next) throws that away: effective
+    // concurrency collapses to the connection count and requests queue
+    // head-of-line behind the frame ahead of them on the wire.
+    //
+    // Instead, split the connection: the read loop spawns a task per NOTIFY
+    // and keeps reading, while one writer task drains completed ACKs back onto
+    // this connection. SPOP pipelining explicitly permits ACKs in any order
+    // *on the same connection*, and every ACK carries its STREAM-ID/FRAME-ID,
+    // so HAProxy matches out-of-order replies to the right stream.
+    let (sink, mut reader) = framed.split();
+
+    // Completed ACKs flow to one writer task that owns the write half and hands
+    // the sink back once drained, so a final AGENT-DISCONNECT can follow the
+    // last in-flight ACK (SPOP forbids frames after it). The bounded channel
+    // doubles as backpressure.
+    let (ack_tx, ack_rx) = mpsc::channel::<Box<dyn SpopFrame>>(MAX_INFLIGHT_PER_CONN);
+    let writer = spawn_ack_writer(sink, ack_rx);
+
+    // Cap concurrent in-flight frames per connection (anti-runaway); per-plugin
+    // admission bounds the actual plugin concurrency underneath this.
+    let inflight = Arc::new(Semaphore::new(MAX_INFLIGHT_PER_CONN));
+    let mut disconnecting = false;
+
+    while let Some(frame_result) = reader.next().await {
         let frame = match frame_result {
             Ok(f) => f,
             Err(e) => {
@@ -93,31 +130,83 @@ where
         match frame.frame_type() {
             FrameType::HaproxyDisconnect => {
                 tracing::debug!("HAProxy disconnected");
-                let disconnect = AgentDisconnect {
-                    status_code: 0,
-                    message: "clean shutdown".into(),
-                };
-                let _ = framed.send(Box::new(disconnect)).await;
+                disconnecting = true;
                 break;
             }
             FrameType::Notify => {
-                let ack = handle_notify_frame(frame, &registry).await;
-                if let Err(e) = framed.send(Box::new(ack)).await {
-                    tracing::error!(error = %e, "failed to send ACK");
-                    break;
-                }
-                // Flush immediately so HAProxy receives the ACK without
-                // waiting for the next read to trigger an implicit flush.
-                if let Err(e) = framed.flush().await {
-                    tracing::error!(error = %e, "failed to flush ACK");
-                    break;
-                }
+                // Backpressure: stop reading new frames once the in-flight cap
+                // is reached (the peer's pipelining window is usually tighter).
+                let Ok(permit) = Arc::clone(&inflight).acquire_owned().await else {
+                    break; // semaphore closed: shutting down
+                };
+                let registry = registry.clone();
+                let ack_tx = ack_tx.clone();
+                tokio::spawn(async move {
+                    let _permit = permit; // released when this frame completes
+                    let ack = handle_notify_frame(frame, &registry).await;
+                    // The writer is gone only if the connection already failed.
+                    let _ = ack_tx.send(Box::new(ack)).await;
+                });
             }
             other => {
                 tracing::warn!(frame_type = ?other, "unexpected frame type, ignoring");
             }
         }
     }
+
+    // Stop feeding the writer. It drains and flushes every remaining ACK once
+    // all in-flight tasks (each holding an `ack_tx` clone) have completed, then
+    // hands the sink back — so no reply is dropped as the connection winds down.
+    drop(ack_tx);
+    let sink = writer.await.ok().flatten();
+
+    // On a clean HAPROXY-DISCONNECT, reply with AGENT-DISCONNECT only after the
+    // in-flight ACKs have drained (nothing may follow it on the connection).
+    if disconnecting {
+        if let Some(mut sink) = sink {
+            let disconnect = AgentDisconnect {
+                status_code: 0,
+                message: "clean shutdown".into(),
+            };
+            let _ = sink.send(Box::new(disconnect)).await;
+        }
+    }
+}
+
+/// Spawn the per-connection ACK writer.
+///
+/// It owns the write half, batch-flushes completed ACKs (draining any that
+/// arrived mid-write so a burst of concurrent replies costs one syscall), and
+/// hands the sink back once the channel closes — letting the caller send a
+/// trailing AGENT-DISCONNECT after the last in-flight ACK. Returns `None` if a
+/// write failed (the connection is already broken).
+fn spawn_ack_writer<W>(
+    mut sink: W,
+    mut ack_rx: mpsc::Receiver<Box<dyn SpopFrame>>,
+) -> tokio::task::JoinHandle<Option<W>>
+where
+    W: futures::Sink<Box<dyn SpopFrame>> + Unpin + Send + 'static,
+    W::Error: std::fmt::Display,
+{
+    tokio::spawn(async move {
+        while let Some(frame) = ack_rx.recv().await {
+            if let Err(e) = sink.feed(frame).await {
+                tracing::error!(error = %e, "failed to queue ACK");
+                return None;
+            }
+            while let Ok(frame) = ack_rx.try_recv() {
+                if let Err(e) = sink.feed(frame).await {
+                    tracing::error!(error = %e, "failed to queue ACK");
+                    return None;
+                }
+            }
+            if let Err(e) = sink.flush().await {
+                tracing::error!(error = %e, "failed to flush ACK");
+                return None;
+            }
+        }
+        Some(sink)
+    })
 }
 
 /// Process a single NOTIFY frame: dispatch each message to its plugins

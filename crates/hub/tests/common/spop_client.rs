@@ -44,11 +44,36 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SpopClient<S> {
         args: HashMap<String, TypedData>,
     ) -> anyhow::Result<AckResponse> {
         self.frame_id += 1;
-        let notify = build_notify_frame(1, self.frame_id, message_name, &args);
-        self.stream.write_all(&notify).await?;
-        self.stream.flush().await?;
+        self.write_notify(1, self.frame_id, message_name, &args)
+            .await?;
+        self.flush().await?;
+        self.read_ack().await
+    }
 
-        // Read ACK
+    /// Write a NOTIFY frame without flushing or awaiting its ACK. Lets a test
+    /// pipeline several frames (distinct stream/frame IDs) on one connection
+    /// before reading any ACK, mirroring HAProxy's pipelined exchanges.
+    pub async fn write_notify(
+        &mut self,
+        stream_id: u64,
+        frame_id: u64,
+        message_name: &str,
+        args: &HashMap<String, TypedData>,
+    ) -> anyhow::Result<()> {
+        let notify = build_notify_frame(stream_id, frame_id, message_name, args);
+        self.stream.write_all(&notify).await?;
+        Ok(())
+    }
+
+    /// Flush buffered writes to the connection.
+    pub async fn flush(&mut self) -> anyhow::Result<()> {
+        self.stream.flush().await?;
+        Ok(())
+    }
+
+    /// Read and parse a single ACK frame. ACKs may arrive in any order under
+    /// pipelining, so callers match them by the echoed frame ID.
+    pub async fn read_ack(&mut self) -> anyhow::Result<AckResponse> {
         let frame =
             tokio::time::timeout(Duration::from_secs(5), read_frame(&mut self.stream)).await??;
 
