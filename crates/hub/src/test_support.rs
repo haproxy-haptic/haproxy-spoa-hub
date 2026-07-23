@@ -37,6 +37,7 @@ pub fn plugin_config(
         max_concurrency: None,
         max_queue: 0,
         queue_timeout_ms: None,
+        adaptive_concurrency: false,
         params: toml::Table::new(),
     }
 }

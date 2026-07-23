@@ -47,6 +47,9 @@ pub struct LoadedPlugin {
     pub max_concurrency: usize,
     pub max_queue: usize,
     pub queue_timeout: Option<Duration>,
+    /// Resolved adaptive-concurrency config (ADR-0002) when the plugin opted in
+    /// via `adaptive_concurrency = true`; `None` for the fixed-limit path.
+    pub adaptive: Option<crate::adaptive::AdaptiveConfig>,
 }
 
 /// Convert a `toml::Value` into an FFI-safe `ConfigValue`.
@@ -239,6 +242,9 @@ pub fn load_plugin(
         max_concurrency: crate::config::resolve_plugin_concurrency(config),
         max_queue: config.max_queue,
         queue_timeout: config.queue_timeout_ms.map(Duration::from_millis),
+        adaptive: config.adaptive_concurrency.then(|| {
+            crate::adaptive::AdaptiveConfig::resolve(config.max_concurrency, &config.params)
+        }),
     })
 }
 

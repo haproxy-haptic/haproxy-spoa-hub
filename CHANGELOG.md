@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in adaptive per-plugin concurrency (`[[plugins]] adaptive_concurrency = true`, ADR-0002). A latency-feedback controller (Netflix Gradient2) resizes the plugin's admission semaphore at runtime to track its service time, so `max_concurrency` becomes a ceiling the controller stays under rather than a fixed limit that must be hand-tuned per environment. Off by default; the fixed `max_concurrency` path is unchanged. Tunables (`adaptive_initial`, `adaptive_min_limit`, `adaptive_tolerance`, `adaptive_smoothing`, `adaptive_long_window`) are read from the plugin's `params`.
+- `spoa_plugin_duration_seconds{plugin}` histogram: per-plugin service time (the `process()` duration, excluding permit wait). Feeds the adaptive controller and gives a per-plugin latency signal `spoa_message_duration_seconds` (labelled by message) can't.
+
+### Changed
+
+- The derived `max_blocking_threads` and its validation now size against each plugin's concurrency *ceiling* — the adaptive controller's `max_limit` for adaptive plugins, the fixed resolved concurrency otherwise — so a grown adaptive semaphore never overflows into Tokio's unmetered blocking queue.
+
 ## [0.8.0] - 2026-07-18
 
 ### Added

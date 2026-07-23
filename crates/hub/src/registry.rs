@@ -10,6 +10,7 @@ use std::{
 use arc_swap::ArcSwap;
 use tokio::sync::Semaphore;
 
+use crate::adaptive::{AdaptiveConfig, AdaptiveLimiter};
 use crate::plugin::Plugin;
 use crate::plugin_loader::LoadedPlugin;
 
@@ -57,15 +58,36 @@ pub struct PluginAdmission {
     pub(crate) permits: Arc<Semaphore>,
     pub(crate) max_queue: usize,
     pub(crate) queue_timeout: Option<Duration>,
+    /// Present when the plugin opted into adaptive concurrency (ADR-0002). It
+    /// owns the same [`Semaphore`] as `permits` and resizes it from the
+    /// per-call service-time feedback on the dispatch completion path.
+    pub(crate) adaptive: Option<Arc<AdaptiveLimiter>>,
     queued: AtomicUsize,
 }
 
 impl PluginAdmission {
-    fn new(max_concurrency: usize, max_queue: usize, queue_timeout: Option<Duration>) -> Self {
+    /// Build admission state. When `adaptive` is `Some`, the semaphore starts at
+    /// the controller's `initial` permit count and is resized at runtime;
+    /// otherwise it is fixed at `max_concurrency`.
+    fn new(
+        max_concurrency: usize,
+        max_queue: usize,
+        queue_timeout: Option<Duration>,
+        adaptive: Option<AdaptiveConfig>,
+    ) -> Self {
+        let (permits, adaptive) = match adaptive {
+            Some(cfg) => {
+                let permits = Arc::new(Semaphore::new(cfg.initial));
+                let limiter = Arc::new(AdaptiveLimiter::new(Arc::clone(&permits), cfg));
+                (permits, Some(limiter))
+            }
+            None => (Arc::new(Semaphore::new(max_concurrency)), None),
+        };
         Self {
-            permits: Arc::new(Semaphore::new(max_concurrency)),
+            permits,
             max_queue,
             queue_timeout,
+            adaptive,
             queued: AtomicUsize::new(0),
         }
     }
@@ -129,6 +151,7 @@ impl PluginRegistry {
                 max_concurrency,
                 max_queue,
                 queue_timeout,
+                adaptive,
                 ..
             } = plugin;
             for msg in messages {
@@ -155,6 +178,7 @@ impl PluginRegistry {
                         max_concurrency,
                         max_queue,
                         queue_timeout,
+                        adaptive,
                     )),
                 },
             );
@@ -453,7 +477,7 @@ mod tests {
 
     #[test]
     fn queue_reservations_never_exceed_the_configured_cap() {
-        let admission = Arc::new(PluginAdmission::new(1, 2, None));
+        let admission = Arc::new(PluginAdmission::new(1, 2, None, None));
         let contenders = (0..32)
             .map(|_| {
                 let admission = Arc::clone(&admission);

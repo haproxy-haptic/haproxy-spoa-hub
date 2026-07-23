@@ -77,6 +77,12 @@ pub struct PluginConfig {
     /// Maximum queue wait. When omitted, queued calls share the plugin's total
     /// timeout budget. Has no effect while `max_queue` is zero.
     pub queue_timeout_ms: Option<u64>,
+    /// Opt into the latency-feedback concurrency controller (ADR-0002). When
+    /// true, `max_concurrency` becomes the controller's ceiling rather than a
+    /// fixed limit, and the semaphore is resized at runtime to track the
+    /// plugin's service time. Off by default (fixed `max_concurrency`).
+    #[serde(default)]
+    pub adaptive_concurrency: bool,
     /// Typed parameters from the `[plugins.params]` TOML table.
     /// Supports nested tables, arrays, and all native TOML value types.
     #[serde(default)]
@@ -142,6 +148,20 @@ pub fn resolve_plugin_concurrency(plugin: &PluginConfig) -> usize {
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
 }
 
+/// The most concurrency a plugin may ever hold. For an adaptive plugin
+/// (ADR-0002) that is the controller's ceiling (`AdaptiveConfig::max_limit`),
+/// which the semaphore can grow up to; otherwise the fixed resolved
+/// concurrency. Sizing the blocking pool to the sum of ceilings keeps a grown
+/// adaptive semaphore from overflowing into Tokio's unmetered blocking queue.
+#[must_use]
+pub fn resolve_plugin_ceiling(plugin: &PluginConfig) -> usize {
+    if plugin.adaptive_concurrency {
+        crate::adaptive::AdaptiveConfig::resolve(plugin.max_concurrency, &plugin.params).max_limit
+    } else {
+        resolve_plugin_concurrency(plugin)
+    }
+}
+
 /// Resolve the process-wide blocking-pool cap. The derived value permits every
 /// plugin's admitted calls to execute without entering Tokio's internal,
 /// unmetered blocking queue. Operators should assign per-plugin concurrency as
@@ -153,7 +173,7 @@ pub fn resolve_max_blocking_threads(config: &HubConfig) -> usize {
         config
             .plugins
             .iter()
-            .map(resolve_plugin_concurrency)
+            .map(resolve_plugin_ceiling)
             .fold(0usize, usize::saturating_add)
             .max(1)
     })
@@ -259,12 +279,12 @@ impl HubConfig {
             let admitted = self
                 .plugins
                 .iter()
-                .map(resolve_plugin_concurrency)
+                .map(resolve_plugin_ceiling)
                 .fold(0usize, usize::saturating_add)
                 .max(1);
             if configured < admitted {
                 return Err(ConfigError::Validation(format!(
-                    "max_blocking_threads ({configured}) must be at least the sum of resolved plugin max_concurrency values ({admitted})"
+                    "max_blocking_threads ({configured}) must be at least the sum of resolved plugin concurrency ceilings ({admitted})"
                 )));
             }
         }

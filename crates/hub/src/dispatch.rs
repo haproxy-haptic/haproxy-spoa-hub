@@ -459,10 +459,27 @@ async fn execute_plugin(
 
     metrics::record_plugin_in_flight_delta(&name, 1.0);
     let guard_name = name.clone();
+    let metric_name = name.clone();
+    let adaptive = admission.adaptive.clone();
     let handle = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
         let _in_flight = InFlightGuard { plugin: guard_name };
-        instance.process(&message)
+        let call_start = Instant::now();
+        let out = instance.process(&message);
+        let service = call_start.elapsed();
+        metrics::record_plugin_duration(&metric_name, service);
+        match adaptive {
+            // The completing call still holds its permit, so `in_flight` counts
+            // it — that feeds the controller's application-limited growth guard.
+            // `release` converges the semaphore toward the controller's target
+            // rather than unconditionally returning the permit.
+            Some(limiter) => {
+                let in_flight = limiter.in_flight();
+                limiter.on_complete(service, in_flight);
+                limiter.release(permit);
+            }
+            None => drop(permit),
+        }
+        out
     });
 
     let result = tokio::time::timeout(remaining, handle).await;
@@ -903,6 +920,89 @@ mod tests {
         assert_eq!(cleaned.args.len(), 2);
     }
 
+    /// End-to-end proof that the dispatch path drives the adaptive controller
+    /// (ADR-0002): with `adaptive_concurrency = true`, sustained concurrent load
+    /// through `execute_plugin` must grow the admission semaphore above its
+    /// initial permit count (proving `on_complete` is wired) and leave zero
+    /// permits stranded once the load subsides (proving `release` is wired).
+    /// The unit tests in `adaptive.rs` cover the control law in isolation; this
+    /// exercises the real `spawn_blocking` completion path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn adaptive_semaphore_grows_under_concurrent_dispatch() {
+        const INITIAL: usize = 2;
+        const WORKERS: usize = 16;
+        const ITERS: usize = 60;
+
+        let mut cfg = plugin_config("delay", "libdelay_plugin.so", &["check-load"], 1000);
+        cfg.adaptive_concurrency = true;
+        cfg.max_concurrency = Some(16); // deterministic ceiling, independent of core count
+        cfg.max_queue = 64; // workers wait for a permit instead of being rejected
+        cfg.params.insert(
+            "adaptive_initial".into(),
+            toml::Value::Integer(i64::try_from(INITIAL).unwrap()),
+        );
+        cfg.params
+            .insert("adaptive_long_window".into(), toml::Value::Float(100.0));
+
+        let plugin = load_test_plugins(&[cfg], 1000)
+            .into_iter()
+            .next()
+            .expect("delay plugin should load");
+        let registry = Arc::new(PluginRegistry::build(vec![plugin]).unwrap());
+        let entry = registry
+            .get_plugin("delay")
+            .expect("delay plugin registered");
+        let instance = Arc::clone(&entry.instance);
+        let admission = Arc::clone(&entry.admission);
+
+        // 1ms of constant service time keeps the gradient near 1.0 (stable
+        // latency) so the limit climbs, while forcing the concurrent workers to
+        // overlap enough to beat the application-limited growth guard.
+        let message = Arc::new(make_message(
+            "check-load",
+            vec![("delay_ms", SpoeValue::Int32(1))],
+        ));
+        let timeout = Duration::from_secs(1);
+
+        let mut handles = Vec::with_capacity(WORKERS);
+        for _ in 0..WORKERS {
+            let instance = Arc::clone(&instance);
+            let message = Arc::clone(&message);
+            let admission = Arc::clone(&admission);
+            handles.push(tokio::spawn(async move {
+                for _ in 0..ITERS {
+                    execute_plugin(
+                        "delay".to_string(),
+                        Arc::clone(&instance),
+                        Arc::clone(&message),
+                        Arc::clone(&admission),
+                        timeout,
+                    )
+                    .await;
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("worker task should not panic");
+        }
+
+        let limiter = admission
+            .adaptive
+            .as_ref()
+            .expect("adaptive limiter present");
+        assert_eq!(
+            limiter.in_flight(),
+            0,
+            "every permit should be released once the load subsides (release() wired)"
+        );
+        let grown = admission.permits.available_permits();
+        assert!(
+            grown > INITIAL,
+            "adaptive semaphore should grow above its initial {INITIAL} permits under \
+             sustained concurrent load, but settled at {grown} (on_complete not wired?)"
+        );
+    }
+
     fn test_plugin(name: &str, depends_on: &[&str]) -> LoadedPlugin {
         LoadedPlugin {
             name: name.into(),
@@ -914,6 +1014,7 @@ mod tests {
             max_concurrency: 1,
             max_queue: 0,
             queue_timeout: None,
+            adaptive: None,
         }
     }
 
