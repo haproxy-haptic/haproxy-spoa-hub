@@ -51,6 +51,22 @@ fn describe_metrics() {
         "spoa_active_connections",
         "Current number of active SPOP connections"
     );
+    describe_gauge!(
+        "spoa_inflight_frames",
+        "NOTIFY frames currently being processed (holding a shared in-flight gate permit)"
+    );
+    describe_gauge!(
+        "spoa_inflight_gate_capacity",
+        "Capacity of the shared in-flight gate. When spoa_inflight_frames reaches \
+         it, connection read loops stop reading and HAProxy is backpressured \
+         (the excess queues in HAProxy's buffers instead of overloading the hub)."
+    );
+    describe_counter!(
+        "spoa_backpressure_waits_total",
+        "Times a connection read loop had to wait for an in-flight gate permit \
+         before reading the next frame — i.e. HAProxy was backpressured. A rising \
+         rate means the hub is at capacity and shedding load back to HAProxy."
+    );
     describe_plugin_metrics();
     describe_reload_metrics();
 }
@@ -268,4 +284,23 @@ pub fn record_plugin_skip(plugin: &str) {
 pub fn update_active_connections(count: u64) {
     #[allow(clippy::cast_precision_loss)]
     gauge!("spoa_active_connections").set(count as f64);
+}
+
+/// Change the count of NOTIFY frames currently in flight (holding a shared
+/// in-flight gate permit). +1 when a frame starts processing, -1 when it ends.
+pub fn record_inflight_delta(delta: f64) {
+    gauge!("spoa_inflight_frames").increment(delta);
+}
+
+/// Publish the in-flight gate's capacity once at startup so operators can read
+/// saturation as `spoa_inflight_frames / spoa_inflight_gate_capacity`.
+pub fn set_inflight_gate_capacity(capacity: u64) {
+    #[allow(clippy::cast_precision_loss)]
+    gauge!("spoa_inflight_gate_capacity").set(capacity as f64);
+}
+
+/// Count one backpressure event: a read loop blocked waiting for an in-flight
+/// gate permit (the gate was full), so the peer was held off reading.
+pub fn record_backpressure_wait() {
+    counter!("spoa_backpressure_waits_total").increment(1);
 }

@@ -140,3 +140,114 @@ async fn test_disconnect_drains_inflight_frames() {
 
     let _ = std::fs::remove_file(&socket_path);
 }
+
+/// The shared in-flight gate bounds total concurrency and backpressures.
+///
+/// With a gate of 2 and the plugin's own ceiling well above that, four
+/// pipelined 50 ms frames must process at most two at a time — so they complete
+/// in ~2 waves (~100 ms), not ~50 ms (all four at once, no gate) and not
+/// ~200 ms (fully serial). This is what makes the read loop stop reading and
+/// backpressure HAProxy under load instead of overloading the hub.
+#[tokio::test]
+async fn test_inflight_gate_backpressures() {
+    let socket_path = common::unique_sock("gate");
+
+    let mut cfg = common::delay_config("delay", "check-gate", 2000);
+    cfg.max_concurrency = Some(32); // the plugin is not the limit; the gate is
+    let registry = common::build_registry(&[cfg]);
+    let (mut client, server) =
+        common::start_server_and_connect_gated(&socket_path, registry, 2).await;
+
+    let args = HashMap::from([("delay_ms".to_string(), TypedData::UInt32(50))]);
+    const N: u64 = 4;
+
+    let start = Instant::now();
+    for i in 1..=N {
+        client
+            .write_notify(i, i, "check-gate", &args)
+            .await
+            .unwrap();
+    }
+    client.flush().await.unwrap();
+    let mut frame_ids = Vec::new();
+    for _ in 0..N {
+        frame_ids.push(client.read_ack().await.unwrap().frame_id);
+    }
+    let elapsed = start.elapsed();
+
+    frame_ids.sort_unstable();
+    assert_eq!(
+        frame_ids,
+        (1..=N).collect::<Vec<_>>(),
+        "every frame must ack"
+    );
+
+    // >= ~2 waves: a gate of 2 must have prevented all four running at once
+    // (which would be ~50 ms). This is the backpressure taking effect.
+    assert!(
+        elapsed >= Duration::from_millis(80),
+        "gate=2 must limit concurrency to two (~2 waves), took {elapsed:?} (no backpressure?)"
+    );
+    // ...but still ran two concurrently, so well under the ~200 ms serial time.
+    assert!(
+        elapsed < Duration::from_millis(190),
+        "gate=2 should still run two concurrently (< serial), took {elapsed:?}"
+    );
+
+    common::cleanup(client, server, Some(&socket_path)).await;
+}
+
+/// A HAPROXY-DISCONNECT arriving while the read loop is backpressured on a full
+/// gate must be acted on promptly, not stalled behind the permit wait.
+///
+/// With a gate of 1, the first frame takes the permit and the rest back up. The
+/// loop, parked waiting for a permit, still watches the reader — so when the
+/// disconnect arrives it winds down instead of FIFO-processing every backed-up
+/// frame first. The already-running frame's ACK is still delivered; the
+/// backpressured frames are dropped. (Contrast test_disconnect_drains_inflight_
+/// frames, where a large gate means nothing is backpressured and all ACKs land.)
+#[tokio::test]
+async fn test_disconnect_while_backpressured_is_prompt() {
+    let socket_path = common::unique_sock("bp-disconnect");
+
+    let mut cfg = common::delay_config("delay", "check-bpd", 2000);
+    cfg.max_concurrency = Some(32); // the plugin is not the limit; the gate is
+    let registry = common::build_registry(&[cfg]);
+    let (mut client, server) =
+        common::start_server_and_connect_gated(&socket_path, registry, 1).await;
+
+    let args = HashMap::from([("delay_ms".to_string(), TypedData::UInt32(80))]);
+    const N: u64 = 5;
+    for i in 1..=N {
+        client.write_notify(i, i, "check-bpd", &args).await.unwrap();
+    }
+    client.flush().await.unwrap();
+    client.disconnect().await.unwrap();
+
+    // Read ACKs until the server sends AGENT-DISCONNECT / closes.
+    let mut acks = 0usize;
+    while client.read_ack().await.is_ok() {
+        acks += 1;
+    }
+
+    // The in-flight frame's ACK is delivered...
+    assert!(
+        acks >= 1,
+        "in-flight frame's ACK must be delivered, got {acks}"
+    );
+    // ...but the disconnect was caught mid-backpressure, so the remaining
+    // frames were dropped rather than FIFO-processed (which would yield N acks).
+    assert!(
+        acks < N as usize,
+        "backpressured frames must be dropped on disconnect, got {acks}/{N} acks (stalled?)"
+    );
+
+    let shutdown = tokio::time::timeout(Duration::from_secs(2), server).await;
+    assert!(
+        shutdown.is_ok(),
+        "server hung after disconnect while backpressured"
+    );
+    assert!(shutdown.unwrap().is_ok(), "server task panicked");
+
+    let _ = std::fs::remove_file(&socket_path);
+}
