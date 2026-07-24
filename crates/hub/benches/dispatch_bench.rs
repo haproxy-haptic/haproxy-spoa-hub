@@ -24,12 +24,12 @@ fn bench_dispatch_single_plugin(c: &mut Criterion) {
         5000,
     )];
     let (rt, registry) = bench_setup(&configs);
-    let msg = SpoeMessage {
+    let msg = Arc::new(SpoeMessage {
         name: "bench-msg".into(),
         args: RHashMap::new(),
         stream_id: 1,
         frame_id: 1,
-    };
+    });
     let plan = registry.plan_for_message("bench-msg").unwrap();
 
     c.bench_function("dispatch_1_plugin", |b| {
@@ -43,12 +43,12 @@ fn bench_dispatch_two_plugins_parallel(c: &mut Criterion) {
         plugin_config("noop-b", "libnoop_plugin.so", &["bench-parallel"], 5000),
     ];
     let (rt, registry) = bench_setup(&configs);
-    let msg = SpoeMessage {
+    let msg = Arc::new(SpoeMessage {
         name: "bench-parallel".into(),
         args: RHashMap::new(),
         stream_id: 1,
         frame_id: 1,
-    };
+    });
     let plan = registry.plan_for_message("bench-parallel").unwrap();
 
     c.bench_function("dispatch_2_plugins_parallel", |b| {
@@ -69,12 +69,12 @@ fn bench_dispatch_with_args(c: &mut Criterion) {
     args.insert("dst".into(), SpoeValue::String("10.0.0.2".into()));
     args.insert("method".into(), SpoeValue::String("GET".into()));
     args.insert("path".into(), SpoeValue::String("/api/v1/users".into()));
-    let msg = SpoeMessage {
+    let msg = Arc::new(SpoeMessage {
         name: "bench-msg".into(),
         args,
         stream_id: 1,
         frame_id: 1,
-    };
+    });
     let plan = registry.plan_for_message("bench-msg").unwrap();
 
     c.bench_function("dispatch_1_plugin_4_args", |b| {

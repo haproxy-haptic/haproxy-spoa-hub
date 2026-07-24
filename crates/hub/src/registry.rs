@@ -11,6 +11,7 @@ use arc_swap::ArcSwap;
 use tokio::sync::Semaphore;
 
 use crate::adaptive::{AdaptiveConfig, AdaptiveLimiter};
+use crate::metrics::{MessageMetrics, PluginMetrics};
 use crate::plugin::Plugin;
 use crate::plugin_loader::LoadedPlugin;
 
@@ -48,6 +49,9 @@ pub struct PluginEntry {
     pub instance: Arc<Plugin>,
     pub timeout: Duration,
     pub admission: Arc<PluginAdmission>,
+    /// Metric handles resolved once for this plugin, so the dispatch hot path
+    /// records without re-hashing labels or allocating per call.
+    pub metrics: Arc<PluginMetrics>,
 }
 
 /// Per-plugin admission state shared by every connection and message plan.
@@ -126,6 +130,8 @@ impl PluginAdmission {
 pub struct PluginRegistry {
     plugins: HashMap<String, PluginEntry>,
     message_plans: HashMap<String, ExecutionPlan>,
+    /// Cached metric handles per handled message (same key set as `message_plans`).
+    message_metrics: HashMap<String, MessageMetrics>,
     /// Reverse dependency map: plugin name → plugins that depend on it.
     reverse_deps: HashMap<String, Vec<String>>,
 }
@@ -169,6 +175,7 @@ impl PluginRegistry {
                     .push(name.clone());
             }
             depends_on_map.insert(name.clone(), depends_on);
+            let metrics = Arc::new(PluginMetrics::new(&name));
             plugins.insert(
                 name,
                 PluginEntry {
@@ -180,6 +187,7 @@ impl PluginRegistry {
                         queue_timeout,
                         adaptive,
                     )),
+                    metrics,
                 },
             );
         }
@@ -195,9 +203,18 @@ impl PluginRegistry {
             message_plans.insert(msg, plan);
         }
 
+        // Resolve per-message metric handles once for every message the hub is
+        // configured to handle, so `handle_notify_frame` records without
+        // per-frame label allocation on the hot path.
+        let message_metrics = message_plans
+            .keys()
+            .map(|msg| (msg.clone(), MessageMetrics::new(msg)))
+            .collect();
+
         Ok(Self {
             plugins,
             message_plans,
+            message_metrics,
             reverse_deps,
         })
     }
@@ -206,6 +223,13 @@ impl PluginRegistry {
     #[must_use]
     pub fn plan_for_message(&self, message_name: &str) -> Option<&ExecutionPlan> {
         self.message_plans.get(message_name)
+    }
+
+    /// Get the cached metric handles for a handled message. `Some` exactly when
+    /// [`plan_for_message`](Self::plan_for_message) is `Some` for the same name.
+    #[must_use]
+    pub fn message_metrics(&self, message_name: &str) -> Option<&MessageMetrics> {
+        self.message_metrics.get(message_name)
     }
 
     /// Get a plugin entry by name.
