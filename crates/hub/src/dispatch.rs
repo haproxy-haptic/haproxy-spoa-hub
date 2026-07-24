@@ -10,7 +10,7 @@ use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, VarS
 use spop::{actions::VarScope as SpopVarScope, types::TypedData};
 
 use crate::{
-    metrics,
+    metrics::PluginMetrics,
     registry::{ExecutionPlan, PluginAdmission, PluginRegistry},
 };
 
@@ -229,12 +229,19 @@ fn append_plugin_variables(
 /// any plugin sees the message. The `hub.skip_plugins` arg skips named
 /// plugins and their transitive dependents.
 pub async fn dispatch_message(
-    message: &SpoeMessage,
+    message: &Arc<SpoeMessage>,
     plan: &ExecutionPlan,
     registry: &PluginRegistry,
 ) -> DispatchResult {
     let (mut plugins_to_skip, cleaned_message) = extract_hub_args(message);
-    let effective_message = cleaned_message.as_ref().unwrap_or(message);
+    // Own an `Arc` for the effective message: a refcount bump in the common
+    // (no `hub.*` args) case, one allocation for the cleaned message otherwise.
+    // Sharing the `Arc` lets `execute_group` hand each plugin a cheap clone
+    // instead of deep-copying the whole request (headers/URI/body) per group.
+    let effective_message = match cleaned_message {
+        Some(cleaned) => Arc::new(cleaned),
+        None => Arc::clone(message),
+    };
 
     let mut variables = Vec::with_capacity(plan.groups.iter().map(Vec::len).sum::<usize>());
     let mut extra_args = None;
@@ -248,7 +255,9 @@ pub async fn dispatch_message(
         for name in group {
             if plugins_to_skip.contains(name.as_str()) {
                 tracing::debug!(plugin = %name, "plugin skipped");
-                metrics::record_plugin_skip(name);
+                if let Some(entry) = registry.get_plugin(name.as_str()) {
+                    entry.metrics.skips.increment(1);
+                }
                 expand_skip_cascade(name, registry, &mut plugins_to_skip);
 
                 // A skipped plugin is part of this message's execution plan,
@@ -274,7 +283,7 @@ pub async fn dispatch_message(
 
         let group_results = execute_group(
             &active_plugins,
-            effective_message,
+            &effective_message,
             extra_args.as_ref(),
             registry,
         )
@@ -324,18 +333,20 @@ pub async fn dispatch_message(
 /// 2. True thread-level parallelism for CPU-bound plugins
 async fn execute_group(
     group: &[&str],
-    message: &SpoeMessage,
+    message: &Arc<SpoeMessage>,
     extra_args: Option<&ArgMap>,
     registry: &PluginRegistry,
 ) -> Vec<PluginOutcome> {
     let mut futures = Vec::with_capacity(group.len());
 
-    // Build the merged message once (only allocates when extra_args is Some)
-    // and share via Arc to avoid cloning the full message per plugin.
-    let base_msg = Arc::new(match extra_args {
-        Some(extras) => build_message(message, extras),
-        None => message.clone(),
-    });
+    // Merge extra args into a new message only for dependency data flow
+    // (`extra_args` is `Some`). In the common case the caller's `Arc` is shared
+    // by a refcount bump — the full request (headers/URI/body) is never
+    // re-copied here; it was already built once at the FFI boundary.
+    let base_msg = match extra_args {
+        Some(extras) => Arc::new(build_message(message, extras)),
+        None => Arc::clone(message),
+    };
 
     for &plugin_name in group {
         let Some(entry) = registry.get_plugin(plugin_name) else {
@@ -345,11 +356,19 @@ async fn execute_group(
 
         let instance = Arc::clone(&entry.instance);
         let admission = Arc::clone(&entry.admission);
+        let plugin_metrics = Arc::clone(&entry.metrics);
         let msg = Arc::clone(&base_msg);
         let timeout = entry.timeout;
 
         let name = plugin_name.to_owned();
-        futures.push(execute_plugin(name, instance, msg, admission, timeout));
+        futures.push(execute_plugin(
+            name,
+            instance,
+            msg,
+            admission,
+            plugin_metrics,
+            timeout,
+        ));
     }
 
     // Await all plugin futures concurrently
@@ -363,13 +382,16 @@ async fn execute_group(
 /// lifetime. A Tokio timeout drops only the `JoinHandle`; it does not cancel the
 /// work, so decrementing in the async waiter would under-report saturation and
 /// let operators believe capacity had recovered while CPU was still occupied.
+///
+/// Holds the cached gauge handle directly, so the drop costs a single atomic op
+/// with no label allocation or registry lookup.
 struct InFlightGuard {
-    plugin: String,
+    gauge: ::metrics::Gauge,
 }
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        metrics::record_plugin_in_flight_delta(&self.plugin, -1.0);
+        self.gauge.decrement(1.0);
     }
 }
 
@@ -378,6 +400,7 @@ async fn execute_plugin(
     instance: Arc<crate::plugin::Plugin>,
     message: Arc<SpoeMessage>,
     admission: Arc<PluginAdmission>,
+    plugin_metrics: Arc<PluginMetrics>,
     timeout: Duration,
 ) -> PluginOutcome {
     let start = Instant::now();
@@ -391,7 +414,7 @@ async fn execute_plugin(
                 // bounded-cardinality metric. Keep request-path logging at
                 // debug so saturation cannot become a log-amplification DoS.
                 tracing::debug!(plugin = %name, "plugin overloaded; bounded queue is full");
-                metrics::record_plugin_overload(&name);
+                plugin_metrics.overloads.increment(1);
                 return PluginOutcome {
                     name,
                     status: PluginStatus::Overloaded,
@@ -399,7 +422,7 @@ async fn execute_plugin(
                 };
             }
 
-            metrics::record_plugin_queued_delta(&name, 1.0);
+            plugin_metrics.queued.increment(1.0);
             let remaining = deadline.saturating_duration_since(Instant::now());
             let queue_budget = admission
                 .queue_timeout
@@ -408,13 +431,13 @@ async fn execute_plugin(
                 tokio::time::timeout(queue_budget, Arc::clone(&admission.permits).acquire_owned())
                     .await;
             admission.leave_queue();
-            metrics::record_plugin_queued_delta(&name, -1.0);
+            plugin_metrics.queued.decrement(1.0);
 
             match acquired {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => {
                     tracing::error!(plugin = %name, "plugin admission gate closed");
-                    metrics::record_plugin_error(&name);
+                    plugin_metrics.errors.increment(1);
                     return PluginOutcome {
                         name,
                         status: PluginStatus::Error,
@@ -427,7 +450,7 @@ async fn execute_plugin(
                         queue_timeout_ms = queue_budget.as_millis(),
                         "plugin queue wait timed out"
                     );
-                    metrics::record_plugin_queue_timeout(&name);
+                    plugin_metrics.queue_timeouts.increment(1);
                     return PluginOutcome {
                         name,
                         status: PluginStatus::Overloaded,
@@ -438,7 +461,7 @@ async fn execute_plugin(
         }
         Err(tokio::sync::TryAcquireError::Closed) => {
             tracing::error!(plugin = %name, "plugin admission gate closed");
-            metrics::record_plugin_error(&name);
+            plugin_metrics.errors.increment(1);
             return PluginOutcome {
                 name,
                 status: PluginStatus::Error,
@@ -449,7 +472,7 @@ async fn execute_plugin(
 
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        metrics::record_plugin_timeout(&name);
+        plugin_metrics.timeouts.increment(1);
         return PluginOutcome {
             name,
             status: PluginStatus::Timeout,
@@ -457,16 +480,18 @@ async fn execute_plugin(
         };
     }
 
-    metrics::record_plugin_in_flight_delta(&name, 1.0);
-    let guard_name = name.clone();
-    let metric_name = name.clone();
+    plugin_metrics.in_flight.increment(1.0);
+    let in_flight_gauge = plugin_metrics.in_flight.clone();
+    let duration_hist = plugin_metrics.duration.clone();
     let adaptive = admission.adaptive.clone();
     let handle = tokio::task::spawn_blocking(move || {
-        let _in_flight = InFlightGuard { plugin: guard_name };
+        let _in_flight = InFlightGuard {
+            gauge: in_flight_gauge,
+        };
         let call_start = Instant::now();
         let out = instance.process(&message);
         let service = call_start.elapsed();
-        metrics::record_plugin_duration(&metric_name, service);
+        duration_hist.record(service.as_secs_f64());
         match adaptive {
             // The completing call still holds its permit, so `in_flight` counts
             // it — that feeds the controller's application-limited growth guard.
@@ -483,7 +508,7 @@ async fn execute_plugin(
     });
 
     let result = tokio::time::timeout(remaining, handle).await;
-    handle_plugin_result(name, result, start, timeout)
+    handle_plugin_result(name, result, start, timeout, &plugin_metrics)
 }
 
 /// Classify and log the outcome of a single plugin `spawn_blocking` + timeout call.
@@ -492,6 +517,7 @@ fn handle_plugin_result(
     result: PluginCallResult,
     start: Instant,
     timeout: Duration,
+    plugin_metrics: &PluginMetrics,
 ) -> PluginOutcome {
     let elapsed_us = start.elapsed().as_micros();
     match result {
@@ -518,7 +544,7 @@ fn handle_plugin_result(
                 latency_us = elapsed_us,
                 "plugin returned error"
             );
-            metrics::record_plugin_error(&name);
+            plugin_metrics.errors.increment(1);
             PluginOutcome {
                 name,
                 status: PluginStatus::Error,
@@ -531,7 +557,7 @@ fn handle_plugin_result(
                 error = %join_err,
                 "plugin task panicked"
             );
-            metrics::record_plugin_error(&name);
+            plugin_metrics.errors.increment(1);
             PluginOutcome {
                 name,
                 status: PluginStatus::Error,
@@ -544,7 +570,7 @@ fn handle_plugin_result(
                 timeout_ms = %timeout.as_millis(),
                 "plugin timed out"
             );
-            metrics::record_plugin_timeout(&name);
+            plugin_metrics.timeouts.increment(1);
             PluginOutcome {
                 name,
                 status: PluginStatus::Timeout,
@@ -682,7 +708,7 @@ mod tests {
 
         let msg = make_message("test-msg", vec![]);
 
-        let result = dispatch_message(&msg, plan, &registry).await;
+        let result = dispatch_message(&Arc::new(msg), plan, &registry).await;
         assert!(
             !result.variables.is_empty(),
             "expected at least one variable"
@@ -746,7 +772,8 @@ mod tests {
             .try_acquire_owned()
             .expect("single permit should be available");
 
-        let result = dispatch_message(&make_message("test-msg", vec![]), plan, &registry).await;
+        let result =
+            dispatch_message(&Arc::new(make_message("test-msg", vec![])), plan, &registry).await;
 
         assert!(result.variables.iter().any(|(_, name, value)| {
             name == "noop.__status"
@@ -772,7 +799,8 @@ mod tests {
             .try_acquire_owned()
             .expect("single permit should be available");
 
-        let result = dispatch_message(&make_message("test-msg", vec![]), plan, &registry).await;
+        let result =
+            dispatch_message(&Arc::new(make_message("test-msg", vec![])), plan, &registry).await;
 
         assert!(result.variables.iter().any(|(_, name, value)| {
             name == "noop.__status"
@@ -800,7 +828,10 @@ mod tests {
         let admission = Arc::clone(&registry.get_plugin("delay").unwrap().admission);
 
         let result = dispatch_message(
-            &make_message("test-msg", vec![("delay_ms", SpoeValue::Int32(500))]),
+            &Arc::new(make_message(
+                "test-msg",
+                vec![("delay_ms", SpoeValue::Int32(500))],
+            )),
             plan,
             &registry,
         )
@@ -950,6 +981,7 @@ mod tests {
             .expect("delay plugin registered");
         let instance = Arc::clone(&entry.instance);
         let admission = Arc::clone(&entry.admission);
+        let plugin_metrics = Arc::clone(&entry.metrics);
 
         // 1ms of constant service time keeps the gradient near 1.0 (stable
         // latency) so the limit climbs, while forcing the concurrent workers to
@@ -965,6 +997,7 @@ mod tests {
             let instance = Arc::clone(&instance);
             let message = Arc::clone(&message);
             let admission = Arc::clone(&admission);
+            let plugin_metrics = Arc::clone(&plugin_metrics);
             handles.push(tokio::spawn(async move {
                 for _ in 0..ITERS {
                     execute_plugin(
@@ -972,6 +1005,7 @@ mod tests {
                         Arc::clone(&instance),
                         Arc::clone(&message),
                         Arc::clone(&admission),
+                        Arc::clone(&plugin_metrics),
                         timeout,
                     )
                     .await;
@@ -1046,7 +1080,7 @@ mod tests {
             vec![("hub.skip_plugins", SpoeValue::String("noop".into()))],
         );
 
-        let result = dispatch_message(&msg, plan, &registry).await;
+        let result = dispatch_message(&Arc::new(msg), plan, &registry).await;
         assert!(
             result.variables.iter().any(|(_, name, value)| {
                 name == "noop.__status"
@@ -1073,7 +1107,10 @@ mod tests {
             .expect("both plugins should handle test-msg");
 
         let result = dispatch_message(
-            &make_message("test-msg", vec![("delay_ms", SpoeValue::Int32(500))]),
+            &Arc::new(make_message(
+                "test-msg",
+                vec![("delay_ms", SpoeValue::Int32(500))],
+            )),
             plan,
             &registry,
         )

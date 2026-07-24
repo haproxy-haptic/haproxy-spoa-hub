@@ -317,12 +317,15 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
             .map(|(key, value)| (key.as_str().into(), typed_data_to_spoe_value(value)))
             .collect();
 
-        let spoe_msg = SpoeMessage {
+        // Wrap in an Arc once: dispatch shares it with each plugin's blocking
+        // task by refcount bump, so the request (headers/URI/body) is copied
+        // exactly once — here at the FFI boundary — not again per plugin group.
+        let spoe_msg = Arc::new(SpoeMessage {
             name: msg_name.into(),
             args,
             stream_id: metadata.stream_id,
             frame_id: metadata.frame_id,
-        };
+        });
 
         // Look up execution plan for this message
         if let Some(plan) = current_registry.plan_for_message(msg_name) {
@@ -357,7 +360,16 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
         }
 
         let elapsed = start.elapsed();
-        metrics::record_message_processed(msg_name, elapsed);
+        // Record via the cached per-message handles for messages the hub
+        // handles (the hot path); fall back to the uncached path for messages
+        // it isn't configured for (rare, and their names aren't known upfront).
+        match current_registry.message_metrics(msg_name) {
+            Some(m) => {
+                m.duration.record(elapsed.as_secs_f64());
+                m.total.increment(1);
+            }
+            None => metrics::record_message_processed(msg_name, elapsed),
+        }
         tracing::debug!(
             message_name = %msg_name,
             latency_us = elapsed.as_micros(),

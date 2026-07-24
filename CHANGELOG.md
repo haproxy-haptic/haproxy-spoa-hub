@@ -11,10 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt-in adaptive per-plugin concurrency (`[[plugins]] adaptive_concurrency = true`, ADR-0002). A latency-feedback controller (Netflix Gradient2) resizes the plugin's admission semaphore at runtime to track its service time, so `max_concurrency` becomes a ceiling the controller stays under rather than a fixed limit that must be hand-tuned per environment. Off by default; the fixed `max_concurrency` path is unchanged. Tunables (`adaptive_initial`, `adaptive_min_limit`, `adaptive_tolerance`, `adaptive_smoothing`, `adaptive_long_window`) are read from the plugin's `params`.
 - `spoa_plugin_duration_seconds{plugin}` histogram: per-plugin service time (the `process()` duration, excluding permit wait). Feeds the adaptive controller and gives a per-plugin latency signal `spoa_message_duration_seconds` (labelled by message) can't.
+- Process-wide in-flight backpressure gate: the total NOTIFY frames being processed are bounded to the usable CPU core count (`available_parallelism()`). When the gate is full, connection read loops stop reading so HAProxy is backpressured (the excess queues in HAProxy's buffers) instead of the hub flooding its per-plugin admission queues and shedding 503s under saturation on a capacity-limited box. New metrics: `spoa_inflight_frames`, `spoa_inflight_gate_capacity`, `spoa_backpressure_waits_total`.
 
 ### Changed
 
 - The derived `max_blocking_threads` and its validation now size against each plugin's concurrency *ceiling* — the adaptive controller's `max_limit` for adaptive plugins, the fixed resolved concurrency otherwise — so a grown adaptive semaphore never overflows into Tokio's unmetered blocking queue.
+- The per-connection read loop processes pipelined NOTIFY frames concurrently instead of serially (read → dispatch → ACK → read next). The hub advertises SPOP `pipelining`, so HAProxy multiplexes many in-flight requests over few connections; the serial loop collapsed effective concurrency to the connection count. ACKs may now be returned out of order on the same connection — each carries its stream/frame id, so HAProxy matches them to the right request.
+- Dispatch hot path allocates less per frame under load: the request message (headers/URI/body) is copied once at the FFI boundary and shared with each plugin's blocking task by reference-count (was deep-copied once per plugin group), and per-plugin and per-message metric handles are resolved once at registry-build time (was re-hashed with a freshly-allocated label on every emission). Removes per-request allocator and metric-registry pressure that was the dominant avoidable overhead under saturation.
 
 ## [0.8.0] - 2026-07-18
 

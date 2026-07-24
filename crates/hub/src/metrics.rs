@@ -1,6 +1,9 @@
 use std::{net::SocketAddr, time::Duration};
 
-use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
+use metrics::{
+    Counter, Gauge, Histogram, counter, describe_counter, describe_gauge, describe_histogram,
+    gauge, histogram,
+};
 
 pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
     if let Some(addr) = addr {
@@ -168,6 +171,66 @@ fn describe_reload_metrics() {
     );
 }
 
+/// Per-plugin metric handles, resolved once at registry-build time.
+///
+/// The `metrics` crate's `counter!`/`gauge!`/`histogram!` macros hash the
+/// metric name plus its labels and look the handle up in a global registry on
+/// **every** call, and each call allocates the label `String`. On the dispatch
+/// hot path that is several allocations plus registry lookups per plugin call —
+/// every coraza evaluation records in-flight ±1 and a duration sample. Resolving
+/// the handles once here moves all of that off the per-frame path; recording
+/// then costs a single atomic op on the cached handle.
+pub struct PluginMetrics {
+    pub in_flight: Gauge,
+    pub queued: Gauge,
+    pub duration: Histogram,
+    pub errors: Counter,
+    pub timeouts: Counter,
+    pub overloads: Counter,
+    pub queue_timeouts: Counter,
+    pub skips: Counter,
+}
+
+impl PluginMetrics {
+    /// Resolve every per-plugin metric handle once, tagged with `plugin`.
+    #[must_use]
+    pub fn new(plugin: &str) -> Self {
+        Self {
+            in_flight: gauge!("spoa_plugin_in_flight", "plugin" => plugin.to_owned()),
+            queued: gauge!("spoa_plugin_queued", "plugin" => plugin.to_owned()),
+            duration: histogram!("spoa_plugin_duration_seconds", "plugin" => plugin.to_owned()),
+            errors: counter!("spoa_plugin_errors_total", "plugin" => plugin.to_owned()),
+            timeouts: counter!("spoa_plugin_timeouts_total", "plugin" => plugin.to_owned()),
+            overloads: counter!("spoa_plugin_overloads_total", "plugin" => plugin.to_owned()),
+            queue_timeouts: counter!(
+                "spoa_plugin_queue_timeouts_total", "plugin" => plugin.to_owned()
+            ),
+            skips: counter!("spoa_plugin_skips_total", "plugin" => plugin.to_owned()),
+        }
+    }
+}
+
+/// Per-message metric handles, resolved once at registry-build time (one per
+/// message the hub is configured to handle). Recorded once per NOTIFY message on
+/// the hot path; see [`PluginMetrics`] for the rationale. Messages the hub is
+/// *not* configured for use the uncached [`record_message_processed`] fallback,
+/// since their names are not known ahead of time.
+pub struct MessageMetrics {
+    pub duration: Histogram,
+    pub total: Counter,
+}
+
+impl MessageMetrics {
+    /// Resolve the per-message metric handles once, tagged with `message`.
+    #[must_use]
+    pub fn new(message: &str) -> Self {
+        Self {
+            duration: histogram!("spoa_message_duration_seconds", "message" => message.to_owned()),
+            total: counter!("spoa_messages_total", "message" => message.to_owned()),
+        }
+    }
+}
+
 /// Record a successful config reload. Increments the success counter
 /// and resets the age gauge to 0. Called from `main.rs` when the new
 /// `arc_swap` registry has been swapped in.
@@ -242,43 +305,6 @@ pub fn record_message_processed(message: &str, duration: Duration) {
 /// the work `HAProxy` asked for was dropped.
 pub fn record_message_unhandled(message: &str) {
     counter!("spoa_messages_unhandled_total", "message" => message.to_owned()).increment(1);
-}
-
-pub fn record_plugin_error(plugin: &str) {
-    counter!("spoa_plugin_errors_total", "plugin" => plugin.to_owned()).increment(1);
-}
-
-pub fn record_plugin_timeout(plugin: &str) {
-    counter!("spoa_plugin_timeouts_total", "plugin" => plugin.to_owned()).increment(1);
-}
-
-pub fn record_plugin_overload(plugin: &str) {
-    counter!("spoa_plugin_overloads_total", "plugin" => plugin.to_owned()).increment(1);
-}
-
-pub fn record_plugin_queue_timeout(plugin: &str) {
-    counter!("spoa_plugin_queue_timeouts_total", "plugin" => plugin.to_owned()).increment(1);
-}
-
-pub fn record_plugin_in_flight_delta(plugin: &str, delta: f64) {
-    gauge!("spoa_plugin_in_flight", "plugin" => plugin.to_owned()).increment(delta);
-}
-
-pub fn record_plugin_queued_delta(plugin: &str, delta: f64) {
-    gauge!("spoa_plugin_queued", "plugin" => plugin.to_owned()).increment(delta);
-}
-
-/// Per-plugin service time (the `process()` duration, excluding permit wait).
-/// Feeds the adaptive concurrency controller (ADR-0002) and provides the
-/// per-plugin latency signal that `spoa_message_duration_seconds` (labelled by
-/// message, not plugin) cannot.
-pub fn record_plugin_duration(plugin: &str, duration: Duration) {
-    histogram!("spoa_plugin_duration_seconds", "plugin" => plugin.to_owned())
-        .record(duration.as_secs_f64());
-}
-
-pub fn record_plugin_skip(plugin: &str) {
-    counter!("spoa_plugin_skips_total", "plugin" => plugin.to_owned()).increment(1);
 }
 
 pub fn update_active_connections(count: u64) {
