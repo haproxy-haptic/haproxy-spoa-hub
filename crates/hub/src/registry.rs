@@ -78,11 +78,12 @@ impl PluginAdmission {
         max_queue: usize,
         queue_timeout: Option<Duration>,
         adaptive: Option<AdaptiveConfig>,
+        plugin: &str,
     ) -> Self {
         let (permits, adaptive) = match adaptive {
             Some(cfg) => {
                 let permits = Arc::new(Semaphore::new(cfg.initial));
-                let limiter = Arc::new(AdaptiveLimiter::new(Arc::clone(&permits), cfg));
+                let limiter = Arc::new(AdaptiveLimiter::new(Arc::clone(&permits), cfg, plugin));
                 (permits, Some(limiter))
             }
             None => (Arc::new(Semaphore::new(max_concurrency)), None),
@@ -176,17 +177,19 @@ impl PluginRegistry {
             }
             depends_on_map.insert(name.clone(), depends_on);
             let metrics = Arc::new(PluginMetrics::new(&name));
+            let admission = Arc::new(PluginAdmission::new(
+                max_concurrency,
+                max_queue,
+                queue_timeout,
+                adaptive,
+                &name,
+            ));
             plugins.insert(
                 name,
                 PluginEntry {
                     instance,
                     timeout,
-                    admission: Arc::new(PluginAdmission::new(
-                        max_concurrency,
-                        max_queue,
-                        queue_timeout,
-                        adaptive,
-                    )),
+                    admission,
                     metrics,
                 },
             );
@@ -501,7 +504,7 @@ mod tests {
 
     #[test]
     fn queue_reservations_never_exceed_the_configured_cap() {
-        let admission = Arc::new(PluginAdmission::new(1, 2, None, None));
+        let admission = Arc::new(PluginAdmission::new(1, 2, None, None, "test"));
         let contenders = (0..32)
             .map(|_| {
                 let admission = Arc::clone(&admission);

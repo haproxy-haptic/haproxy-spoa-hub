@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::SplitStream};
 use spop::{
     SpopFrame,
     codec::SpopCodec,
@@ -9,7 +9,7 @@ use spop::{
     frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities, HaproxyHello},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::codec::Framed;
 
 use haproxy_spoa_hub_plugin_api::SpoeMessage;
@@ -106,7 +106,7 @@ where
     // socket-level backpressure.
     let mut pending: Option<Box<dyn SpopFrame>> = None;
 
-    'read: loop {
+    loop {
         let frame = match pending.take() {
             Some(frame) => frame,
             None => match reader.next().await {
@@ -126,50 +126,20 @@ where
                 break;
             }
             FrameType::Notify => {
-                // Take a shared in-flight permit before spawning. When the gate
-                // is full this awaits — the loop stops reading, the socket fills,
-                // and the peer is backpressured (the excess queues in HAProxy
-                // rather than overloading the hub).
-                let permit = match Arc::clone(&inflight).try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(tokio::sync::TryAcquireError::Closed) => break,
-                    Err(tokio::sync::TryAcquireError::NoPermits) => {
-                        // Backpressured. Wait for a permit, but stay responsive
-                        // to a disconnect / connection close arriving meanwhile.
-                        // `biased` makes a ready permit always win the race, which
-                        // preserves the backpressure.
-                        metrics::record_backpressure_wait();
-                        tokio::select! {
-                            biased;
-                            permit = Arc::clone(&inflight).acquire_owned() => match permit {
-                                Ok(permit) => permit,
-                                Err(_) => break 'read, // gate closed: shutting down
-                            },
-                            next = reader.next() => match next {
-                                None => break 'read, // connection closed
-                                Some(Err(e)) => {
-                                    tracing::error!(error = %e, "error reading frame while backpressured");
-                                    break 'read;
-                                }
-                                Some(Ok(f))
-                                    if f.frame_type() == &FrameType::HaproxyDisconnect =>
-                                {
-                                    tracing::debug!("HAProxy disconnected (while backpressured)");
-                                    disconnecting = true;
-                                    break 'read;
-                                }
-                                // A NOTIFY arrived while we waited: hold it (one
-                                // deep) and block for the current frame's permit.
-                                Some(Ok(f)) => {
-                                    pending = Some(f);
-                                    match Arc::clone(&inflight).acquire_owned().await {
-                                        Ok(permit) => permit,
-                                        Err(_) => break 'read,
-                                    }
-                                }
-                            },
-                        }
+                // Take a shared in-flight permit before spawning (backpressure
+                // and disconnect handling live in `acquire_inflight_permit`).
+                let permit = match acquire_inflight_permit(&inflight, &mut reader).await {
+                    PermitAcquisition::Ready(permit) => permit,
+                    PermitAcquisition::ReadyWithPending(permit, held) => {
+                        // A NOTIFY arrived while we waited: process it next.
+                        pending = Some(held);
+                        permit
                     }
+                    PermitAcquisition::Disconnect => {
+                        disconnecting = true;
+                        break;
+                    }
+                    PermitAcquisition::Stop => break,
                 };
                 let registry = registry.clone();
                 let ack_tx = ack_tx.clone();
@@ -203,6 +173,75 @@ where
             };
             let _ = sink.send(Box::new(disconnect)).await;
         }
+    }
+}
+
+/// Outcome of taking a shared in-flight permit for a NOTIFY frame while staying
+/// responsive to a disconnect/close that arrives while backpressured.
+enum PermitAcquisition {
+    /// A permit was obtained; process the current frame.
+    Ready(OwnedSemaphorePermit),
+    /// A permit was obtained and a NOTIFY frame arrived while waiting — the
+    /// caller holds it for the next iteration (one-frame look-ahead).
+    ReadyWithPending(OwnedSemaphorePermit, Box<dyn SpopFrame>),
+    /// `HAProxy` sent a clean disconnect while we were backpressured.
+    Disconnect,
+    /// The connection closed or the gate shut down; stop the read loop.
+    Stop,
+}
+
+/// Acquire one shared in-flight permit for a NOTIFY frame.
+///
+/// Fast path: a permit is available and returned immediately. Slow path (the
+/// gate is full): the read loop is backpressured, so we `select!` the permit
+/// against the reader — a HAPROXY-DISCONNECT or connection close is acted on
+/// immediately instead of stalling behind the permit wait, and a NOTIFY that
+/// arrives meanwhile is held one deep. `biased` makes a ready permit always win,
+/// preserving the backpressure. The wait-time tail is recorded on the slow path.
+async fn acquire_inflight_permit<S>(
+    inflight: &Arc<Semaphore>,
+    reader: &mut SplitStream<Framed<S, SpopCodec>>,
+) -> PermitAcquisition
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    match Arc::clone(inflight).try_acquire_owned() {
+        Ok(permit) => return PermitAcquisition::Ready(permit),
+        Err(tokio::sync::TryAcquireError::Closed) => return PermitAcquisition::Stop,
+        Err(tokio::sync::TryAcquireError::NoPermits) => {}
+    }
+
+    metrics::record_backpressure_wait();
+    let wait_start = Instant::now();
+    tokio::select! {
+        biased;
+        permit = Arc::clone(inflight).acquire_owned() => match permit {
+            Ok(permit) => {
+                metrics::record_backpressure_wait_seconds(wait_start.elapsed());
+                PermitAcquisition::Ready(permit)
+            }
+            Err(_) => PermitAcquisition::Stop, // gate closed: shutting down
+        },
+        next = reader.next() => match next {
+            None => PermitAcquisition::Stop, // connection closed
+            Some(Err(e)) => {
+                tracing::error!(error = %e, "error reading frame while backpressured");
+                PermitAcquisition::Stop
+            }
+            Some(Ok(f)) if f.frame_type() == &FrameType::HaproxyDisconnect => {
+                tracing::debug!("HAProxy disconnected (while backpressured)");
+                PermitAcquisition::Disconnect
+            }
+            // A NOTIFY arrived while we waited: block for the current frame's
+            // permit and hand the new frame back to hold one deep.
+            Some(Ok(f)) => match Arc::clone(inflight).acquire_owned().await {
+                Ok(permit) => {
+                    metrics::record_backpressure_wait_seconds(wait_start.elapsed());
+                    PermitAcquisition::ReadyWithPending(permit, f)
+                }
+                Err(_) => PermitAcquisition::Stop,
+            },
+        },
     }
 }
 
@@ -271,6 +310,7 @@ where
 {
     tokio::spawn(async move {
         while let Some(frame) = ack_rx.recv().await {
+            let mut batch_size = 1usize;
             if let Err(e) = sink.feed(frame).await {
                 tracing::error!(error = %e, "failed to queue ACK");
                 return None;
@@ -280,11 +320,14 @@ where
                     tracing::error!(error = %e, "failed to queue ACK");
                     return None;
                 }
+                batch_size += 1;
             }
+            let flush_start = Instant::now();
             if let Err(e) = sink.flush().await {
                 tracing::error!(error = %e, "failed to flush ACK");
                 return None;
             }
+            metrics::record_ack_flush(batch_size, flush_start.elapsed());
         }
         Some(sink)
     })
