@@ -19,6 +19,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use metrics::{Gauge, gauge};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Tunables for the Gradient2 controller. Defaults follow Netflix's
@@ -176,18 +177,36 @@ pub struct AdaptiveLimiter {
     inner: Mutex<Gradient2>,
     target: AtomicUsize,
     total: AtomicUsize,
+    /// Observability: the controller's current integer ceiling, published every
+    /// completion so operators can watch the moving limit per plugin.
+    limit_gauge: Gauge,
+    /// Observability: the smoothed no-load service-time baseline (seconds) the
+    /// controller measures the limit against.
+    baseline_rtt_gauge: Gauge,
 }
 
 impl AdaptiveLimiter {
     /// Create a limiter over a freshly-built semaphore. The semaphore MUST have
-    /// been created with `cfg.initial` permits.
+    /// been created with `cfg.initial` permits. `plugin` tags the observability
+    /// gauges so the moving limit and its baseline are exported per plugin.
     #[must_use]
-    pub fn new(permits: Arc<Semaphore>, cfg: AdaptiveConfig) -> Self {
+    pub fn new(permits: Arc<Semaphore>, cfg: AdaptiveConfig, plugin: &str) -> Self {
+        let limit_gauge = gauge!("spoa_plugin_adaptive_limit", "plugin" => plugin.to_owned());
+        let baseline_rtt_gauge =
+            gauge!("spoa_plugin_adaptive_baseline_rtt_seconds", "plugin" => plugin.to_owned());
+        // Publish the starting ceiling immediately so the gauge reads the real
+        // initial limit before the first completion. The baseline is unknown
+        // until the first sample seeds it, so it starts at 0.
+        #[allow(clippy::cast_precision_loss)]
+        limit_gauge.set(cfg.initial as f64);
+        baseline_rtt_gauge.set(0.0);
         Self {
             permits,
             inner: Mutex::new(Gradient2::new(cfg)),
             target: AtomicUsize::new(cfg.initial),
             total: AtomicUsize::new(cfg.initial),
+            limit_gauge,
+            baseline_rtt_gauge,
         }
     }
 
@@ -206,13 +225,20 @@ impl AdaptiveLimiter {
         if short_ns <= 0.0 {
             return;
         }
-        let new_target = {
+        let (new_target, baseline_ns) = {
             let mut g = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            g.update(short_ns, in_flight)
+            let target = g.update(short_ns, in_flight);
+            (target, g.long_rtt_ns)
         };
+        // Export the controller's computed state: the raw per-call latency is
+        // already visible (spoa_plugin_duration_seconds), but the limit it drives
+        // and the baseline it compares against were previously dark.
+        #[allow(clippy::cast_precision_loss)]
+        self.limit_gauge.set(new_target as f64);
+        self.baseline_rtt_gauge.set(baseline_ns / 1e9);
         self.resize(new_target);
     }
 
@@ -401,7 +427,7 @@ mod tests {
     #[tokio::test]
     async fn limiter_grows_the_semaphore() {
         let sem = Arc::new(Semaphore::new(4));
-        let lim = AdaptiveLimiter::new(Arc::clone(&sem), cfg(1, 64, 4));
+        let lim = AdaptiveLimiter::new(Arc::clone(&sem), cfg(1, 64, 4), "test");
         // Drive stable low latency under full load until it grows.
         for _ in 0..300 {
             let inflight = lim.current_limit();
@@ -422,7 +448,7 @@ mod tests {
     #[tokio::test]
     async fn release_forgets_permits_while_over_target() {
         let sem = Arc::new(Semaphore::new(10));
-        let lim = AdaptiveLimiter::new(Arc::clone(&sem), cfg(1, 64, 10));
+        let lim = AdaptiveLimiter::new(Arc::clone(&sem), cfg(1, 64, 10), "test");
         // Acquire 4 permits (in flight), then force a shrink to 2.
         let mut held = Vec::new();
         for _ in 0..4 {
@@ -448,7 +474,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_resize_and_release_never_leak_permits() {
         let sem = Arc::new(Semaphore::new(16));
-        let lim = Arc::new(AdaptiveLimiter::new(Arc::clone(&sem), cfg(1, 64, 16)));
+        let lim = Arc::new(AdaptiveLimiter::new(
+            Arc::clone(&sem),
+            cfg(1, 64, 16),
+            "test",
+        ));
         let mut tasks = Vec::new();
         for t in 0..8 {
             let lim = Arc::clone(&lim);

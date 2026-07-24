@@ -6,16 +6,36 @@ use metrics::{
 };
 
 pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
+    // Latency buckets tuned to where the SPOE data path actually lands: fine
+    // resolution across the 1ms–10ms band (hub processing and WAF evaluation sit
+    // at ~1.5ms mean), so p99 is resolvable instead of collapsing into a coarse
+    // 1ms→5ms→10ms gap that reports every quantile as "5ms". Coarser above 10ms
+    // where only outliers live, and sub-millisecond points for the cheap plugins.
+    const LATENCY_BUCKETS: &[f64] = &[
+        0.0001, 0.0005, 0.001, 0.002, 0.003, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.1, 0.5, 1.0,
+    ];
     if let Some(addr) = addr {
         let builder = metrics_exporter_prometheus::PrometheusBuilder::new()
             .with_http_listener(addr)
             .set_buckets_for_metric(
                 metrics_exporter_prometheus::Matcher::Prefix("spoa_message_duration".into()),
-                &[0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
+                LATENCY_BUCKETS,
             )?
             .set_buckets_for_metric(
                 metrics_exporter_prometheus::Matcher::Prefix("spoa_plugin_duration".into()),
-                &[0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
+                LATENCY_BUCKETS,
+            )?
+            .set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Prefix("spoa_backpressure_wait".into()),
+                LATENCY_BUCKETS,
+            )?
+            .set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Prefix("spoa_ack_flush_duration".into()),
+                LATENCY_BUCKETS,
+            )?
+            .set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Full("spoa_ack_batch_size".into()),
+                &[1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0],
             )?
             .add_global_label("service", "haproxy-spoa-hub");
 
@@ -70,6 +90,27 @@ fn describe_metrics() {
          before reading the next frame — i.e. HAProxy was backpressured. A rising \
          rate means the hub is at capacity and shedding load back to HAProxy."
     );
+    describe_histogram!(
+        "spoa_backpressure_wait_seconds",
+        "How long a connection read loop blocked waiting for an in-flight gate \
+         permit (observed only when the gate was full, so it is the wait tail, not \
+         a per-frame latency). This is the one segment of request latency added by \
+         the shared backpressure gate; a growing tail means the gate is the \
+         bottleneck. Pairs with spoa_backpressure_waits_total (the count)."
+    );
+    describe_histogram!(
+        "spoa_ack_flush_duration_seconds",
+        "Time the per-connection ACK writer spent in a single flush (one syscall \
+         batch) writing completed replies back to HAProxy. Covers the return-path \
+         serialization+write that spoa_message_duration_seconds excludes."
+    );
+    describe_histogram!(
+        "spoa_ack_batch_size",
+        "Number of ACK frames coalesced into one flush by the per-connection ACK \
+         writer. Higher values mean SPOP pipelining is letting concurrent replies \
+         share a syscall; a distribution pinned at 1 means replies are not \
+         overlapping (low concurrency or serialized load)."
+    );
     describe_plugin_metrics();
     describe_reload_metrics();
 }
@@ -100,6 +141,20 @@ fn describe_plugin_metrics() {
     describe_counter!(
         "spoa_plugin_skips_total",
         "Plugins skipped via hub.skip_plugins or failed dependency"
+    );
+    describe_gauge!(
+        "spoa_plugin_adaptive_limit",
+        "Current adaptive concurrency ceiling the Gradient2 controller (ADR-0002) \
+         is holding for this plugin. Emitted only for plugins with \
+         adaptive_concurrency = true. Read alongside spoa_plugin_in_flight to see \
+         how close the plugin is to the moving limit it is pressing against."
+    );
+    describe_gauge!(
+        "spoa_plugin_adaptive_baseline_rtt_seconds",
+        "The Gradient2 controller's smoothed no-load service-time baseline \
+         (long_rtt) for this plugin, in seconds. The controller shrinks the limit \
+         when current service time rises above this baseline by more than its \
+         tolerance. Emitted only for adaptive_concurrency = true plugins."
     );
 }
 
@@ -329,4 +384,21 @@ pub fn set_inflight_gate_capacity(capacity: u64) {
 /// gate permit (the gate was full), so the peer was held off reading.
 pub fn record_backpressure_wait() {
     counter!("spoa_backpressure_waits_total").increment(1);
+}
+
+/// Record how long a read loop blocked before it obtained an in-flight gate
+/// permit. Observed only on the backpressured path (the gate was full), so this
+/// is the wait-time tail — the one latency segment the shared gate adds.
+pub fn record_backpressure_wait_seconds(duration: Duration) {
+    histogram!("spoa_backpressure_wait_seconds").record(duration.as_secs_f64());
+}
+
+/// Record one ACK-writer flush: `batch_size` frames coalesced into the flush and
+/// the wall-clock time the flush (serialize + write) took. Called once per flush
+/// (per batch), not per frame, so the macro lookup cost stays off the per-frame
+/// path.
+pub fn record_ack_flush(batch_size: usize, duration: Duration) {
+    #[allow(clippy::cast_precision_loss)]
+    histogram!("spoa_ack_batch_size").record(batch_size as f64);
+    histogram!("spoa_ack_flush_duration_seconds").record(duration.as_secs_f64());
 }

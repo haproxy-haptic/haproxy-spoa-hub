@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-24
+
+### Added
+
+- Data-path latency observability metrics that expose previously-dark SPOE segments: `spoa_backpressure_wait_seconds` (histogram — how long a connection read loop blocked on the shared in-flight gate, the one latency segment the gate adds); `spoa_ack_flush_duration_seconds` and `spoa_ack_batch_size` (histograms — the per-connection ACK writer's return-path flush time and how many replies it coalesces per syscall); and, for adaptive-concurrency plugins, `spoa_plugin_adaptive_limit{plugin}` and `spoa_plugin_adaptive_baseline_rtt_seconds{plugin}` (gauges — the Gradient2 controller's current ceiling and its smoothed no-load baseline, so the moving limit is observable rather than only the raw per-call latency).
+- Refined the `spoa_message_duration_seconds` and `spoa_plugin_duration_seconds` histogram buckets (and the new latency histograms) with resolution across the 1ms–10ms band. The previous buckets jumped 1ms→5ms→10ms, so per-message and per-plugin latency (which lands at ~1.5ms mean for WAF evaluation) collapsed into a single bucket and every quantile reported as "5ms"; p99 is now resolvable.
+
 ## [0.9.0] - 2026-07-24
 
 ### Added
