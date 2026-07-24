@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-24
+
 ### Added
 
 - Opt-in adaptive per-plugin concurrency (`[[plugins]] adaptive_concurrency = true`, ADR-0002). A latency-feedback controller (Netflix Gradient2) resizes the plugin's admission semaphore at runtime to track its service time, so `max_concurrency` becomes a ceiling the controller stays under rather than a fixed limit that must be hand-tuned per environment. Off by default; the fixed `max_concurrency` path is unchanged. Tunables (`adaptive_initial`, `adaptive_min_limit`, `adaptive_tolerance`, `adaptive_smoothing`, `adaptive_long_window`) are read from the plugin's `params`.
