@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-26
+
 ### Added
 
 - Correlation id on every SPOE message. HAProxy can supply the id it already uses for a request as an ordinary `req_id` argument (`args req_id=unique-id`), and the hub adopts it — so hub log lines name the same request as HAProxy's access-log record, instead of the hub's synthetic per-frame identity that nothing outside the hub can join on. When the argument is absent, empty, mistyped, or fails validation, the hub substitutes one it generates, so `req_id` is always present and a plugin reads it without a fallback (`message.get_string("req_id")`). Every event emitted while handling a message carries it as `span.req_id`, including the "no plugins registered for message" warning.
