@@ -433,6 +433,37 @@ log::warn!("lookup failed for IP: {}", addr);
 
 Log lines appear in the hub's structured JSON output. Available levels: `trace`, `debug`, `info`, `warn`, `error`.
 
+### 11. Request correlation id
+
+Every message carries a `req_id` argument. When HAProxy sends one the hub adopts
+it; otherwise the hub generates one. Either way the value is present, so a plugin
+can read it without a fallback:
+
+```rust
+let req_id = message.get_string("req_id").unwrap_or_default();
+log::warn!("upstream rejected the token (req_id={req_id})");
+```
+
+Have HAProxy send its own id so hub logs and the HAProxy access log name the same
+request — the value is whatever `unique-id-format` produces:
+
+```
+spoe-message check-request
+    args req_id=unique-id method=method path=path
+```
+
+The hub validates an adopted id against `[A-Za-z0-9._:-]{1,128}` and replaces
+anything else with a generated id, so the value is always safe to put in a log
+line. Rejections are counted by `spoa_request_id_source_total{source="rejected"}`;
+the rejected value itself is never logged, since echoing it is the injection risk
+the validation exists to prevent.
+
+**Never use `req_id` as a key.** It arrives over the wire and an operator chooses
+its format, so two requests can share one. Using it as a cache key, a map key, or
+a dedup token lets one request's state serve another — for a WAF transaction cache
+that means one request's inspection state applied to a different request. It is a
+correlation *label*. A plugin that needs an internal identity must mint its own.
+
 ## Observability
 
 ### Structured Logging
@@ -462,6 +493,7 @@ metrics_addr = "0.0.0.0:9090"
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `spoa_messages_total` | counter | `message` | Total SPOP messages processed |
+| `spoa_request_id_source_total` | counter | `source` | Where each message's correlation id came from: `adopted` (HAProxy sent a usable `req_id`), `generated` (none arrived), `rejected` (one arrived and failed validation — alert on this: the hub and the access log then name every request differently) |
 | `spoa_message_duration_seconds` | histogram | `message` | Per-message processing latency |
 | `spoa_active_connections` | gauge | — | Current active SPOP connections |
 | `spoa_plugin_errors_total` | counter | `plugin`, `kind` | Plugin processing errors (`kind`: `transient` or `permanent`) |

@@ -53,6 +53,17 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
 fn describe_metrics() {
     describe_counter!("spoa_messages_total", "Total SPOP messages processed");
     describe_counter!(
+        "spoa_request_id_source_total",
+        "Where each message's correlation id came from. `adopted` means HAProxy \
+         sent a usable `req_id` argument, so the hub logs the same id as \
+         HAProxy's access log. `generated` means none arrived, which is expected \
+         when the SPOE config predates the argument. `rejected` means one arrived \
+         and failed validation — the one worth alerting on, because the hub and \
+         the access log then name every request differently and nothing else \
+         surfaces it. The id itself is never a label: it is per-request, so it \
+         would be unbounded cardinality."
+    );
+    describe_counter!(
         "spoa_messages_unhandled_total",
         "NOTIFY messages for which no plugin was registered in the \
          current configuration. The hub still ACKs the frame (SPOP has \
@@ -358,6 +369,14 @@ pub fn record_message_processed(message: &str, duration: Duration) {
 /// is registered for. The frame is still acknowledged (SPOP has no
 /// message-level error mechanism) but the message had no effect —
 /// the work `HAProxy` asked for was dropped.
+/// Records where a message's correlation id came from.
+///
+/// The label is a `&'static str` from a three-variant enum, so this adds exactly
+/// three series and allocates nothing per request.
+pub fn record_request_id_source(source: crate::request_id::Source) {
+    counter!("spoa_request_id_source_total", "source" => source.as_str()).increment(1);
+}
+
 pub fn record_message_unhandled(message: &str) {
     counter!("spoa_messages_unhandled_total", "message" => message.to_owned()).increment(1);
 }
