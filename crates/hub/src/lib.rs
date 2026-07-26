@@ -10,6 +10,7 @@ pub mod plugin;
 pub mod plugin_loader;
 pub mod plugin_metrics;
 pub mod registry;
+pub mod request_id;
 pub mod validate;
 
 /// Test helpers shared across unit tests, integration tests, and benchmarks.

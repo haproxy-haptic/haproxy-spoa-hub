@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Correlation id on every SPOE message. HAProxy can supply the id it already uses for a request as an ordinary `req_id` argument (`args req_id=unique-id`), and the hub adopts it — so hub log lines name the same request as HAProxy's access-log record, instead of the hub's synthetic per-frame identity that nothing outside the hub can join on. When the argument is absent, empty, mistyped, or fails validation, the hub substitutes one it generates, so `req_id` is always present and a plugin reads it without a fallback (`message.get_string("req_id")`). Every event emitted while handling a message carries it as `span.req_id`, including the "no plugins registered for message" warning.
+- New `spoa_request_id_source_total{source="adopted"|"generated"|"rejected"}` counter. `rejected` is the one worth alerting on: the hub and the access log then name every request differently, and nothing else surfaces that.
+
+### Security
+
+- An adopted `req_id` is validated against `[A-Za-z0-9._:-]{1,128}` and replaced when it fails, so no externally-supplied string reaches a plugin, a log line, or an ACK unvalidated — a newline or quote would otherwise break a log record, and an unbounded value would grow it without limit. The rejected value is never logged. Documented, in the module and the README, that `req_id` is a correlation label and must never be a cache key, map key, or dedup token: it can repeat, so keying on it would let one request's state serve another.
+
+### Notes
+
+- No plugin-API change. `req_id` is a map entry in the existing `SpoeMessage.args`, not a new struct field, so `crates/plugin-api` keeps its version, the plugin vtable is unchanged, and no plugin needs rebuilding. Adding a field to `SpoeMessage` would have been an ABI break.
+- Both directions are compatible on their own: an older hub ignores an unrecognised `req_id` argument, and an older SPOE config simply gets hub-generated ids. Only the combination produces matching ids.
+
 ## [0.10.0] - 2026-07-24
 
 ### Added

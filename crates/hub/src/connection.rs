@@ -11,6 +11,7 @@ use spop::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::codec::Framed;
+use tracing::Instrument;
 
 use haproxy_spoa_hub_plugin_api::SpoeMessage;
 
@@ -25,6 +26,7 @@ use crate::{
     },
     metrics,
     registry::SharedRegistry,
+    request_id,
 };
 
 /// RAII guard for the `spoa_inflight_frames` gauge: +1 on construction, -1 on
@@ -354,11 +356,22 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
         let msg_name = msg.name.as_str();
 
         // Convert spop message args to our SpoeMessage type
-        let args = msg
+        let mut args = msg
             .args
             .iter()
             .map(|(key, value)| (key.as_str().into(), typed_data_to_spoe_value(value)))
             .collect();
+
+        // Adopt HAProxy's own request id when it sent one, so this hub's log lines
+        // name the same request as HAProxy's access-log record. Done here because
+        // this is the only point where the args map is owned and mutable: the map
+        // carries the request headers and body, and it is copied exactly once per
+        // request (see the Arc comment below), so validating in place costs nothing
+        // while a clone would double that copy. An absent, empty, mistyped, or
+        // invalid value is replaced with a hub-generated id, so the id is always
+        // present and never externally chosen in a way that could break a log line.
+        let request_id = request_id::normalize(&mut args);
+        metrics::record_request_id_source(request_id.source());
 
         // Wrap in an Arc once: dispatch shares it with each plugin's blocking
         // task by refcount bump, so the request (headers/URI/body) is copied
@@ -370,9 +383,27 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
             frame_id: metadata.frame_id,
         });
 
+        // One span per message, so every event emitted while handling it — including
+        // the unhandled-message warning below and anything a future dispatch step
+        // logs — carries the same id HAProxy's access log records for this request.
+        // Level `info` on purpose: a span filtered out contributes no fields to the
+        // WARN/ERROR events inside it, which are exactly the lines worth correlating.
+        // With the JSON formatter's flatten_event + with_current_span, the field
+        // appears as `span.req_id`.
+        let span = tracing::info_span!(
+            "spoe_message",
+            message = msg_name,
+            req_id = %request_id,
+        );
+
         // Look up execution plan for this message
         if let Some(plan) = current_registry.plan_for_message(msg_name) {
-            let result = dispatch_message(&spoe_msg, plan, &current_registry).await;
+            // .instrument() rather than span.enter(): this future is awaited, and a
+            // synchronous span guard held across an await stays entered while the
+            // task is suspended, attributing other tasks' events to this request.
+            let result = dispatch_message(&spoe_msg, plan, &current_registry)
+                .instrument(span)
+                .await;
 
             // Add all variables to the ACK response
             for (scope, name, value) in result.variables {
@@ -395,10 +426,15 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
             // no actions — so the drop cannot be signalled
             // in-protocol. Make it loud instead of silent: WARN plus
             // a dedicated counter operators can alert on.
-            tracing::warn!(
-                message_name = %msg_name,
-                "no plugins registered for message; NOTIFY dropped (ACK carries no actions)"
-            );
+            // in_scope, not enter(): synchronous, so the guard cannot be held
+            // across an await. This is the warning most worth correlating with the
+            // access-log record, so it must carry req_id.
+            span.in_scope(|| {
+                tracing::warn!(
+                    message_name = %msg_name,
+                    "no plugins registered for message; NOTIFY dropped (ACK carries no actions)"
+                );
+            });
             metrics::record_message_unhandled(msg_name);
         }
 
