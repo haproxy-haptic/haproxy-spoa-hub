@@ -147,6 +147,7 @@ async fn valid_config_returns_valid() {
                 content: canonical_config(""),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Valid);
@@ -166,6 +167,7 @@ async fn warn_flag_yields_warning() {
                 content: canonical_config("make_me_warn = true\n"),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Warning);
@@ -197,6 +199,7 @@ async fn fail_flag_yields_error() {
                 content: canonical_config("make_me_fail = true\n"),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Error);
@@ -230,6 +233,7 @@ x = 1
                 .to_owned(),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Error);
@@ -260,6 +264,7 @@ make_me_fail = true
                 .to_owned(),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Error);
@@ -283,6 +288,7 @@ async fn malformed_toml_yields_parse_error_with_line() {
                 content: "[unclosed-table\nfoo = 1\n".to_owned(),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Error);
@@ -303,6 +309,7 @@ async fn empty_files_array_yields_protocol_error() {
         let request = ValidateRequest {
             protocol_version: PROTOCOL_VERSION,
             files: Vec::new(),
+            staged_root: None,
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Error);
@@ -326,6 +333,7 @@ async fn wrong_protocol_version_yields_protocol_error() {
                 content: String::new(),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let response = round_trip(&socket_path, &request).await;
         assert_eq!(response.result, ValidationResult::Error);
@@ -360,6 +368,7 @@ fn valid_request() -> ValidateRequest {
             content: canonical_config(""),
             kind: FileKind::Config,
         }],
+        staged_root: None,
     }
 }
 
@@ -467,6 +476,7 @@ make_me_fail = true
                 content: toml.to_owned(),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
 
         // Warmup round-trip with a no-sleep config so the validator's
@@ -482,6 +492,7 @@ make_me_fail = true
                 content: canonical_config(""),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let _ = round_trip(&socket_path, &warmup).await;
 

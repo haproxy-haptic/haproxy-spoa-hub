@@ -17,6 +17,20 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub struct ValidateRequest {
     pub protocol_version: u32,
     pub files: Vec<RequestFile>,
+    /// Directory the [`FileKind::Data`] files' paths are relative to, as the
+    /// process that will load them sees it at runtime.
+    ///
+    /// A config references its files by the path they will have when it runs
+    /// (`/etc/haproxy/general/crs-*.conf`), while the request carries them
+    /// under the sender's own identifiers (`general/crs-….conf`). Without
+    /// being told the root, a validator cannot bridge the two — and guessing,
+    /// by matching on a path suffix, would resolve a mistyped directory just
+    /// as readily as the correct one, so a config that fails at runtime would
+    /// validate clean.
+    ///
+    /// Absent means the paths are already as the runtime will see them.
+    #[serde(default)]
+    pub staged_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -225,6 +239,7 @@ mod tests {
                 content: "[hub]\n".into(),
                 kind: FileKind::Config,
             }],
+            staged_root: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: ValidateRequest = serde_json::from_str(&json).unwrap();

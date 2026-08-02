@@ -102,18 +102,40 @@ pub fn validate_request(request: &ValidateRequest, plugins: &PluginMap) -> Valid
     ValidateResponse::from_diagnostics(warnings, errors)
 }
 
-/// Build the plugin-visible table of the request's data files.
+/// Build the plugin-visible table of the request's data files, keyed by the
+/// path the validated config will reference them by.
+///
+/// When the request declares a `staged_root`, each file is keyed by that root
+/// joined to its wire path — the spelling the running process would use — and
+/// NOT additionally by its wire path. One unambiguous key per file keeps a
+/// plugin from resolving a path the runtime never would, and avoids carrying a
+/// second copy of every rule set.
 fn collect_staged_files(request: &ValidateRequest) -> StagedFiles {
     let mut staged = RHashMap::new();
     for file in &request.files {
         if file.kind == FileKind::Data {
             staged.insert(
-                RString::from(file.path.as_str()),
+                RString::from(staged_key(request.staged_root.as_deref(), &file.path)),
                 ConfigValue::String(RString::from(file.content.as_str())),
             );
         }
     }
     staged
+}
+
+/// Join a data file's wire path onto the declared root.
+///
+/// An already-absolute path is left alone: the sender has given the runtime
+/// spelling directly, and rooting it again would produce a path nothing
+/// references.
+fn staged_key(root: Option<&str>, path: &str) -> String {
+    let Some(root) = root.filter(|r| !r.is_empty()) else {
+        return path.to_owned();
+    };
+    if path.starts_with('/') {
+        return path.to_owned();
+    }
+    format!("{}/{}", root.trim_end_matches('/'), path)
 }
 
 /// Validate one file's content. TOML parse failures emit a single
@@ -550,6 +572,7 @@ mod tests {
         ValidateRequest {
             protocol_version: PROTOCOL_VERSION,
             files,
+            staged_root: None,
         }
     }
 
@@ -840,5 +863,95 @@ mod tests {
         };
         assert!(files.get(&RString::from("/evil.conf")).is_none());
         assert!(files.get(&RString::from("/real.conf")).is_some());
+    }
+
+    fn data_request(root: Option<&str>, path: &str) -> ValidateRequest {
+        ValidateRequest {
+            protocol_version: PROTOCOL_VERSION,
+            files: vec![RequestFile {
+                path: path.to_owned(),
+                content: "SecAction id:1".into(),
+                kind: FileKind::Data,
+            }],
+            staged_root: root.map(str::to_owned),
+        }
+    }
+
+    // The config references its files by the path the running process will
+    // see. Keying them by the sender's own identifier would leave every such
+    // reference unresolvable.
+    #[test]
+    fn staged_root_is_joined_onto_data_file_paths() {
+        let staged =
+            collect_staged_files(&data_request(Some("/etc/haproxy"), "general/crs-a.conf"));
+
+        assert!(
+            staged
+                .get(&RString::from("/etc/haproxy/general/crs-a.conf"))
+                .is_some(),
+            "expected the runtime spelling, got {:?}",
+            staged.keys().collect::<Vec<_>>()
+        );
+        // Deliberately NOT also under the wire path: one key per file keeps a
+        // plugin from resolving a path the runtime never would, and avoids a
+        // second copy of every rule set in the request.
+        assert!(staged.get(&RString::from("general/crs-a.conf")).is_none());
+    }
+
+    #[test]
+    fn absent_root_leaves_paths_untouched() {
+        let staged = collect_staged_files(&data_request(None, "general/crs-a.conf"));
+        assert!(staged.get(&RString::from("general/crs-a.conf")).is_some());
+    }
+
+    // An absolute path is already the runtime spelling. Rooting it again would
+    // produce a path nothing references.
+    #[test]
+    fn absolute_paths_are_not_rooted_twice() {
+        let staged = collect_staged_files(&data_request(
+            Some("/etc/haproxy"),
+            "/etc/haproxy/general/crs-a.conf",
+        ));
+        assert!(
+            staged
+                .get(&RString::from("/etc/haproxy/general/crs-a.conf"))
+                .is_some(),
+            "got {:?}",
+            staged.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn trailing_slash_on_the_root_does_not_double_up() {
+        let staged = collect_staged_files(&data_request(Some("/etc/haproxy/"), "general/a.conf"));
+        assert!(
+            staged
+                .get(&RString::from("/etc/haproxy/general/a.conf"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn empty_root_behaves_as_absent() {
+        let staged = collect_staged_files(&data_request(Some(""), "general/a.conf"));
+        assert!(staged.get(&RString::from("general/a.conf")).is_some());
+    }
+
+    // The JSON-Schema check must run against the operator's TOML, never
+    // against the context the validator injects into. Both coraza and mirror
+    // declare `additionalProperties: false`, so a refactor that reversed this
+    // would have every plugin reject its own valid config — and the diagnostic
+    // would point at the operator's params rather than at the hub.
+    #[test]
+    fn injected_key_is_absent_from_the_schema_checked_subtree() {
+        let subtree: toml::Table = "directives = \"SecRuleEngine On\"".parse().unwrap();
+
+        // What the schema sees.
+        assert!(subtree.get(STAGED_FILES_KEY).is_none());
+
+        // What the plugin sees, built only after the schema check.
+        let staged = staged_with(&[("/etc/haproxy/general/a.conf", "SecAction id:1")]);
+        let config = plugin_config_with_staged(&subtree, &staged);
+        assert!(config.get(&RString::from(STAGED_FILES_KEY)).is_some());
     }
 }
