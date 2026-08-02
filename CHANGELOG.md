@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-02
+
 ### Added
 
 - Validate requests may declare `staged_root`: the directory the request's data files are relative to, as the process that will load them sees it at runtime. Data files are then keyed by that root joined onto their path, so a config referencing `/etc/haproxy/general/crs-*.conf` resolves against a file sent as `general/crs-….conf`.
