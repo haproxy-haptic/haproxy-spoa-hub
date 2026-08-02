@@ -37,11 +37,26 @@ use haproxy_spoa_hub_plugin_api::{
 use crate::plugin::Plugin;
 use crate::plugin_loader;
 
-use super::protocol::{PROTOCOL_VERSION, ValidateRequest, ValidateResponse, WireDiagnostic};
+use super::protocol::{
+    FileKind, PROTOCOL_VERSION, ValidateRequest, ValidateResponse, WireDiagnostic,
+};
 
 /// Map of plugin name → loaded plugin instance. Built once at
 /// validator-mode startup and shared by all incoming requests.
 pub type PluginMap = HashMap<String, Arc<Plugin>>;
+
+/// Config key under which a plugin's `validate()` receives the request's
+/// [`FileKind::Data`] files, as a table of path → content.
+///
+/// Injected into the `PluginContext` AFTER the JSON-Schema check, never into
+/// the TOML subtree: `config_schema()` describes the operator-facing params,
+/// and a schema with `additionalProperties: false` would otherwise reject its
+/// own validator. Any operator-supplied key of this name is dropped first, so
+/// a config cannot forge the file set its own rules are checked against.
+pub const STAGED_FILES_KEY: &str = "__staged_files";
+
+/// The request's data files as a plugin-visible table.
+type StagedFiles = RHashMap<RString, ConfigValue>;
 
 /// Validate one incoming request against the loaded plugin set.
 ///
@@ -65,17 +80,40 @@ pub fn validate_request(request: &ValidateRequest, plugins: &PluginMap) -> Valid
     let mut warnings: Vec<WireDiagnostic> = Vec::new();
     let mut errors: Vec<WireDiagnostic> = Vec::new();
 
+    // Data files are collected first, so a config file dispatched in this
+    // request can be checked against every file it references regardless of
+    // the order they arrived in.
+    let staged = collect_staged_files(request);
+
     for file in &request.files {
+        if file.kind == FileKind::Data {
+            continue;
+        }
         validate_file(
             &file.path,
             &file.content,
             plugins,
+            &staged,
             &mut warnings,
             &mut errors,
         );
     }
 
     ValidateResponse::from_diagnostics(warnings, errors)
+}
+
+/// Build the plugin-visible table of the request's data files.
+fn collect_staged_files(request: &ValidateRequest) -> StagedFiles {
+    let mut staged = RHashMap::new();
+    for file in &request.files {
+        if file.kind == FileKind::Data {
+            staged.insert(
+                RString::from(file.path.as_str()),
+                ConfigValue::String(RString::from(file.content.as_str())),
+            );
+        }
+    }
+    staged
 }
 
 /// Validate one file's content. TOML parse failures emit a single
@@ -85,6 +123,7 @@ fn validate_file(
     path: &str,
     content: &str,
     plugins: &PluginMap,
+    staged: &StagedFiles,
     warnings: &mut Vec<WireDiagnostic>,
     errors: &mut Vec<WireDiagnostic>,
 ) {
@@ -125,7 +164,7 @@ fn validate_file(
         return;
     };
 
-    walk_plugins_array(path, entries, plugins, warnings, errors);
+    walk_plugins_array(path, entries, plugins, staged, warnings, errors);
 }
 
 /// Borrowed reference to a single dispatchable plugin entry,
@@ -174,6 +213,7 @@ fn walk_plugins_array(
     path: &str,
     entries: &[toml::Value],
     plugins: &PluginMap,
+    staged: &StagedFiles,
     warnings: &mut Vec<WireDiagnostic>,
     errors: &mut Vec<WireDiagnostic>,
 ) {
@@ -276,7 +316,13 @@ fn walk_plugins_array(
             .iter()
             .map(|task| {
                 s.spawn(move || {
-                    dispatch_to_plugin(task.path, task.plugin_name, task.instance, task.params)
+                    dispatch_to_plugin(
+                        task.path,
+                        task.plugin_name,
+                        task.instance,
+                        task.params,
+                        staged,
+                    )
                 })
             })
             .collect();
@@ -310,6 +356,7 @@ fn dispatch_to_plugin(
     plugin_name: &str,
     instance: &Plugin,
     subtree: &toml::Table,
+    staged: &StagedFiles,
 ) -> (Vec<WireDiagnostic>, Vec<WireDiagnostic>) {
     let mut warnings: Vec<WireDiagnostic> = Vec::new();
     let mut errors: Vec<WireDiagnostic> = Vec::new();
@@ -367,7 +414,7 @@ fn dispatch_to_plugin(
 
     let context = PluginContext {
         name: plugin_name.into(),
-        config: toml_table_to_rhashmap(subtree),
+        config: plugin_config_with_staged(subtree, staged),
     };
 
     // Panic isolation per FR-014: a plugin's validate() panicking
@@ -447,6 +494,27 @@ fn byte_offset_to_line_col(content: &str, offset: usize) -> (u32, u32) {
     )
 }
 
+/// Build the config a plugin's `validate()` sees: its own params plus the
+/// request's data files under [`STAGED_FILES_KEY`].
+///
+/// The key is removed before it is inserted, unconditionally. An operator
+/// config that set it itself would otherwise choose the file set its own rules
+/// are validated against — which is the one input a validator must own.
+fn plugin_config_with_staged(
+    subtree: &toml::Table,
+    staged: &StagedFiles,
+) -> RHashMap<RString, ConfigValue> {
+    let mut config = toml_table_to_rhashmap(subtree);
+    config.remove(&RString::from(STAGED_FILES_KEY));
+    if !staged.is_empty() {
+        config.insert(
+            RString::from(STAGED_FILES_KEY),
+            ConfigValue::Table(staged.clone()),
+        );
+    }
+    config
+}
+
 /// Convert a `toml::Table` into an `RHashMap<RString, ConfigValue>`,
 /// matching what `plugin_loader::load_plugin` builds for production
 /// init. Duplicated rather than imported because making it pub in
@@ -490,6 +558,7 @@ mod tests {
         let mut req = empty_request_with(vec![RequestFile {
             path: "x".into(),
             content: String::new(),
+            kind: FileKind::Config,
         }]);
         req.protocol_version = 99;
         let resp = validate_request(&req, &PluginMap::new());
@@ -516,6 +585,7 @@ mod tests {
         let req = empty_request_with(vec![RequestFile {
             path: "config.toml".into(),
             content: "[hub\nfoo = 1".into(),
+            kind: FileKind::Config,
         }]);
         let resp = validate_request(&req, &PluginMap::new());
         assert_eq!(resp.result, ValidationResult::Error);
@@ -530,6 +600,7 @@ mod tests {
         let req = empty_request_with(vec![RequestFile {
             path: "config.toml".into(),
             content: "[[plugins]]\nname = \"absent_plugin\"\n[plugins.params]\nx = 1\n".into(),
+            kind: FileKind::Config,
         }]);
         let resp = validate_request(&req, &PluginMap::new());
         assert_eq!(resp.result, ValidationResult::Error);
@@ -546,6 +617,7 @@ mod tests {
         let req = empty_request_with(vec![RequestFile {
             path: "config.toml".into(),
             content: "[plugins.params.coraza]\ndirectives = \"\"\n".into(),
+            kind: FileKind::Config,
         }]);
         let resp = validate_request(&req, &PluginMap::new());
         assert_eq!(resp.result, ValidationResult::Error);
@@ -562,6 +634,7 @@ mod tests {
         let req = empty_request_with(vec![RequestFile {
             path: "config.toml".into(),
             content: "[[plugins]]\n[plugins.params]\nx = 1\n".into(),
+            kind: FileKind::Config,
         }]);
         let resp = validate_request(&req, &PluginMap::new());
         assert_eq!(resp.result, ValidationResult::Error);
@@ -578,6 +651,7 @@ mod tests {
         let req = empty_request_with(vec![RequestFile {
             path: "config.toml".into(),
             content: "[[plugins]]\nname = 42\n".into(),
+            kind: FileKind::Config,
         }]);
         let resp = validate_request(&req, &PluginMap::new());
         assert_eq!(resp.result, ValidationResult::Error);
@@ -597,6 +671,7 @@ mod tests {
         let req = empty_request_with(vec![RequestFile {
             path: "config.toml".into(),
             content: "[hub]\nlisten = \"0.0.0.0:9000\"\n".into(),
+            kind: FileKind::Config,
         }]);
         let resp = validate_request(&req, &PluginMap::new());
         assert_eq!(resp.result, ValidationResult::Valid);
@@ -618,5 +693,152 @@ mod tests {
         assert_eq!(byte_offset_to_line_col(s, 8), (3, 1));
         // Out-of-bounds
         assert_eq!(byte_offset_to_line_col(s, 999), (0, 0));
+    }
+
+    // A data file is never parsed. Before this, every request file was run
+    // through toml::from_str, so shipping a SecLang ruleset alongside the hub
+    // config produced a TOML parse error and blocked admission — the reason a
+    // rule set could not be validated at all.
+    #[test]
+    fn data_files_are_not_parsed_as_toml() {
+        let req = empty_request_with(vec![RequestFile {
+            path: "general/crs/REQUEST-901-INIT.conf".into(),
+            content: "SecRule REQUEST_URI \"@streq /x\" \"id:1,phase:1,deny\"\n".into(),
+            kind: FileKind::Data,
+        }]);
+
+        let resp = validate_request(&req, &PluginMap::new());
+
+        assert_eq!(resp.result, ValidationResult::Valid);
+        assert!(resp.errors.is_empty(), "unexpected: {:?}", resp.errors);
+    }
+
+    // The classification is explicit precisely so this keeps failing: a broken
+    // hub config must never be waved through as "must have been a data file".
+    #[test]
+    fn a_config_file_that_is_not_toml_still_errors() {
+        let req = empty_request_with(vec![RequestFile {
+            path: "config.toml".into(),
+            content: "SecRuleEngine On\n".into(),
+            kind: FileKind::Config,
+        }]);
+
+        let resp = validate_request(&req, &PluginMap::new());
+
+        assert_eq!(resp.result, ValidationResult::Error);
+        assert!(!resp.errors.is_empty());
+    }
+
+    #[test]
+    fn collects_data_files_and_skips_config_ones() {
+        let req = empty_request_with(vec![
+            RequestFile {
+                path: "config.toml".into(),
+                content: "[hub]\n".into(),
+                kind: FileKind::Config,
+            },
+            RequestFile {
+                path: "general/a.conf".into(),
+                content: "AAA".into(),
+                kind: FileKind::Data,
+            },
+            RequestFile {
+                path: "general/b.data".into(),
+                content: "BBB".into(),
+                kind: FileKind::Data,
+            },
+        ]);
+
+        let staged = collect_staged_files(&req);
+
+        assert_eq!(staged.len(), 2);
+        assert_eq!(
+            staged
+                .get(&RString::from("general/a.conf"))
+                .and_then(ConfigValue::as_str),
+            Some("AAA")
+        );
+        assert!(staged.get(&RString::from("config.toml")).is_none());
+    }
+
+    // Order must not matter: a data file arriving after the config that
+    // references it still has to be available when that config dispatches.
+    #[test]
+    fn data_files_are_collected_before_dispatch_regardless_of_order() {
+        let req = empty_request_with(vec![
+            RequestFile {
+                path: "config.toml".into(),
+                content: "[hub]\n".into(),
+                kind: FileKind::Config,
+            },
+            RequestFile {
+                path: "z-last.conf".into(),
+                content: "Z".into(),
+                kind: FileKind::Data,
+            },
+        ]);
+
+        assert_eq!(collect_staged_files(&req).len(), 1);
+    }
+
+    fn staged_with(entries: &[(&str, &str)]) -> StagedFiles {
+        let mut m = RHashMap::new();
+        for (k, v) in entries {
+            m.insert(RString::from(*k), ConfigValue::String(RString::from(*v)));
+        }
+        m
+    }
+
+    #[test]
+    fn no_staged_files_means_no_injected_key() {
+        let subtree: toml::Table = "directives = \"SecRuleEngine On\"".parse().unwrap();
+
+        let config = plugin_config_with_staged(&subtree, &StagedFiles::new());
+
+        assert!(config.get(&RString::from(STAGED_FILES_KEY)).is_none());
+        assert!(config.get(&RString::from("directives")).is_some());
+    }
+
+    #[test]
+    fn staged_files_reach_the_plugin_config() {
+        let subtree: toml::Table = "directives = \"SecRuleEngine On\"".parse().unwrap();
+        let staged = staged_with(&[("/etc/haproxy/general/crs/a.conf", "SecAction id:1")]);
+
+        let config = plugin_config_with_staged(&subtree, &staged);
+
+        let Some(ConfigValue::Table(files)) = config.get(&RString::from(STAGED_FILES_KEY)) else {
+            panic!("staged files missing from plugin config");
+        };
+        assert_eq!(
+            files
+                .get(&RString::from("/etc/haproxy/general/crs/a.conf"))
+                .and_then(ConfigValue::as_str),
+            Some("SecAction id:1")
+        );
+        // The plugin's own params survive alongside it.
+        assert!(config.get(&RString::from("directives")).is_some());
+    }
+
+    // A config cannot hand itself the file set it is checked against.
+    #[test]
+    fn operator_supplied_staged_key_is_dropped() {
+        let subtree: toml::Table =
+            format!("{STAGED_FILES_KEY} = {{ \"/evil.conf\" = \"SecRuleEngine Off\" }}")
+                .parse()
+                .unwrap();
+
+        let without = plugin_config_with_staged(&subtree, &StagedFiles::new());
+        assert!(
+            without.get(&RString::from(STAGED_FILES_KEY)).is_none(),
+            "a forged key must not survive when the request staged nothing"
+        );
+
+        let with =
+            plugin_config_with_staged(&subtree, &staged_with(&[("/real.conf", "SecAction id:1")]));
+        let Some(ConfigValue::Table(files)) = with.get(&RString::from(STAGED_FILES_KEY)) else {
+            panic!("staged files missing");
+        };
+        assert!(files.get(&RString::from("/evil.conf")).is_none());
+        assert!(files.get(&RString::from("/real.conf")).is_some());
     }
 }

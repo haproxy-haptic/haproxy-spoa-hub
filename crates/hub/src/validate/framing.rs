@@ -20,8 +20,19 @@
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Default maximum frame size — 1 MiB. Overridable at startup.
-pub const DEFAULT_MAX_FRAME_BYTES: u32 = 1_048_576;
+/// Default maximum frame size — 8 MiB. Overridable at startup.
+///
+/// Raised from 1 MiB when requests began carrying the data files a config
+/// references, which are whole rule sets. Measured: the OWASP CRS the coraza
+/// plugin embeds (51 files, 713 KB on disk) JSON-encodes to 794 KB — 76% of the
+/// old ceiling before an operator adds a custom rule, with the config sharing
+/// the same frame.
+///
+/// Must stay in step with HAPTIC's `MaxFrameSize`
+/// (`pkg/controller/pluggablevalidator/protocol.go`): the controller refuses to
+/// encode a larger frame, and this side refuses to read one, so a mismatch
+/// fails every request in whichever direction is tighter.
+pub const DEFAULT_MAX_FRAME_BYTES: u32 = 8_388_608;
 
 /// Length-prefix size in bytes (big-endian u32).
 const LENGTH_PREFIX: usize = 4;

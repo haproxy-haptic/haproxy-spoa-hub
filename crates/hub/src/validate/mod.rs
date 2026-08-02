@@ -17,6 +17,6 @@ pub mod server;
 pub use loader::load_all_plugins_for_validation;
 pub use orchestrator::{PluginMap, validate_request};
 pub use protocol::{
-    PROTOCOL_VERSION, ValidateRequest, ValidateResponse, ValidationResult, WireDiagnostic,
+    FileKind, PROTOCOL_VERSION, ValidateRequest, ValidateResponse, ValidationResult, WireDiagnostic,
 };
 pub use server::{ServerConfig, serve};

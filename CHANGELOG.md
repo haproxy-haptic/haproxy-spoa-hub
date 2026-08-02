@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Validator mode accepts **data files** alongside hub configs. A request file may carry `kind: "data"`, which the validator never parses; instead it hands every data file in the request to each dispatched plugin's `validate()` as a table of path to content, under the `__staged_files` config key. This is what lets a plugin validate configuration that *references* a file rather than containing it — a coraza `directives` block that includes a WAF ruleset from disk could not be checked before, because the validator runs in the controller pod and has no access to the HAProxy pod's filesystem. The field defaults to `"config"` when absent, so a client written against the original protocol is unaffected.
+
+### Changed
+
+- Default maximum validate-socket frame size raised from 1 MiB to 8 MiB. A request now carries the data files a config references, and those are whole rule sets: the OWASP CRS the coraza plugin embeds (51 files, 713 KB on disk) JSON-encodes to 794 KB, 76% of the old ceiling before an operator adds a single custom rule, with the config sharing the same frame. Must stay in step with HAPTIC's `MaxFrameSize` — each side refuses frames larger than its own limit, so a mismatch fails every request in whichever direction is tighter.
+
+### Security
+
+- The `__staged_files` key is stripped from the operator's `[plugins.params]` before the validator injects its own, unconditionally. A config that set the key itself would otherwise choose the file set its own rules are validated against.
+
+### Notes
+
+- No plugin-API change: the files travel in the existing `PluginContext.config` map as a `ConfigValue::Table`, so `crates/plugin-api` keeps its version, the vtable is unchanged, and no plugin needs rebuilding. A plugin that ignores the key behaves exactly as before. Adding a field to `PluginContext` would have been an ABI break.
+- Injection happens after the JSON-Schema check, never into the TOML subtree — `config_schema()` describes operator-facing params, and a schema with `additionalProperties: false` would otherwise reject its own validator.
+- Data files are collected before any dispatch, so a config file is checked against every file the request carries regardless of the order they arrived in.
+
 ## [0.11.0] - 2026-07-26
 
 ### Added
