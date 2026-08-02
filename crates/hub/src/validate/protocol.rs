@@ -28,6 +28,33 @@ pub struct RequestFile {
     /// File bytes as a UTF-8 string. For TOML files, this is the raw
     /// TOML text.
     pub content: String,
+    /// How to treat this file. Absent means [`FileKind::Config`], so a
+    /// client written against the original protocol keeps its exact
+    /// behaviour.
+    #[serde(default)]
+    pub kind: FileKind,
+}
+
+/// What a request file is for.
+///
+/// The distinction is explicit rather than inferred from the content or
+/// the extension: "fails to parse as TOML" must keep meaning "this hub
+/// config is broken", never "this must have been a data file". Guessing
+/// would turn a typo in `spoa-hub-config.toml` into a silently accepted
+/// config, which is the one outcome a validator may not produce.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FileKind {
+    /// Hub configuration TOML. Parsed, and its `[[plugins]]` entries
+    /// dispatched to the matching plugins.
+    #[default]
+    Config,
+    /// A file a plugin's configuration references rather than one the
+    /// validator parses — a WAF ruleset, a data file. Never parsed;
+    /// made available to plugins by path so directives that include it
+    /// resolve during validation instead of failing on a file the
+    /// validator has no access to.
+    Data,
 }
 
 /// Validation response sent back to the client.
@@ -196,6 +223,7 @@ mod tests {
             files: vec![RequestFile {
                 path: "config.toml".into(),
                 content: "[hub]\n".into(),
+                kind: FileKind::Config,
             }],
         };
         let json = serde_json::to_string(&req).unwrap();

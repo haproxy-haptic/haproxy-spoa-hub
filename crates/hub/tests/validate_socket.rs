@@ -14,7 +14,7 @@ use haproxy_spoa_hub::{
         ServerConfig, ValidationResult,
         framing::write_frame,
         load_all_plugins_for_validation,
-        protocol::{PROTOCOL_VERSION, RequestFile, ValidateRequest, ValidateResponse},
+        protocol::{FileKind, PROTOCOL_VERSION, RequestFile, ValidateRequest, ValidateResponse},
         serve,
     },
 };
@@ -145,6 +145,7 @@ async fn valid_config_returns_valid() {
             files: vec![RequestFile {
                 path: "config.toml".into(),
                 content: canonical_config(""),
+                kind: FileKind::Config,
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -163,6 +164,7 @@ async fn warn_flag_yields_warning() {
             files: vec![RequestFile {
                 path: "config.toml".into(),
                 content: canonical_config("make_me_warn = true\n"),
+                kind: FileKind::Config,
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -193,6 +195,7 @@ async fn fail_flag_yields_error() {
             files: vec![RequestFile {
                 path: "config.toml".into(),
                 content: canonical_config("make_me_fail = true\n"),
+                kind: FileKind::Config,
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -225,6 +228,7 @@ messages = ["test-msg"]
 x = 1
 "#
                 .to_owned(),
+                kind: FileKind::Config,
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -254,6 +258,7 @@ async fn legacy_flat_plugins_table_is_rejected() {
 make_me_fail = true
 "
                 .to_owned(),
+                kind: FileKind::Config,
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -276,6 +281,7 @@ async fn malformed_toml_yields_parse_error_with_line() {
             files: vec![RequestFile {
                 path: "config.toml".into(),
                 content: "[unclosed-table\nfoo = 1\n".to_owned(),
+                kind: FileKind::Config,
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -318,6 +324,7 @@ async fn wrong_protocol_version_yields_protocol_error() {
             files: vec![RequestFile {
                 path: "config.toml".into(),
                 content: String::new(),
+                kind: FileKind::Config,
             }],
         };
         let response = round_trip(&socket_path, &request).await;
@@ -351,6 +358,7 @@ fn valid_request() -> ValidateRequest {
         files: vec![RequestFile {
             path: "config.toml".into(),
             content: canonical_config(""),
+            kind: FileKind::Config,
         }],
     }
 }
@@ -457,6 +465,7 @@ make_me_fail = true
             files: vec![RequestFile {
                 path: "config.toml".into(),
                 content: toml.to_owned(),
+                kind: FileKind::Config,
             }],
         };
 
@@ -471,6 +480,7 @@ make_me_fail = true
             files: vec![RequestFile {
                 path: "config.toml".into(),
                 content: canonical_config(""),
+                kind: FileKind::Config,
             }],
         };
         let _ = round_trip(&socket_path, &warmup).await;
