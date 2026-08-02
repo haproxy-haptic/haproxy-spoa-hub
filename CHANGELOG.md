@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Validate requests may declare `staged_root`: the directory the request's data files are relative to, as the process that will load them sees it at runtime. Data files are then keyed by that root joined onto their path, so a config referencing `/etc/haproxy/general/crs-*.conf` resolves against a file sent as `general/crs-….conf`.
+
+  Without it a validator cannot bridge the two spellings — the sender identifies files in its own namespace while the config addresses them by their runtime path. Inferring the link by matching on a path suffix was rejected: it resolves a mistyped directory exactly as readily as the correct one, so a config that fails at runtime would validate clean.
+
+  Absent means the paths are already the runtime spelling, which is the previous behaviour. An already-absolute path is never rooted twice.
+
 - Validator mode accepts **data files** alongside hub configs. A request file may carry `kind: "data"`, which the validator never parses; instead it hands every data file in the request to each dispatched plugin's `validate()` as a table of path to content, under the `__staged_files` config key. This is what lets a plugin validate configuration that *references* a file rather than containing it — a coraza `directives` block that includes a WAF ruleset from disk could not be checked before, because the validator runs in the controller pod and has no access to the HAProxy pod's filesystem. The field defaults to `"config"` when absent, so a client written against the original protocol is unaffected.
 
 ### Changed
