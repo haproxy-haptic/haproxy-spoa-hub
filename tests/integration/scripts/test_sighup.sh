@@ -39,8 +39,10 @@ done
 curl -sf --max-time 5 "http://$DOCKER_HOST_ADDR:$HAPROXY_PORT/" >/dev/null
 sleep 1
 HUB_LOGS=$(docker compose -p "$PROJECT" -f "$COMPOSE_DIR/docker-compose.yml" logs hub 2>&1)
-if ! echo "$HUB_LOGS" | grep -q '"plugin":"noop"'; then
-    if ! echo "$HUB_LOGS" | grep -q 'plugin.*noop.*completed'; then
+# Match in-shell: with `| grep -q`, grep exits on first match, the
+# producer takes SIGPIPE, and pipefail reports 141 -- a match read as a miss.
+if [[ "$HUB_LOGS" != *'"plugin":"noop"'* ]]; then
+    if ! grep -q 'plugin.*noop.*completed' <<<"$HUB_LOGS"; then
         echo "FAIL: noop plugin not invoked before reload"
         echo "$HUB_LOGS"
         exit 1
@@ -59,7 +61,7 @@ sleep 2
 
 # Step 4: Verify reload succeeded
 HUB_LOGS=$(docker compose -p "$PROJECT" -f "$COMPOSE_DIR/docker-compose.yml" logs hub 2>&1)
-if ! echo "$HUB_LOGS" | grep -q "configuration reloaded successfully"; then
+if [[ "$HUB_LOGS" != *"configuration reloaded successfully"* ]]; then
     echo "FAIL: config reload did not succeed"
     echo "$HUB_LOGS" | tail -30
     exit 1
@@ -70,8 +72,8 @@ echo "OK: configuration reloaded"
 curl -sf --max-time 5 "http://$DOCKER_HOST_ADDR:$HAPROXY_PORT/" >/dev/null
 sleep 1
 HUB_LOGS=$(docker compose -p "$PROJECT" -f "$COMPOSE_DIR/docker-compose.yml" logs hub 2>&1)
-if ! echo "$HUB_LOGS" | grep -q '"plugin":"echo"'; then
-    if ! echo "$HUB_LOGS" | grep -q 'plugin.*echo.*completed'; then
+if [[ "$HUB_LOGS" != *'"plugin":"echo"'* ]]; then
+    if ! grep -q 'plugin.*echo.*completed' <<<"$HUB_LOGS"; then
         echo "FAIL: echo plugin not invoked after SIGHUP reload"
         echo "$HUB_LOGS" | tail -30
         exit 1
@@ -79,9 +81,8 @@ if ! echo "$HUB_LOGS" | grep -q '"plugin":"echo"'; then
 fi
 
 # Step 6: Verify noop still works after reload
-if ! echo "$HUB_LOGS" | grep -c '"plugin":"noop"' | grep -q '[2-9]'; then
-    # At least 2 noop invocations (before and after reload)
-    if ! echo "$HUB_LOGS" | grep -c 'plugin.*noop.*completed' | grep -q '[2-9]'; then
+if [[ "$(grep -c '"plugin":"noop"' <<<"$HUB_LOGS" || true)" -lt 2 ]]; then
+    if [[ "$(grep -c 'plugin.*noop.*completed' <<<"$HUB_LOGS" || true)" -lt 2 ]]; then
         echo "WARN: could not confirm noop ran after reload (may be log format mismatch)"
     fi
 fi

@@ -71,7 +71,9 @@ fi
 
 # Verify hub logs show graceful drain
 HUB_LOGS=$(docker compose -p "$PROJECT" -f "$COMPOSE_DIR/docker-compose.yml" logs hub 2>&1)
-if ! echo "$HUB_LOGS" | grep -q "shutdown signal"; then
+# Match in-shell: with `| grep -q`, grep exits on first match, the
+# producer takes SIGPIPE, and pipefail reports 141 -- a match read as a miss.
+if [[ "$HUB_LOGS" != *"shutdown signal"* ]]; then
     echo "FAIL: hub logs missing shutdown signal acknowledgment"
     exit 1
 fi
