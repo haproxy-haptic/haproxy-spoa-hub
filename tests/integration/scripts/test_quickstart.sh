@@ -49,25 +49,27 @@ sleep 1
 # Verify hub logs show the full pipeline: load → handshake → dispatch → complete
 HUB_LOGS=$(docker compose -p "$PROJECT" -f "$COMPOSE_DIR/docker-compose.yml" logs hub 2>&1)
 
-if ! echo "$HUB_LOGS" | grep -q "plugin loaded"; then
+# Match in-shell: with `| grep -q`, grep exits on first match, the
+# producer takes SIGPIPE, and pipefail reports 141 -- a match read as a miss.
+if [[ "$HUB_LOGS" != *"plugin loaded"* ]]; then
     echo "FAIL: hub logs missing 'plugin loaded' event"
     echo "$HUB_LOGS"
     exit 1
 fi
 
-if ! echo "$HUB_LOGS" | grep -q "SPOP handshake completed"; then
+if [[ "$HUB_LOGS" != *"SPOP handshake completed"* ]]; then
     echo "FAIL: hub logs missing 'SPOP handshake completed'"
     echo "$HUB_LOGS"
     exit 1
 fi
 
-if ! echo "$HUB_LOGS" | grep -q "plugin completed"; then
+if [[ "$HUB_LOGS" != *"plugin completed"* ]]; then
     echo "FAIL: hub logs missing 'plugin completed' — noop plugin did not run"
     echo "$HUB_LOGS"
     exit 1
 fi
 
-if ! echo "$HUB_LOGS" | grep -q "message processed"; then
+if [[ "$HUB_LOGS" != *"message processed"* ]]; then
     echo "FAIL: hub logs missing 'message processed'"
     echo "$HUB_LOGS"
     exit 1
