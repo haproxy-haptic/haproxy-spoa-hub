@@ -347,6 +347,10 @@ build-docker:
       elif [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
         TAGS="${TAGS} --tag ${CI_REGISTRY_IMAGE}:main-${CI_COMMIT_SHORT_SHA}"
       fi
+    # --provenance=false: BuildKit >= 0.32 pushes attestations as OCI
+    # artifacts whose subject may not exist yet, and gitlab.com rejects the
+    # index with "blob unknown to registry" (moby/buildkit#7007). Nothing
+    # consumes the BuildKit provenance; the sign stage attests separately.
     - |
       docker buildx build \
         --platform linux/amd64,linux/arm64,linux/arm/v7 \
@@ -354,6 +358,7 @@ build-docker:
         --label "org.opencontainers.image.source=${CI_PROJECT_URL}" \
         --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
         --label "org.opencontainers.image.version=${IMAGE_TAG:-ci-${CI_PIPELINE_ID}}" \
+        --provenance=false \
         --push \
         --metadata-file metadata.json \
         -f Dockerfile \
