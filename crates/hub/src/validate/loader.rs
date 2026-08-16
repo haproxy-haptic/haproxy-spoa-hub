@@ -31,6 +31,7 @@ pub fn load_plugin_for_validation(
         name: name.clone(),
         source,
     })?;
+    instance.install_log_sink(name);
 
     Ok((name.clone(), Arc::new(instance)))
 }

@@ -240,6 +240,7 @@ pub fn load_plugin(
             name: name.clone(),
             source,
         })?;
+    instance.install_log_sink(name);
 
     // Validate config against plugin's schema (if declared).
     validate_config_schema(&instance, name, &config.params)?;

@@ -57,6 +57,13 @@ if [[ "$HUB_LOGS" != *"plugin loaded"* ]]; then
     exit 1
 fi
 
+# The plugin's own `log::info!` from init must come out of the hub binary.
+if [[ "$HUB_LOGS" != *'noop plugin initialised as noop'* ]]; then
+    echo "FAIL: hub logs missing the noop plugin's forwarded init record"
+    echo "$HUB_LOGS"
+    exit 1
+fi
+
 if [[ "$HUB_LOGS" != *"SPOP handshake completed"* ]]; then
     echo "FAIL: hub logs missing 'SPOP handshake completed'"
     echo "$HUB_LOGS"

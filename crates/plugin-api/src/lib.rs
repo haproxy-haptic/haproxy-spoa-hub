@@ -30,6 +30,7 @@
 
 #![allow(non_camel_case_types, non_local_definitions)]
 
+pub mod logging;
 pub mod metrics;
 pub mod types;
 pub mod vtable;
@@ -38,6 +39,7 @@ pub use abi_stable;
 pub use abi_stable::std_types::{
     RBoxError, RHashMap, ROption, RResult, RSlice, RStr, RString, RVec, Tuple2,
 };
+pub use logging::{HUB_LOG_SINK, HubLogSink, LogLevel, LogSinkFn};
 pub use metrics::{MetricKind, MetricLabel, MetricRecorder, RecordMetricFn};
 pub use types::{
     ConfigValue, Diagnostic, DiagnosticSeverity, PluginContext, ProcessingResult, SpoeMessage,
@@ -45,7 +47,7 @@ pub use types::{
 };
 pub use vtable::{
     GET_PLUGIN_VTABLE_SYMBOL, GetPluginVTableFn, PLUGIN_API_VERSION, PLUGIN_API_VERSION_V1,
-    PLUGIN_API_VERSION_V2, PLUGIN_API_VERSION_V3, PluginVTable,
+    PLUGIN_API_VERSION_V2, PLUGIN_API_VERSION_V3, PLUGIN_API_VERSION_V4, PluginVTable,
 };
 
 /// Define a plugin and emit the FFI surface (vtable + entry symbol).
@@ -371,6 +373,19 @@ macro_rules! define_plugin {
                 }));
             }
 
+            extern "C" fn set_log_sink(
+                _state: *mut c_void,
+                sink_fn: $crate::LogSinkFn,
+                ctx: *const c_void,
+                max_level: $crate::LogLevel,
+            ) {
+                // Process-wide for this .so, not per instance: the `log`
+                // crate has one global logger per library image.
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    $crate::HUB_LOG_SINK.install(sink_fn, ctx, max_level);
+                }));
+            }
+
             extern "C" fn drain(_state: *const c_void, _timeout_ms: u64) -> bool {
                 // Dispatch to user-supplied `fn drain` if present;
                 // otherwise the default thunk returns true immediately
@@ -403,6 +418,7 @@ macro_rules! define_plugin {
                 validate,
                 set_metric_recorder,
                 drain,
+                set_log_sink,
             };
 
             #[unsafe(no_mangle)]

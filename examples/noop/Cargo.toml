@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 haproxy-spoa-hub-plugin-api = { path = "../../crates/plugin-api" }
 abi_stable = "0.11"
+log = "0.4"
 
 [lints]
 workspace = true
