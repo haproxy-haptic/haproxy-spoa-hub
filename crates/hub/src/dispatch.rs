@@ -484,12 +484,15 @@ async fn execute_plugin(
     let in_flight_gauge = plugin_metrics.in_flight.clone();
     let duration_hist = plugin_metrics.duration.clone();
     let adaptive = admission.adaptive.clone();
+    // spawn_blocking does not inherit the `spoe_message` span; re-enter it
+    // so records the plugin logs during `process` carry `span.req_id`.
+    let span = tracing::Span::current();
     let handle = tokio::task::spawn_blocking(move || {
         let _in_flight = InFlightGuard {
             gauge: in_flight_gauge,
         };
         let call_start = Instant::now();
-        let out = instance.process(&message);
+        let out = span.in_scope(|| instance.process(&message));
         let service = call_start.elapsed();
         duration_hist.record(service.as_secs_f64());
         match adaptive {
