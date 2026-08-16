@@ -431,14 +431,14 @@ Add a `[[plugins]]` entry to the hub config and either restart the hub or send S
 
 ### 10. Plugin logging
 
-Plugins can use the standard `log` crate for structured logging. Add `log = "0.4"` to your plugin's dependencies and use the standard macros:
+Plugins log with the standard `log` crate. Add `log = "0.4"` to your plugin's dependencies and use the standard macros:
 
 ```rust
 log::info!("request processed: path={}", path);
 log::warn!("lookup failed for IP: {}", addr);
 ```
 
-Log lines appear in the hub's structured JSON output. Available levels: `trace`, `debug`, `info`, `warn`, `error`.
+Don't install a logger: `define_plugin!` installs one that forwards every record to the hub, where it appears in the structured JSON output with `"target":"plugin"`, `plugin` (the `[[plugins]]` name), `log_target` (your module path), and the hub's `level`. The hub's logger is in place before `init()` runs, so a `log::set_logger` in `init` fails — and an unwrapping `env_logger::init()` fails the plugin load. Records above the hub's `log_level` are dropped before they are formatted; with a target-scoped `RUST_LOG` (for example `haproxy_spoa_hub=info`) add `plugin=<level>`, or forwarded records are filtered out. Requires plugin-api 0.8 or later (`api_version` 4); a plugin built against an older release loads on the current hub but its records go nowhere. Two `[[plugins]]` entries that load the same library share one logger, and their records carry whichever name was installed last.
 
 ### 11. Request correlation id
 
@@ -482,10 +482,10 @@ The hub writes structured JSON to stderr. Key fields:
 | `timestamp` | ISO 8601 timestamp |
 | `level` | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `message` | Event description |
-| `plugin` | Plugin name (on plugin-related events) |
+| `plugin` | Plugin name (on plugin-related events, including records a plugin logged itself) |
 | `latency_us` | Execution time in microseconds (per-plugin and per-message) |
 | `message_name` | SPOE message name (on dispatch events) |
-| `target` | Rust module path |
+| `target` | Rust module path; `plugin` for records forwarded from a plugin's `log` macros, whose own module path is in `log_target` |
 
 Configure the log level via the `log_level` config field or the `RUST_LOG` environment variable.
 

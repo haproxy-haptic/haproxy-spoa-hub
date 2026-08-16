@@ -941,9 +941,10 @@ dependencies = [
 
 [[package]]
 name = "haproxy-spoa-hub-plugin-api"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "abi_stable",
+ "log",
 ]
 
 [[package]]
@@ -1630,6 +1631,7 @@ version = "0.1.0"
 dependencies = [
  "abi_stable",
  "haproxy-spoa-hub-plugin-api",
+ "log",
 ]
 
 [[package]]

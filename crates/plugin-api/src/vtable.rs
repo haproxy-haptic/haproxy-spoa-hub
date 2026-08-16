@@ -28,6 +28,7 @@ use std::os::raw::c_void;
 
 use abi_stable::std_types::{RBoxError, ROption, RResult, RStr, RString, RVec};
 
+use crate::logging::{LogLevel, LogSinkFn};
 use crate::metrics::RecordMetricFn;
 use crate::types::{Diagnostic, PluginContext, ProcessingResult, SpoeMessage};
 
@@ -61,10 +62,20 @@ pub const PLUGIN_API_VERSION_V2: u32 = 2;
 /// right default since those plugins are all synchronous-only).
 pub const PLUGIN_API_VERSION_V3: u32 = 3;
 
+/// API version v4: adds `set_log_sink` so a plugin's `log` records
+/// reach the hub's log. A plugin `.so` has its own copy of the `log`
+/// crate, so without the sink its records go nowhere. `define_plugin!`
+/// installs the sink unconditionally — plugins built against v4 forward
+/// their logs with no source change. v3-and-older plugins keep loading
+/// on v4 hubs (the hub gates on `api_version >= 4` and skips the
+/// install); v4 plugins keep loading on older hubs (which ignore the
+/// field, so their logs stay silent there).
+pub const PLUGIN_API_VERSION_V4: u32 = 4;
+
 /// Latest API version this crate's `PluginVTable` exposes. Plugin
 /// authors set this as the `api_version` field. When future versions
 /// of this crate append a field, this constant bumps by 1.
-pub const PLUGIN_API_VERSION: u32 = PLUGIN_API_VERSION_V3;
+pub const PLUGIN_API_VERSION: u32 = PLUGIN_API_VERSION_V4;
 
 /// Symbol name the hub looks up via `dlsym` after `dlopen`.
 pub const GET_PLUGIN_VTABLE_SYMBOL: &[u8] = b"get_plugin_vtable\0";
@@ -206,6 +217,24 @@ pub struct PluginVTable {
     /// fingerprinting, maxmind, otel pre-v0.4, sso-auth all complete
     /// their work inside `process()`).
     pub drain: extern "C" fn(state: *const c_void, timeout_ms: u64) -> bool,
+
+    // v4 additions — present iff api_version >= PLUGIN_API_VERSION_V4.
+    /// Install the hub's log sink on the plugin. Called by the hub once
+    /// between `create` and `init`; the `define_plugin!` macro's thunk
+    /// makes [`HubLogSink`] the plugin's global `log` logger, forwarding
+    /// every record at or below `max_level` to `sink_fn(ctx, …)`. `ctx`
+    /// identifies the `[[plugins]]` entry. The sink stays valid until
+    /// `destroy` returns.
+    ///
+    /// **Host access:** gated on `api_version >= PLUGIN_API_VERSION_V4`.
+    ///
+    /// [`HubLogSink`]: crate::HubLogSink
+    pub set_log_sink: extern "C" fn(
+        state: *mut c_void,
+        sink_fn: LogSinkFn,
+        ctx: *const c_void,
+        max_level: LogLevel,
+    ),
 }
 
 impl PluginVTable {
@@ -276,5 +305,35 @@ impl PluginVTable {
         // drain field. Reading the field directly (not via
         // `&PluginVTable`) avoids borrowing the whole struct.
         Some(unsafe { (*vtable_ptr).drain })
+    }
+
+    /// Read the v4 `set_log_sink` field, returning `None` for plugins
+    /// built against v1–v3 (whose allocation doesn't include it); the
+    /// hub then leaves the plugin's logging as it is.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`Self::read_drain`]: `vtable_ptr` must point at
+    /// a vtable whose `api_version` accurately describes its layout.
+    #[must_use]
+    pub unsafe fn read_set_log_sink(
+        vtable_ptr: *const PluginVTable,
+    ) -> Option<
+        extern "C" fn(
+            state: *mut c_void,
+            sink_fn: LogSinkFn,
+            ctx: *const c_void,
+            max_level: LogLevel,
+        ),
+    > {
+        // SAFETY: caller guarantees vtable_ptr is at least 4 bytes long
+        // and that api_version accurately describes the layout.
+        let api_version = unsafe { Self::read_api_version(vtable_ptr) };
+        if api_version < PLUGIN_API_VERSION_V4 {
+            return None;
+        }
+        // SAFETY: api_version >= V4 implies the allocation includes the
+        // set_log_sink field.
+        Some(unsafe { (*vtable_ptr).set_log_sink })
     }
 }

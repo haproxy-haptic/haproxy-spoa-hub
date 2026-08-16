@@ -12,8 +12,10 @@ define_plugin!(NoopPlugin, {
 
     fn init(
         &mut self,
-        _context: &PluginContext,
+        context: &PluginContext,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Plugins log with the `log` macros; the hub forwards the records.
+        log::info!("noop plugin initialised as {}", context.name);
         Ok(())
     }
 
@@ -27,8 +29,9 @@ define_plugin!(NoopPlugin, {
 
     fn process(
         &self,
-        _message: &SpoeMessage,
+        message: &SpoeMessage,
     ) -> Result<ProcessingResult, Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!("noop processing {}", message.name);
         Ok(ProcessingResult::single(TxnVariable::session(
             "result",
             SpoeValue::String("ok".into()),

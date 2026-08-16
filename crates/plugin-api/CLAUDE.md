@@ -78,7 +78,12 @@ plugin set first to confirm layout has not drifted.
   Wraps `process` in `catch_unwind` so a plugin panic surfaces as
   `RResult::RErr(PluginPanicError)` instead of aborting the hub.
 - **`PLUGIN_API_VERSION`** + **`PLUGIN_API_VERSION_V1`** constants: the
-  hub uses these to gate access to version-introduced fields.
+  hub uses these to gate access to version-introduced fields. Appended
+  so far: `set_metric_recorder` (v2), `drain` (v3), `set_log_sink` (v4).
+- **`logging::HubLogSink`** (`logging.rs`): the `log::Log` the macro's
+  `set_log_sink` thunk installs as the plugin's global logger; forwards
+  each record through the hub's `LogSinkFn`. Plugin authors just use the
+  `log` macros and must not install their own logger.
 - **Types** (`types.rs`): `ConfigValue`, `SpoeValue`, `SpoeMessage`,
   `ProcessingResult`, `TxnVariable`, `VarScope`, `PluginContext`,
   `Diagnostic`, `DiagnosticSeverity` — all `#[derive(StableAbi)]` for

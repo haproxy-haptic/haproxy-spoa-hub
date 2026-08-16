@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Plugin logs reach the hub log** (`PLUGIN_API_VERSION` 3→4, plugin-api 0.8.0). A plugin `.so` has its own copy of the `log` crate, so records written with `log::info!` etc. went nowhere — the README's claim that they appeared in the hub output was not true. The vtable gains `set_log_sink`; `define_plugin!` installs `HubLogSink` as the plugin's global logger unconditionally, so a plugin rebuilt against plugin-api 0.8 forwards its records with no source change. The hub re-emits them as `tracing` events: `"target":"plugin"`, `plugin=<[[plugins]] name>`, `log_target=<plugin module path>`, at the record's level; the hub's `log_level` is passed to the plugin as `log::max_level` so records the hub would drop are never formatted. Host access is gated on `api_version >= 4`; older plugins keep loading, their logs stay silent. Two `[[plugins]]` entries loading the same library share one logger and are attributed to the name installed last.
+
 ### Changed
 
 - A config reload now keeps every plugin whose `library` and `params` are unchanged: the running instance is carried into the new registry (no `create`/`init`, no drain, no `shutdown`), and only plugins that changed, were added, or were removed are loaded or retired. Previously any change to the file — another plugin's block, a hub-level setting — rebuilt every plugin, so a plugin holding a store connection (rate-limit's Valkey client and its circuit breaker) lost it on each reload. Fields other than `library` and `params` (`messages`, `depends_on`, timeouts, concurrency) still take effect on the carried-over instance. The `plugins reloaded` and `previous registry retired` log lines report `carried_over`.

@@ -304,6 +304,28 @@ impl Plugin {
         })
     }
 
+    /// Install the hub's log sink on a v4+ plugin so its `log` records
+    /// are attributed to `plugin_name` — the `[[plugins]]` name, the
+    /// same identity every other hub event uses (the vtable's own
+    /// `name()` is the library's, e.g. `coraza` for a block named
+    /// `waf-edge`). Loaders call this between `load` and `init`; a no-op
+    /// on older plugins.
+    pub fn install_log_sink(&self, plugin_name: &str) {
+        // SAFETY: read_set_log_sink gates on api_version and returns None
+        // below v4; state is alive between create and destroy.
+        unsafe {
+            if let Some(set_sink) = PluginVTable::read_set_log_sink(self.vtable) {
+                let ctx = crate::plugin_log::intern_log_ctx(plugin_name);
+                set_sink(
+                    self.state,
+                    crate::plugin_log::record_log,
+                    ctx.as_ptr(),
+                    crate::plugin_log::max_level(),
+                );
+            }
+        }
+    }
+
     /// Call the plugin's shutdown hook. Idempotent — repeat calls are
     /// no-ops. The Drop impl also calls this as a safety net.
     pub fn shutdown(&self) {
