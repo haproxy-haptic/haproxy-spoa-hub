@@ -57,5 +57,9 @@ The `test_sighup.sh` script:
 3. Copies `config-with-echo.toml` over `config.toml` inside the container
 4. Sends SIGHUP → hub reloads config via ArcSwap registry swap
 5. Sends another request, verifies echo plugin now runs too
+6. Verifies noop was carried over (one `plugin loaded`, one `plugin carried
+   over`, no `shutting down plugin` for it)
 
 The `/config` volume is a bind mount (writable) so `docker exec cp` works.
+The script points `HUB_CONFIG_DIR` at a temp copy of `hub-config/` so the
+rewrite never touches the tracked fixture.

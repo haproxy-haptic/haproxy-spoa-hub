@@ -318,6 +318,12 @@ impl Plugin {
         shutdown_fn(self.state);
     }
 
+    /// Whether [`Plugin::shutdown`] has run.
+    #[must_use]
+    pub fn is_shut_down(&self) -> bool {
+        self.shutdown_called.load(Ordering::Acquire)
+    }
+
     /// Block until the plugin's background work has drained or the
     /// deadline elapses. Returns `true` for a clean drain, `false` for
     /// a forced shutdown (deadline hit). v1/v2 plugins return `true`

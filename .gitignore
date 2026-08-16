@@ -7,6 +7,8 @@ release/
 *.prof*
 # Intentional crash-handler integration tests may leave kernel core dumps.
 core.*
+# Scratch copy of tests/integration/hub-config/ made by test_sighup.sh.
+tests/integration/hub-config.*/
 
 # IDE
 .idea/

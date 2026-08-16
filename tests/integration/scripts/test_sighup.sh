@@ -7,6 +7,7 @@ set -euo pipefail
 # 3. Overwrite config to add echo plugin
 # 4. Send SIGHUP
 # 5. Send request, verify echo plugin also processes it
+# 6. Verify the unchanged noop plugin was carried over, not restarted
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -16,8 +17,16 @@ export HAPROXY_PORT=${HAPROXY_PORT:-$(shuf -i 20000-50000 -n 1)}
 DOCKER_HOST_ADDR=$(echo "${DOCKER_HOST:-}" | sed -n 's|tcp://\([^:]*\):.*|\1|p')
 DOCKER_HOST_ADDR=${DOCKER_HOST_ADDR:-localhost}
 
+# The reload rewrites config.toml through the bind mount; work on a copy
+# so the tracked fixture stays untouched. Under the project tree, not
+# /tmp: in GitLab DinD only the build dir is visible to the docker daemon.
+export HUB_CONFIG_DIR
+HUB_CONFIG_DIR=$(mktemp -d "$COMPOSE_DIR/hub-config.t049.XXXXXX")
+cp "$COMPOSE_DIR"/hub-config/config.toml "$COMPOSE_DIR"/hub-config/config-with-echo.toml "$HUB_CONFIG_DIR"/
+
 cleanup() {
     docker compose -p "$PROJECT" -f "$COMPOSE_DIR/docker-compose.yml" down -v 2>/dev/null || true
+    rm -rf "$HUB_CONFIG_DIR"
 }
 trap cleanup EXIT
 
@@ -86,5 +95,26 @@ if [[ "$(grep -c '"plugin":"noop"' <<<"$HUB_LOGS" || true)" -lt 2 ]]; then
         echo "WARN: could not confirm noop ran after reload (may be log format mismatch)"
     fi
 fi
+
+# Step 7: The noop block did not change, so its instance must have been
+# carried over — never shut down, never loaded a second time. (grep -c
+# reads all input, so no SIGPIPE under pipefail.)
+NOOP_LINES=$(grep '"plugin":"noop"' <<<"$HUB_LOGS" || true)
+if [[ "$(grep -c 'plugin carried over' <<<"$NOOP_LINES" || true)" -ne 1 ]]; then
+    echo "FAIL: noop plugin was not carried over across the reload"
+    echo "$HUB_LOGS" | tail -30
+    exit 1
+fi
+if [[ "$(grep -c 'shutting down plugin' <<<"$NOOP_LINES" || true)" -ne 0 ]]; then
+    echo "FAIL: unchanged noop plugin was shut down by the reload"
+    echo "$HUB_LOGS" | tail -30
+    exit 1
+fi
+if [[ "$(grep -c '"plugin loaded"' <<<"$NOOP_LINES" || true)" -ne 1 ]]; then
+    echo "FAIL: noop plugin was loaded more than once"
+    echo "$HUB_LOGS" | tail -30
+    exit 1
+fi
+echo "OK: noop plugin carried over"
 
 echo "PASS: T049 - SIGHUP config reload"

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A config reload now keeps every plugin whose `library` and `params` are unchanged: the running instance is carried into the new registry (no `create`/`init`, no drain, no `shutdown`), and only plugins that changed, were added, or were removed are loaded or retired. Previously any change to the file — another plugin's block, a hub-level setting — rebuilt every plugin, so a plugin holding a store connection (rate-limit's Valkey client and its circuit breaker) lost it on each reload. Fields other than `library` and `params` (`messages`, `depends_on`, timeouts, concurrency) still take effect on the carried-over instance. The `plugins reloaded` and `previous registry retired` log lines report `carried_over`.
+
 ## [0.12.0] - 2026-08-02
 
 ### Added

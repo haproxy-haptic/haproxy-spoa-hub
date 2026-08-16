@@ -5,7 +5,7 @@ services:
       dockerfile: tests/integration/Dockerfile.hub
     command: ["--config", "/config/config.toml"]
     volumes:
-      - ./hub-config:/config:z
+      - ${HUB_CONFIG_DIR:-./hub-config}:/config:z
       - spoe-sock:/var/run/spoe
 
   haproxy:
