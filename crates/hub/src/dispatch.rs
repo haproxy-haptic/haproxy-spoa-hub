@@ -1034,10 +1034,13 @@ mod tests {
     }
 
     fn test_plugin(name: &str, depends_on: &[&str]) -> LoadedPlugin {
+        let noop = load_noop_plugin();
         LoadedPlugin {
             name: name.into(),
             version: "0.1.0".into(),
-            instance: load_noop_plugin().instance,
+            instance: noop.instance,
+            init_key: noop.init_key,
+            carried_over: false,
             messages: vec!["msg".into()],
             depends_on: depends_on.iter().map(|&d| d.into()).collect(),
             timeout: Duration::from_millis(100),

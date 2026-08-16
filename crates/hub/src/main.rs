@@ -121,6 +121,7 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
         &hub_config.plugin_dir,
         &hub_config.plugins,
         hub_config.default_timeout_ms,
+        None,
     );
 
     if loaded.is_empty() {
@@ -458,9 +459,12 @@ async fn apply_reload(
     // what the registry was built from. Fall back to a path-based
     // load only when the pre-read failed — in that case there's
     // nothing useful to cache anyway.
-    let load_result = match new_bytes.as_deref() {
-        Some(bytes) => reload_plugins_from_bytes(bytes),
-        None => reload_plugins(config_path),
+    let load_result = {
+        let previous = registry.load();
+        match new_bytes.as_deref() {
+            Some(bytes) => reload_plugins_from_bytes(bytes, &previous),
+            None => reload_plugins(config_path, &previous),
+        }
     };
 
     match load_result {
@@ -532,9 +536,10 @@ fn reload_is_noop(last: Option<&[u8]>, new: &[u8]) -> bool {
 /// built from.
 fn reload_plugins(
     config_path: &Path,
+    previous: &registry::PluginRegistry,
 ) -> anyhow::Result<(config::HubConfig, registry::PluginRegistry)> {
     let hub_config = config::HubConfig::load(config_path)?;
-    let registry = build_registry_from_hub_config(&hub_config)?;
+    let registry = build_registry_from_hub_config(&hub_config, previous)?;
     Ok((hub_config, registry))
 }
 
@@ -549,28 +554,40 @@ fn reload_plugins(
 /// which loader ran.
 fn reload_plugins_from_bytes(
     bytes: &[u8],
+    previous: &registry::PluginRegistry,
 ) -> anyhow::Result<(config::HubConfig, registry::PluginRegistry)> {
     let content = std::str::from_utf8(bytes)
         .map_err(|e| anyhow::anyhow!("config is not valid UTF-8: {e}"))?;
     let hub_config = config::HubConfig::load_from_str(content)?;
-    let registry = build_registry_from_hub_config(&hub_config)?;
+    let registry = build_registry_from_hub_config(&hub_config, previous)?;
     Ok((hub_config, registry))
 }
 
+/// Build the successor registry. Plugins whose library and params are
+/// unchanged keep their running instance from `previous`; only the
+/// rest are created and initialised anew.
 fn build_registry_from_hub_config(
     hub_config: &config::HubConfig,
+    previous: &registry::PluginRegistry,
 ) -> anyhow::Result<registry::PluginRegistry> {
     let loaded = plugin_loader::load_all_plugins(
         &hub_config.plugin_dir,
         &hub_config.plugins,
         hub_config.default_timeout_ms,
+        Some(previous),
     );
 
     if loaded.is_empty() {
         anyhow::bail!("reload produced no valid plugins, keeping current config");
     }
 
-    tracing::info!(count = loaded.len(), "plugins reloaded");
+    let carried_over = loaded.iter().filter(|p| p.carried_over).count();
+    tracing::info!(
+        count = loaded.len(),
+        carried_over,
+        loaded = loaded.len() - carried_over,
+        "plugins reloaded"
+    );
     Ok(registry::PluginRegistry::build(loaded)?)
 }
 

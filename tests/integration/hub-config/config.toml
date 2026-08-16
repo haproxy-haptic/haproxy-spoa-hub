@@ -10,8 +10,3 @@ address = "/var/run/spoe/hub.sock"
 name = "noop"
 library = "libnoop_plugin.so"
 messages = ["check-request"]
-
-[[plugins]]
-name = "echo"
-library = "libecho_plugin.so"
-messages = ["check-request"]

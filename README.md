@@ -16,7 +16,7 @@ HAProxy's [Stream Processing Offload Engine (SPOE)](https://www.haproxy.com/docu
 - **Bounded plugin execution** — per-plugin concurrency and queue limits reject overload explicitly; timed-out calls retain capacity until their blocking work actually returns
 - **Variable namespacing** — plugin output variables are auto-prefixed (e.g., `geoip.country_code`) to prevent conflicts
 - **Pre-parsed data** — plugins receive typed, structured arguments instead of raw SPOP bytes
-- **Hot reload** — SIGHUP or a config-file change reloads configuration and swaps plugins without dropping connections; in-flight dispatches finish on the old plugin set before it is drained and torn down (swap → quiesce → drain → shutdown)
+- **Hot reload** — SIGHUP or a config-file change reloads configuration and swaps plugins without dropping connections; plugins whose `library` and `params` are unchanged keep running, and in-flight dispatches finish on the replaced plugins before they are drained and torn down (swap → quiesce → drain → shutdown)
 - **Graceful shutdown** — SIGTERM drains in-flight messages before exiting
 - **Observability** — structured JSON logging and built-in Prometheus metrics endpoint
 
@@ -177,6 +177,12 @@ message's execution plan still publishes a host-owned status: `ok`, `error`,
 | `queue_timeout_ms` | integer | no | remaining `timeout_ms` | Maximum queue wait when `max_queue > 0`; the total call still cannot exceed `timeout_ms`. |
 | `params` | table | no | `{}` | Typed parameters passed to `init()` (supports nested tables, arrays, and all TOML types) |
 
+On reload, a plugin whose `library` and `params` are unchanged keeps its
+running instance — `init()` isn't called again, so connections and caches
+it holds survive — and the other fields take effect on that instance. A
+plugin whose `library` or `params` changed, or that was added, is created and
+initialised anew; one that was removed is drained and shut down.
+
 The defaults favor bounded latency under overload: each plugin is limited to
 the host's available parallelism and has no queue. CPU-heavy plugins such as a
 WAF should normally set `max_concurrency` to the CPU capacity reserved for the
@@ -197,11 +203,12 @@ already bounded execution path into a production log-amplification attack.
 Plugins are standalone Rust crates compiled to shared libraries. You only need the `haproxy-spoa-hub-plugin-api` crate — no access to the hub source code required.
 
 The hub keeps every successfully opened plugin library mapped until process
-exit. Config reloads still create, initialize, drain, shut down, and destroy
-plugin instances, but never `dlclose` arbitrary plugin code: plugins may embed
-foreign runtimes or retain process-global callbacks that cannot be unloaded
-safely. Replace a plugin `.so` by rolling or restarting the hub process; do not
-expect a config reload to activate new code at the same library path.
+exit. A config reload creates, initializes, drains, shuts down, and destroys
+the plugin instances whose `library` or `params` changed, but never `dlclose`s
+arbitrary plugin code: plugins may embed foreign runtimes or retain
+process-global callbacks that cannot be unloaded safely. Replace a plugin `.so`
+by rolling or restarting the hub process; do not expect a config reload to
+activate new code at the same library path.
 
 ### 1. Create the crate
 
@@ -557,7 +564,7 @@ tests/integration/          Docker-based e2e tests
 - **Protocol**: The `spop` crate handles SPOE wire protocol encoding/decoding (HAPROXY-HELLO, NOTIFY/ACK, DISCONNECT)
 - **Plugin loading**: `abi_stable` provides type-safe FFI with load-time ABI verification via `load_from_file()`
 - **Dispatch**: Every plugin has a bounded admission gate before `spawn_blocking`. Independent plugins run concurrently via `join_all`; a timeout detaches the caller but deliberately keeps the plugin's concurrency permit until the blocking call returns
-- **Registry**: `Arc<ArcSwap<PluginRegistry>>` enables lock-free reload — each connection loads the current registry snapshot when processing a NOTIFY frame. A reload swaps the new registry in atomically, then retires the old one in phases (`registry::swap_and_retire`): wait for in-flight dispatches still holding the pre-swap snapshot (quiesce), wait for plugins' fire-and-forget background work (drain), then shut the old set down
+- **Registry**: `Arc<ArcSwap<PluginRegistry>>` enables lock-free reload — each connection loads the current registry snapshot when processing a NOTIFY frame. A reload builds the new registry against the old one, carrying over every plugin instance whose `library` and `params` are unchanged, swaps it in atomically, then retires the old one in phases (`registry::swap_and_retire`): wait for in-flight dispatches still holding the pre-swap snapshot (quiesce), wait for the replaced plugins' fire-and-forget background work (drain), then shut the replaced plugins down
 - **Execution plans**: Topological sort of plugin dependency graphs per SPOE message. Independent plugins form parallel groups, dependent plugins run sequentially
 
 ## License

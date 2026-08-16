@@ -14,13 +14,18 @@
 //! `Plugin` struct's accessor methods are where version-gating lives.
 //! See `crates/plugin-api/src/vtable.rs` and `crates/hub/CLAUDE.md`.
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use abi_stable::std_types::{RHashMap, RString};
 use haproxy_spoa_hub_plugin_api::{ConfigValue, DiagnosticSeverity, PluginContext};
 
 use crate::config::PluginConfig;
 use crate::plugin::{Plugin, PluginLoadError};
+use crate::registry::PluginRegistry;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -36,11 +41,35 @@ pub enum LoadError {
     Validation { name: String, errors: String },
 }
 
+/// Everything a plugin instance is initialised from: the library it was
+/// `dlopen`ed from and the `[plugins.params]` table passed to `init`.
+/// Two configs with equal keys produce indistinguishable instances, so a
+/// reload carries the running instance over instead of creating a new one.
+#[derive(Debug, PartialEq)]
+pub struct PluginInitKey {
+    pub lib_path: PathBuf,
+    pub params: toml::Table,
+}
+
+impl PluginInitKey {
+    #[must_use]
+    pub fn new(plugin_dir: &Path, config: &PluginConfig) -> Self {
+        Self {
+            lib_path: plugin_dir.join(&config.library),
+            params: config.params.clone(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LoadedPlugin {
     pub name: String,
     pub version: String,
     pub instance: Arc<Plugin>,
+    pub init_key: PluginInitKey,
+    /// True when `instance` was taken from the previous registry rather
+    /// than created by this load.
+    pub carried_over: bool,
     pub messages: Vec<String>,
     pub depends_on: Vec<String>,
     pub timeout: Duration,
@@ -200,16 +229,17 @@ pub fn load_plugin(
     config: &PluginConfig,
     default_timeout_ms: u64,
 ) -> Result<LoadedPlugin, LoadError> {
-    let lib_path = plugin_dir.join(&config.library);
+    let init_key = PluginInitKey::new(plugin_dir, config);
     let name = &config.name;
 
     // SAFETY: dlopen is inherently unsafe; we trust the operator's
     // configured plugin path. The Plugin::load constructor handles
     // the dlsym + version-check + factory call.
-    let mut instance = unsafe { Plugin::load(&lib_path) }.map_err(|source| LoadError::Load {
-        name: name.clone(),
-        source,
-    })?;
+    let mut instance =
+        unsafe { Plugin::load(&init_key.lib_path) }.map_err(|source| LoadError::Load {
+            name: name.clone(),
+            source,
+        })?;
 
     // Validate config against plugin's schema (if declared).
     validate_config_schema(&instance, name, &config.params)?;
@@ -231,11 +261,30 @@ pub fn load_plugin(
         reason: e.to_string(),
     })?;
 
-    let version = instance.plugin_version();
-    Ok(LoadedPlugin {
-        name: name.clone(),
-        version,
-        instance: Arc::new(instance),
+    Ok(loaded(
+        Arc::new(instance),
+        init_key,
+        config,
+        default_timeout_ms,
+        false,
+    ))
+}
+
+/// Attach the registry-level config (messages, dependencies, timeouts,
+/// admission) to an initialised instance.
+fn loaded(
+    instance: Arc<Plugin>,
+    init_key: PluginInitKey,
+    config: &PluginConfig,
+    default_timeout_ms: u64,
+    carried_over: bool,
+) -> LoadedPlugin {
+    LoadedPlugin {
+        name: config.name.clone(),
+        version: instance.plugin_version(),
+        instance,
+        init_key,
+        carried_over,
         messages: config.messages.clone(),
         depends_on: config.depends_on.clone(),
         timeout: Duration::from_millis(config.timeout_ms.unwrap_or(default_timeout_ms)),
@@ -248,19 +297,40 @@ pub fn load_plugin(
                 &config.adaptive_tunables(),
             )
         }),
-    })
+    }
 }
 
 /// Load all plugins from config, logging errors for failures.
 /// Returns the successfully loaded plugins.
+///
+/// A plugin whose [`PluginInitKey`] matches its entry in `previous` is
+/// carried over: the running instance is reused and `create` / `init`
+/// are not called again, so its connections and state survive a reload
+/// that only touched other plugins or hub-level settings. Its admission
+/// gate is still rebuilt from the new config, so until the old registry
+/// quiesces the instance may hold permits from both — bounded by the
+/// dispatch timeout.
 pub fn load_all_plugins(
     plugin_dir: &Path,
     configs: &[PluginConfig],
     default_timeout_ms: u64,
+    previous: Option<&PluginRegistry>,
 ) -> Vec<LoadedPlugin> {
-    let mut loaded = Vec::with_capacity(configs.len());
+    let mut all = Vec::with_capacity(configs.len());
 
     for config in configs {
+        let init_key = PluginInitKey::new(plugin_dir, config);
+        if let Some(instance) = previous.and_then(|p| p.reusable_instance(&config.name, &init_key))
+        {
+            let plugin = loaded(instance, init_key, config, default_timeout_ms, true);
+            tracing::info!(
+                plugin = %plugin.name,
+                version = %plugin.version,
+                "plugin carried over: library and params unchanged"
+            );
+            all.push(plugin);
+            continue;
+        }
         match load_plugin(plugin_dir, config, default_timeout_ms) {
             Ok(plugin) => {
                 tracing::info!(
@@ -269,7 +339,7 @@ pub fn load_all_plugins(
                     messages = ?plugin.messages,
                     "plugin loaded"
                 );
-                loaded.push(plugin);
+                all.push(plugin);
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to load plugin");
@@ -277,7 +347,7 @@ pub fn load_all_plugins(
         }
     }
 
-    loaded
+    all
 }
 
 #[cfg(test)]
@@ -351,7 +421,64 @@ mod tests {
         fs::write(&fake_path, b"bad").unwrap();
 
         let configs = vec![test_support::plugin_config("bad", "libfake.so", &[], 0)];
-        let loaded = load_all_plugins(dir.path(), &configs, 100);
+        let loaded = load_all_plugins(dir.path(), &configs, 100, None);
         assert!(loaded.is_empty());
+    }
+
+    fn registry_of(configs: &[PluginConfig]) -> PluginRegistry {
+        PluginRegistry::build(load_all_plugins(
+            &workspace_target_dir(),
+            configs,
+            100,
+            None,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_load_all_carries_over_unchanged_plugin() {
+        let config = test_support::plugin_config("noop", "libnoop_plugin.so", &["test"], 0);
+        let previous = registry_of(std::slice::from_ref(&config));
+        let before = Arc::clone(&previous.get_plugin("noop").unwrap().instance);
+
+        let mut again = test_support::plugin_config("noop", "libnoop_plugin.so", &["test"], 0);
+        again.timeout_ms = Some(750);
+        again.messages.push("other".into());
+        let loaded = load_all_plugins(&workspace_target_dir(), &[again], 100, Some(&previous));
+
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].carried_over);
+        assert!(Arc::ptr_eq(&loaded[0].instance, &before));
+        assert_eq!(loaded[0].timeout, Duration::from_millis(750));
+        assert_eq!(loaded[0].messages, vec!["test", "other"]);
+    }
+
+    #[test]
+    fn test_load_all_reloads_plugin_whose_params_changed() {
+        let config = test_support::plugin_config("noop", "libnoop_plugin.so", &["test"], 0);
+        let previous = registry_of(std::slice::from_ref(&config));
+        let before = Arc::clone(&previous.get_plugin("noop").unwrap().instance);
+
+        let mut changed = test_support::plugin_config("noop", "libnoop_plugin.so", &["test"], 0);
+        changed
+            .params
+            .insert("mode".into(), toml::Value::String("strict".into()));
+        let loaded = load_all_plugins(&workspace_target_dir(), &[changed], 100, Some(&previous));
+
+        assert_eq!(loaded.len(), 1);
+        assert!(!loaded[0].carried_over);
+        assert!(!Arc::ptr_eq(&loaded[0].instance, &before));
+    }
+
+    #[test]
+    fn test_load_all_reloads_plugin_whose_library_changed() {
+        let config = test_support::plugin_config("noop", "libnoop_plugin.so", &["test"], 0);
+        let previous = registry_of(std::slice::from_ref(&config));
+
+        let moved = test_support::plugin_config("noop", "libecho_plugin.so", &["test"], 0);
+        let loaded = load_all_plugins(&workspace_target_dir(), &[moved], 100, Some(&previous));
+
+        assert_eq!(loaded.len(), 1);
+        assert!(!loaded[0].carried_over);
     }
 }

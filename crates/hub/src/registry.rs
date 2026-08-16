@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use crate::adaptive::{AdaptiveConfig, AdaptiveLimiter};
 use crate::metrics::{MessageMetrics, PluginMetrics};
 use crate::plugin::Plugin;
-use crate::plugin_loader::LoadedPlugin;
+use crate::plugin_loader::{LoadedPlugin, PluginInitKey};
 
 /// Build a [`SharedRegistry`] from a list of loaded plugins.
 ///
@@ -47,6 +47,9 @@ pub struct ExecutionPlan {
 /// Runtime plugin entry in the registry.
 pub struct PluginEntry {
     pub instance: Arc<Plugin>,
+    /// What `instance` was initialised from; a reload reuses the instance
+    /// while the key is unchanged.
+    pub init_key: PluginInitKey,
     pub timeout: Duration,
     pub admission: Arc<PluginAdmission>,
     /// Metric handles resolved once for this plugin, so the dispatch hot path
@@ -152,6 +155,7 @@ impl PluginRegistry {
             let LoadedPlugin {
                 name,
                 instance,
+                init_key,
                 messages,
                 depends_on,
                 timeout,
@@ -188,6 +192,7 @@ impl PluginRegistry {
                 name,
                 PluginEntry {
                     instance,
+                    init_key,
                     timeout,
                     admission,
                     metrics,
@@ -247,12 +252,45 @@ impl PluginRegistry {
         self.reverse_deps.get(name).map_or(&[], Vec::as_slice)
     }
 
+    /// The running instance of `name`, if it was initialised from
+    /// `init_key`; a successor registry carries it over instead of
+    /// loading a new one.
+    #[must_use]
+    pub fn reusable_instance(&self, name: &str, init_key: &PluginInitKey) -> Option<Arc<Plugin>> {
+        self.plugins
+            .get(name)
+            .filter(|entry| entry.init_key == *init_key)
+            .map(|entry| Arc::clone(&entry.instance))
+    }
+
+    /// Entries whose instance is not carried over into `successor`
+    /// (same name, same `Arc<Plugin>`). Only these are drained and shut
+    /// down when `successor` replaces this registry.
+    fn retired_by<'a>(
+        &'a self,
+        successor: &'a PluginRegistry,
+    ) -> impl Iterator<Item = (&'a String, &'a PluginEntry)> {
+        self.plugins.iter().filter(move |(name, entry)| {
+            !successor
+                .plugins
+                .get(name.as_str())
+                .is_some_and(|next| Arc::ptr_eq(&next.instance, &entry.instance))
+        })
+    }
+
+    /// Number of plugins carried over from this registry into `successor`.
+    fn carried_over_into(&self, successor: &PluginRegistry) -> usize {
+        self.plugins.len() - self.retired_by(successor).count()
+    }
+
     /// Call `shutdown()` on all loaded plugins.
     pub fn shutdown_all(&self) {
-        for (name, entry) in &self.plugins {
-            tracing::info!(plugin = %name, "shutting down plugin");
-            entry.instance.shutdown();
-        }
+        shutdown_entries(self.plugins.iter());
+    }
+
+    /// Call `shutdown()` on the plugins `successor` did not carry over.
+    pub fn shutdown_retired(&self, successor: &PluginRegistry) {
+        shutdown_entries(self.retired_by(successor));
     }
 
     /// Call `drain()` on every loaded plugin sequentially, sharing a
@@ -279,28 +317,52 @@ impl PluginRegistry {
     /// and any v3+ plugin that hasn't overridden `drain`) return
     /// immediately and don't consume budget.
     #[must_use]
-    pub fn drain_all(&self, total_timeout: std::time::Duration) -> Vec<(String, bool)> {
-        let deadline = std::time::Instant::now() + total_timeout;
-        self.plugins
-            .iter()
-            .map(|(name, entry)| {
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                tracing::debug!(
+    pub fn drain_all(&self, total_timeout: Duration) -> Vec<(String, bool)> {
+        drain_entries(self.plugins.iter(), total_timeout)
+    }
+
+    /// [`Self::drain_all`] restricted to the plugins `successor` did
+    /// not carry over.
+    #[must_use]
+    pub fn drain_retired(
+        &self,
+        successor: &PluginRegistry,
+        total_timeout: Duration,
+    ) -> Vec<(String, bool)> {
+        drain_entries(self.retired_by(successor), total_timeout)
+    }
+}
+
+fn drain_entries<'a>(
+    entries: impl Iterator<Item = (&'a String, &'a PluginEntry)>,
+    total_timeout: Duration,
+) -> Vec<(String, bool)> {
+    let deadline = Instant::now() + total_timeout;
+    entries
+        .map(|(name, entry)| {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            tracing::debug!(
+                plugin = %name,
+                remaining_ms = remaining.as_millis(),
+                "draining plugin"
+            );
+            let drained = entry.instance.drain(remaining);
+            if !drained {
+                tracing::error!(
                     plugin = %name,
-                    remaining_ms = remaining.as_millis(),
-                    "draining plugin"
+                    total_timeout_ms = total_timeout.as_millis(),
+                    "plugin did not drain within deadline; in-flight work will be lost on shutdown"
                 );
-                let drained = entry.instance.drain(remaining);
-                if !drained {
-                    tracing::error!(
-                        plugin = %name,
-                        total_timeout_ms = total_timeout.as_millis(),
-                        "plugin did not drain within deadline; in-flight work will be lost on shutdown"
-                    );
-                }
-                (name.clone(), drained)
-            })
-            .collect()
+            }
+            (name.clone(), drained)
+        })
+        .collect()
+}
+
+fn shutdown_entries<'a>(entries: impl Iterator<Item = (&'a String, &'a PluginEntry)>) {
+    for (name, entry) in entries {
+        tracing::info!(plugin = %name, "shutting down plugin");
+        entry.instance.shutdown();
     }
 }
 
@@ -328,8 +390,9 @@ pub struct RetireReport {
     /// way: the snapshot's `Arc`s keep the old plugins mapped until the
     /// dispatch returns.)
     pub quiesced_cleanly: bool,
-    /// Per-plugin results from [`PluginRegistry::drain_all`]. Empty
-    /// when the budget was zero (drain opt-out).
+    /// Per-plugin results from [`PluginRegistry::drain_retired`] —
+    /// carried-over plugins are not listed. Empty when the budget was
+    /// zero (drain opt-out).
     pub drain_results: Vec<(String, bool)>,
     /// Wall-clock time spent retiring the old registry (quiesce wait
     /// plus plugin drain).
@@ -337,7 +400,8 @@ pub struct RetireReport {
 }
 
 /// Swap `new_registry` in as the active registry and retire the old
-/// one: **swap → quiesce → drain → shutdown**.
+/// one: **swap → quiesce → drain → shutdown**. Plugins whose instance
+/// `new_registry` carried over are neither drained nor shut down.
 ///
 /// 1. **Swap** — atomic. Every NOTIFY frame read after this point
 ///    dispatches against the new registry.
@@ -349,10 +413,10 @@ pub struct RetireReport {
 ///    request), observes nothing in flight, and the work silently dies
 ///    when the old plugin generation drops — haptic's race B
 ///    (in-flight `send-spoe-group` NOTIFYs lost around a reload).
-/// 3. **Drain** — [`PluginRegistry::drain_all`] with the remaining
+/// 3. **Drain** — [`PluginRegistry::drain_retired`] with the remaining
 ///    budget, so plugins' background work enqueued by the (now
 ///    completed) dispatches gets to finish.
-/// 4. **Shutdown** — [`PluginRegistry::shutdown_all`] on the old set.
+/// 4. **Shutdown** — [`PluginRegistry::shutdown_retired`] on the old set.
 ///
 /// The quiesce wait polls the old registry `Arc`'s strong count: the
 /// caller-held handle returned by the swap is the only reference that
@@ -374,10 +438,12 @@ pub async fn swap_and_retire(
     new_registry: PluginRegistry,
     budget: Duration,
 ) -> RetireReport {
-    let old = shared.swap(Arc::new(new_registry));
+    let new_registry = Arc::new(new_registry);
+    let old = shared.swap(Arc::clone(&new_registry));
+    let carried_over = old.carried_over_into(&new_registry);
 
     if budget.is_zero() {
-        old.shutdown_all();
+        old.shutdown_retired(&new_registry);
         return RetireReport {
             quiesced_cleanly: true,
             drain_results: Vec::new(),
@@ -399,9 +465,9 @@ pub async fn swap_and_retire(
     }
 
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let drain_results = old.drain_all(remaining);
+    let drain_results = old.drain_retired(&new_registry, remaining);
 
-    old.shutdown_all();
+    old.shutdown_retired(&new_registry);
 
     let retire_duration = started.elapsed();
     let forced = drain_results.iter().filter(|(_, ok)| !ok).count();
@@ -410,6 +476,7 @@ pub async fn swap_and_retire(
         quiesced_cleanly,
         drained = drain_results.len() - forced,
         forced,
+        carried_over,
         budget_ms = budget.as_millis(),
         "previous registry retired"
     );
@@ -593,7 +660,8 @@ mod tests {
     // reload) lives in crates/hub/tests/test_reload_quiesce.rs. The
     // tests here pin the budget edge cases against a real plugin.
 
-    use crate::test_support::load_noop_plugin;
+    use crate::plugin_loader::load_all_plugins;
+    use crate::test_support::{load_noop_plugin, plugin_config, workspace_target_dir};
 
     #[tokio::test]
     async fn swap_and_retire_zero_budget_skips_quiesce_and_drain() {
@@ -630,6 +698,95 @@ mod tests {
             "no snapshots held — retire must not burn the budget, took {:?}",
             started.elapsed()
         );
+    }
+
+    fn noop_config(name: &str) -> crate::config::PluginConfig {
+        plugin_config(name, "libnoop_plugin.so", &["test-msg"], 1000)
+    }
+
+    /// Build the successor the way `apply_reload` does: against the
+    /// currently active registry.
+    fn successor_of(
+        shared: &SharedRegistry,
+        configs: &[crate::config::PluginConfig],
+    ) -> PluginRegistry {
+        let previous = shared.load();
+        PluginRegistry::build(load_all_plugins(
+            &workspace_target_dir(),
+            configs,
+            100,
+            Some(&previous),
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn swap_and_retire_keeps_carried_over_plugins_running() {
+        let noop = noop_config("noop");
+        let shared = shared_registry(load_all_plugins(
+            &workspace_target_dir(),
+            std::slice::from_ref(&noop),
+            100,
+            None,
+        ))
+        .unwrap();
+        let old_noop = Arc::clone(&shared.load().get_plugin("noop").unwrap().instance);
+
+        // "noop" is unchanged, "second" is added.
+        let successor = successor_of(&shared, &[noop, noop_config("second")]);
+        let report = swap_and_retire(&shared, successor, Duration::from_secs(5)).await;
+
+        assert!(report.quiesced_cleanly);
+        assert!(
+            report.drain_results.is_empty(),
+            "a carried-over plugin must not be drained: {:?}",
+            report.drain_results
+        );
+        let active = shared.load();
+        assert!(Arc::ptr_eq(
+            &active.get_plugin("noop").unwrap().instance,
+            &old_noop
+        ));
+        assert!(!old_noop.is_shut_down());
+        assert!(!active.get_plugin("second").unwrap().instance.is_shut_down());
+    }
+
+    #[tokio::test]
+    async fn swap_and_retire_shuts_down_replaced_and_removed_plugins() {
+        let shared = shared_registry(load_all_plugins(
+            &workspace_target_dir(),
+            &[noop_config("noop"), noop_config("second")],
+            100,
+            None,
+        ))
+        .unwrap();
+        let old_noop = Arc::clone(&shared.load().get_plugin("noop").unwrap().instance);
+        let old_second = Arc::clone(&shared.load().get_plugin("second").unwrap().instance);
+
+        // "noop" gets new params (replaced), "second" is removed.
+        let mut changed = noop_config("noop");
+        changed
+            .params
+            .insert("mode".into(), toml::Value::String("strict".into()));
+        let successor = successor_of(&shared, &[changed]);
+        let report = swap_and_retire(&shared, successor, Duration::from_secs(5)).await;
+
+        let mut drained: Vec<_> = report
+            .drain_results
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        drained.sort_unstable();
+        assert_eq!(drained, ["noop", "second"]);
+        assert!(old_noop.is_shut_down());
+        assert!(old_second.is_shut_down());
+        let active = shared.load();
+        assert!(!Arc::ptr_eq(
+            &active.get_plugin("noop").unwrap().instance,
+            &old_noop
+        ));
+        assert!(!active.get_plugin("noop").unwrap().instance.is_shut_down());
+        assert!(active.get_plugin("second").is_none());
     }
 
     #[tokio::test]

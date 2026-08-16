@@ -46,7 +46,11 @@ cd tests/integration && make test    # Docker integration tests (SIGTERM, SIGHUP
   parallel groups use `spawn_blocking` per plugin + `join_all` with per-plugin
   timeouts.
 - **Registry**: `Arc<ArcSwap<PluginRegistry>>` enables lock-free SIGHUP reload.
-  Reloads retire the old registry in phases (`registry::swap_and_retire`):
+  A reload carries over every plugin whose `PluginInitKey` (library path +
+  params) is unchanged — same `Arc<Plugin>` in the new registry, never drained
+  or shut down — and loads only the rest (`plugin_loader::load_all_plugins`
+  with the previous registry). Retirement then covers only replaced/removed
+  plugins, in phases (`registry::swap_and_retire`):
   swap (atomic; new frames see the new registry) → quiesce (wait for in-flight
   dispatches still holding the pre-swap snapshot, tracked via the snapshot
   `Arc`'s strong count) → drain (plugins' fire-and-forget background work) →
