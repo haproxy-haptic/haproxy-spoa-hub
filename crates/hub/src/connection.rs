@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use futures::{SinkExt, StreamExt, stream::SplitStream};
 use spop::{
-    SpopFrame,
+    MAX_FRAME_SIZE_LIMIT, SpopFrame,
     codec::SpopCodec,
     frame::{FramePayload, FrameType},
     frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities, HaproxyHello},
@@ -66,7 +66,7 @@ pub async fn handle_connection<S>(stream: S, registry: SharedRegistry, inflight:
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let mut framed = Framed::new(stream, SpopCodec);
+    let mut framed = Framed::new(stream, SpopCodec::default());
 
     // Steps 1-2: SPOP handshake (HAPROXY-HELLO -> AGENT-HELLO).
     let Some(is_healthcheck) = perform_handshake(&mut framed).await else {
@@ -282,15 +282,31 @@ where
         }
     };
 
+    // Until this point the codec accepts anything up to MAX_FRAME_SIZE_LIMIT,
+    // because the peer's tune.bufsize is unknown before HAPROXY-HELLO. From here
+    // both directions are held to what the two sides actually agreed on.
+    let max_frame_size = match haproxy_hello.negotiate_max_frame_size(MAX_FRAME_SIZE_LIMIT) {
+        Ok(size) => size,
+        Err(status) => {
+            tracing::error!(
+                announced = haproxy_hello.max_frame_size,
+                status = %status,
+                "HAPROXY-HELLO announced an unusable max-frame-size"
+            );
+            return None;
+        }
+    };
+
     let agent_hello = AgentHello {
         version: spop::Version::new(2, 0, 0),
-        max_frame_size: haproxy_hello.max_frame_size,
+        max_frame_size,
         capabilities: vec![FrameCapabilities::Pipelining],
     };
     if let Err(e) = framed.send(Box::new(agent_hello)).await {
         tracing::error!(error = %e, "failed to send AGENT-HELLO");
         return None;
     }
+    framed.codec_mut().set_max_frame_size(max_frame_size);
 
     Some(haproxy_hello.healthcheck.unwrap_or_default())
 }
