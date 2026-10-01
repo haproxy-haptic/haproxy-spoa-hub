@@ -25,15 +25,15 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use super::framing::{FrameError, read_frame, write_frame};
+use super::framing::{FrameError, read_frame_bounded, write_frame};
 use super::orchestrator::{PluginMap, validate_request};
 use super::protocol::{ValidateRequest, ValidateResponse};
 
 /// Default per-request timeout (FR-013). Covers parse + validate +
-/// write of one request-response cycle. Read-frame waits are bounded
-/// by `idle_timeout`, not this.
+/// write of one request-response cycle, and separately each frame body read.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default idle timeout — close the connection after this long with
@@ -49,6 +49,8 @@ pub struct ServerConfig {
     pub max_frame_bytes: u32,
     pub request_timeout: Duration,
     pub idle_timeout: Duration,
+    pub max_connections: usize,
+    pub max_concurrent_requests: usize,
 }
 
 impl Default for ServerConfig {
@@ -57,6 +59,8 @@ impl Default for ServerConfig {
             max_frame_bytes: super::framing::DEFAULT_MAX_FRAME_BYTES,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            max_connections: 8,
+            max_concurrent_requests: 2,
         }
     }
 }
@@ -77,6 +81,25 @@ pub async fn serve(
     config: ServerConfig,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.max_connections > 0 && config.max_connections <= Semaphore::MAX_PERMITS,
+        "max_connections must fit semaphore capacity"
+    );
+    anyhow::ensure!(
+        config.max_concurrent_requests > 0 && u32::try_from(config.max_concurrent_requests).is_ok(),
+        "max_concurrent_requests must fit a positive u32"
+    );
+    anyhow::ensure!(
+        config.max_frame_bytes > 0,
+        "max_frame_bytes must be positive"
+    );
+    let frame_capacity = (config.max_frame_bytes as usize)
+        .checked_mul(config.max_concurrent_requests)
+        .filter(|capacity| *capacity <= Semaphore::MAX_PERMITS)
+        .ok_or_else(|| anyhow::anyhow!("frame buffer capacity exceeds semaphore limit"))?;
+    let connections = Arc::new(Semaphore::new(config.max_connections));
+    let requests = Arc::new(Semaphore::new(config.max_concurrent_requests));
+    let frame_budget = Arc::new(Semaphore::new(frame_capacity));
     // Remove any stale socket file from a prior crash.
     let _ = std::fs::remove_file(socket_path);
 
@@ -90,6 +113,10 @@ pub async fn serve(
     );
 
     loop {
+        let connection_permit = tokio::select! {
+            permit = connections.clone().acquire_owned() => permit?,
+            () = shutdown.cancelled() => break,
+        };
         let (stream, _addr) = tokio::select! {
             res = listener.accept() => res?,
             () = shutdown.cancelled() => {
@@ -101,8 +128,13 @@ pub async fn serve(
         let plugins = plugins.clone();
         let cfg = config.clone();
         let shutdown = shutdown.clone();
+        let requests = requests.clone();
+        let frame_budget = frame_budget.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, plugins, cfg, shutdown).await {
+            let _connection_permit = connection_permit;
+            if let Err(e) =
+                handle_connection(stream, plugins, cfg, shutdown, requests, frame_budget).await
+            {
                 tracing::warn!(error = %e, "validator connection ended with error");
             }
         });
@@ -126,6 +158,8 @@ async fn handle_connection(
     plugins: Arc<PluginMap>,
     config: ServerConfig,
     shutdown: CancellationToken,
+    requests: Arc<Semaphore>,
+    frame_budget: Arc<Semaphore>,
 ) -> anyhow::Result<()> {
     loop {
         // Wait for the next frame, with idle and shutdown gates. Idle
@@ -135,7 +169,7 @@ async fn handle_connection(
         let payload = tokio::select! {
             frame = tokio::time::timeout(
                 config.idle_timeout,
-                read_frame(&mut stream, config.max_frame_bytes),
+                read_frame_bounded(&mut stream, config.max_frame_bytes, &frame_budget, config.request_timeout),
             ) => match frame {
                 Ok(Ok(payload)) => payload,
                 Ok(Err(FrameError::ConnectionClosed)) => {
@@ -174,7 +208,10 @@ async fn handle_connection(
         // covering parse + validate + write. Application-level
         // errors (malformed JSON, timeout) keep the connection open;
         // only write failures poison it.
-        let cycle_outcome = run_cycle(&mut stream, payload, &plugins, &config).await;
+        let cycle_outcome = tokio::select! {
+            outcome = run_cycle(&mut stream, payload, &plugins, &config, &requests) => outcome,
+            () = shutdown.cancelled() => return Ok(()),
+        };
         match cycle_outcome {
             CycleOutcome::Continue => {}
             CycleOutcome::Close => return Ok(()),
@@ -203,38 +240,34 @@ enum CycleOutcome {
 /// connection.
 async fn run_cycle(
     stream: &mut UnixStream,
-    payload: Vec<u8>,
+    frame: (Vec<u8>, OwnedSemaphorePermit),
     plugins: &Arc<PluginMap>,
     config: &ServerConfig,
+    requests: &Arc<Semaphore>,
 ) -> CycleOutcome {
     let timeout_ms = config.request_timeout.as_millis();
+    let slots = request_slots(frame.0.len(), config);
 
     let outcome = tokio::time::timeout(config.request_timeout, async {
-        let request: ValidateRequest = match serde_json::from_slice(&payload) {
-            Ok(r) => r,
-            Err(e) => {
-                let resp = ValidateResponse::protocol_error(format!(
-                    "request body is not valid JSON: {e}"
-                ));
-                return write_response(stream, &resp, config.max_frame_bytes).await;
-            }
-        };
-
-        // Run the (potentially slow, CPU-bound) plugin validate()
-        // calls on the blocking pool so an expensive WAF init
-        // doesn't pin one of the I/O worker threads.
         let plugins = plugins.clone();
-        let response =
-            tokio::task::spawn_blocking(move || validate_request(&request, &plugins)).await;
-        let response = match response {
-            Ok(r) => r,
-            Err(join_err) => {
-                let resp = ValidateResponse::protocol_error(format!(
-                    "internal validator error: {join_err}"
-                ));
-                return write_response(stream, &resp, config.max_frame_bytes).await;
-            }
-        };
+        let response = execute_bounded(requests, slots, move || {
+            let (payload, frame_permit) = frame;
+            let request: ValidateRequest = match serde_json::from_slice(&payload) {
+                Ok(request) => request,
+                Err(error) => {
+                    return ValidateResponse::protocol_error(format!(
+                        "request body is not valid JSON: {error}"
+                    ));
+                }
+            };
+            drop(payload);
+            drop(frame_permit);
+            validate_request(&request, &plugins)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            ValidateResponse::protocol_error(format!("internal validator error: {error}"))
+        });
 
         write_response(stream, &response, config.max_frame_bytes).await
     })
@@ -263,6 +296,29 @@ async fn run_cycle(
     }
 }
 
+fn request_slots(payload_len: usize, config: &ServerConfig) -> u32 {
+    u32::try_from(
+        ((payload_len as u64 * config.max_concurrent_requests as u64)
+            .div_ceil(u64::from(config.max_frame_bytes)))
+        .max(1),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+async fn execute_bounded<F, T>(requests: &Arc<Semaphore>, slots: u32, work: F) -> anyhow::Result<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let permit = requests.clone().acquire_many_owned(slots).await?;
+    Ok(tokio::task::spawn_blocking(move || {
+        // A client timeout cannot cancel compilation or release its capacity.
+        let _permit = permit;
+        work()
+    })
+    .await?)
+}
+
 /// Serialize and write one response frame. Centralised so the
 /// timeout-wrapped path and the timeout-elapsed-fallback path share
 /// the same serialization logic.
@@ -276,4 +332,70 @@ async fn write_response(
         .await
         .map_err(|e| anyhow::anyhow!("failed to write response: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_frames_reserve_more_compilation_capacity() {
+        let config = ServerConfig::default();
+        for (length, expected) in [
+            (0, 1),
+            (1, 1),
+            (4_194_304, 1),
+            (4_194_305, 2),
+            (8_388_608, 2),
+        ] {
+            assert_eq!(request_slots(length, &config), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_keeps_capacity_until_work_finishes() {
+        let requests = Arc::new(Semaphore::new(1));
+        let gate = requests.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let task = tokio::spawn(async move {
+            execute_bounded(&gate, 1, move || {
+                started_tx.send(()).unwrap();
+                finish_rx.recv().unwrap();
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(requests.available_permits(), 0);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                execute_bounded(&requests, 1, || panic!(
+                    "queued validation ran without capacity"
+                ))
+            )
+            .await
+            .is_err()
+        );
+        finish_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), execute_bounded(&requests, 1, || 42))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(requests.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn panicking_work_releases_capacity() {
+        let requests = Arc::new(Semaphore::new(1));
+        assert!(
+            execute_bounded(&requests, 1, || panic!("test panic"))
+                .await
+                .is_err()
+        );
+        assert_eq!(requests.available_permits(), 1);
+        assert_eq!(execute_bounded(&requests, 1, || 42).await.unwrap(), 42);
+    }
 }

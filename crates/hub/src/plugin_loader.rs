@@ -248,7 +248,7 @@ pub fn load_plugin(
     // Build plugin context from config.
     let context = PluginContext {
         name: name.as_str().into(),
-        config: toml_table_to_config(&config.params),
+        config: runtime_plugin_config(&config.params),
     };
 
     // Deep validation via the plugin's `validate()` method (FR-004).
@@ -269,6 +269,13 @@ pub fn load_plugin(
         default_timeout_ms,
         false,
     ))
+}
+
+fn runtime_plugin_config(params: &toml::Table) -> RHashMap<RString, ConfigValue> {
+    let mut config = toml_table_to_config(params);
+    // Validator-only metadata must never retune a process that serves requests.
+    config.remove(&RString::from("__validation_only"));
+    config
 }
 
 /// Attach the registry-level config (messages, dependencies, timeouts,
@@ -357,6 +364,21 @@ mod tests {
 
     use super::*;
     use crate::test_support::{self, workspace_target_dir};
+
+    #[test]
+    fn runtime_config_cannot_claim_dedicated_validation_mode() {
+        let params = "__validation_only = true\ndirectives = 'SecRuleEngine On'"
+            .parse()
+            .unwrap();
+        let config = runtime_plugin_config(&params);
+        assert!(config.get(&RString::from("__validation_only")).is_none());
+        assert_eq!(
+            config
+                .get(&RString::from("directives"))
+                .and_then(ConfigValue::as_str),
+            Some("SecRuleEngine On")
+        );
+    }
 
     #[test]
     fn test_load_valid_plugin() {

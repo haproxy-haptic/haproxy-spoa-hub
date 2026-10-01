@@ -60,6 +60,14 @@ where
     F: FnOnce(PathBuf) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
+    run_with_config(ServerConfig::default(), test).await;
+}
+
+async fn run_with_config<F, Fut>(config: ServerConfig, test: F)
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let dir = socket_dir();
     let socket_path = dir.path().join("validator.sock");
 
@@ -76,13 +84,7 @@ where
     let server_shutdown = shutdown.clone();
     let server_socket = socket_path.clone();
     let handle = tokio::spawn(async move {
-        let _ = serve(
-            &server_socket,
-            plugins,
-            ServerConfig::default(),
-            server_shutdown,
-        )
-        .await;
+        let _ = serve(&server_socket, plugins, config, server_shutdown).await;
     });
 
     // Wait for the socket file to exist.
@@ -625,4 +627,49 @@ async fn socket_file_removed_on_graceful_shutdown() {
         "socket file at {socket_path:?} still exists after graceful shutdown — \
          file leak between restarts will eventually need a manual cleanup"
     );
+}
+
+#[tokio::test]
+async fn stalled_maximum_frame_does_not_block_small_requests() {
+    let config = ServerConfig {
+        request_timeout: Duration::from_secs(2),
+        ..ServerConfig::default()
+    };
+    let max_frame_bytes = config.max_frame_bytes;
+    run_with_config(config, |socket_path| async move {
+        let mut stalled = UnixStream::connect(&socket_path).await.unwrap();
+        stalled
+            .write_all(&max_frame_bytes.to_be_bytes())
+            .await
+            .unwrap();
+        stalled.write_all(b"{").await.unwrap();
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+        write_frame(&mut client, b"{}", max_frame_bytes)
+            .await
+            .unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            haproxy_spoa_hub::validate::framing::read_frame(&mut client, max_frame_bytes),
+        )
+        .await
+        .expect("stalled body blocked an unrelated request")
+        .unwrap();
+        let response: ValidateResponse = serde_json::from_slice(&response).unwrap();
+        assert_eq!(response.result, ValidationResult::Error);
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), stalled.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        write_frame(&mut client, b"{}", max_frame_bytes)
+            .await
+            .unwrap();
+        haproxy_spoa_hub::validate::framing::read_frame(&mut client, max_frame_bytes)
+            .await
+            .unwrap();
+    })
+    .await;
 }
