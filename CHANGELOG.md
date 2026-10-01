@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Bound validator connections, buffered request bytes, concurrent requests, and plugin fan-out; timed-out compilations retain their capacity until they finish.
+- Bound validator connections, buffered request bytes, concurrent requests weighted by input size, and plugin fan-out; timed-out compilations retain their capacity until they finish.
 
 ### Changed
 

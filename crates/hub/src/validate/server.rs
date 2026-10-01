@@ -82,15 +82,13 @@ pub async fn serve(
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        config.max_connections > 0,
-        "max_connections must be positive"
+        config.max_connections > 0 && config.max_connections <= Semaphore::MAX_PERMITS,
+        "max_connections must fit semaphore capacity"
     );
     anyhow::ensure!(
-        config.max_concurrent_requests > 0,
-        "max_concurrent_requests must be positive"
+        config.max_concurrent_requests > 0 && u32::try_from(config.max_concurrent_requests).is_ok(),
+        "max_concurrent_requests must fit a positive u32"
     );
-    let connections = Arc::new(Semaphore::new(config.max_connections));
-    let requests = Arc::new(Semaphore::new(config.max_concurrent_requests));
     anyhow::ensure!(
         config.max_frame_bytes > 0,
         "max_frame_bytes must be positive"
@@ -99,6 +97,8 @@ pub async fn serve(
         .checked_mul(config.max_concurrent_requests)
         .filter(|capacity| *capacity <= Semaphore::MAX_PERMITS)
         .ok_or_else(|| anyhow::anyhow!("frame buffer capacity exceeds semaphore limit"))?;
+    let connections = Arc::new(Semaphore::new(config.max_connections));
+    let requests = Arc::new(Semaphore::new(config.max_concurrent_requests));
     let frame_budget = Arc::new(Semaphore::new(frame_capacity));
     // Remove any stale socket file from a prior crash.
     let _ = std::fs::remove_file(socket_path);
@@ -246,10 +246,11 @@ async fn run_cycle(
     requests: &Arc<Semaphore>,
 ) -> CycleOutcome {
     let timeout_ms = config.request_timeout.as_millis();
+    let slots = request_slots(frame.0.len(), config);
 
     let outcome = tokio::time::timeout(config.request_timeout, async {
         let plugins = plugins.clone();
-        let response = execute_bounded(requests, move || {
+        let response = execute_bounded(requests, slots, move || {
             let (payload, frame_permit) = frame;
             let request: ValidateRequest = match serde_json::from_slice(&payload) {
                 Ok(request) => request,
@@ -295,12 +296,21 @@ async fn run_cycle(
     }
 }
 
-async fn execute_bounded<F, T>(requests: &Arc<Semaphore>, work: F) -> anyhow::Result<T>
+fn request_slots(payload_len: usize, config: &ServerConfig) -> u32 {
+    u32::try_from(
+        ((payload_len as u64 * config.max_concurrent_requests as u64)
+            .div_ceil(u64::from(config.max_frame_bytes)))
+        .max(1),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+async fn execute_bounded<F, T>(requests: &Arc<Semaphore>, slots: u32, work: F) -> anyhow::Result<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let permit = requests.clone().acquire_owned().await?;
+    let permit = requests.clone().acquire_many_owned(slots).await?;
     Ok(tokio::task::spawn_blocking(move || {
         // A client timeout cannot cancel compilation or release its capacity.
         let _permit = permit;
@@ -328,6 +338,20 @@ async fn write_response(
 mod tests {
     use super::*;
 
+    #[test]
+    fn large_frames_reserve_more_compilation_capacity() {
+        let config = ServerConfig::default();
+        for (length, expected) in [
+            (0, 1),
+            (1, 1),
+            (4_194_304, 1),
+            (4_194_305, 2),
+            (8_388_608, 2),
+        ] {
+            assert_eq!(request_slots(length, &config), expected);
+        }
+    }
+
     #[tokio::test]
     async fn cancelled_request_keeps_capacity_until_work_finishes() {
         let requests = Arc::new(Semaphore::new(1));
@@ -335,7 +359,7 @@ mod tests {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (finish_tx, finish_rx) = std::sync::mpsc::channel();
         let task = tokio::spawn(async move {
-            execute_bounded(&gate, move || {
+            execute_bounded(&gate, 1, move || {
                 started_tx.send(()).unwrap();
                 finish_rx.recv().unwrap();
             })
@@ -348,7 +372,7 @@ mod tests {
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(10),
-                execute_bounded(&requests, || panic!(
+                execute_bounded(&requests, 1, || panic!(
                     "queued validation ran without capacity"
                 ))
             )
@@ -356,7 +380,7 @@ mod tests {
             .is_err()
         );
         finish_tx.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), execute_bounded(&requests, || 42))
+        tokio::time::timeout(Duration::from_secs(2), execute_bounded(&requests, 1, || 42))
             .await
             .unwrap()
             .unwrap();
@@ -367,11 +391,11 @@ mod tests {
     async fn panicking_work_releases_capacity() {
         let requests = Arc::new(Semaphore::new(1));
         assert!(
-            execute_bounded(&requests, || panic!("test panic"))
+            execute_bounded(&requests, 1, || panic!("test panic"))
                 .await
                 .is_err()
         );
         assert_eq!(requests.available_permits(), 1);
-        assert_eq!(execute_bounded(&requests, || 42).await.unwrap(), 42);
+        assert_eq!(execute_bounded(&requests, 1, || 42).await.unwrap(), 42);
     }
 }
