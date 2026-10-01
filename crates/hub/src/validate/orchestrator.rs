@@ -487,6 +487,7 @@ fn plugin_config_with_staged(
     staged: &StagedFiles,
 ) -> RHashMap<RString, ConfigValue> {
     let mut config = toml_table_to_rhashmap(subtree);
+    config.insert(RString::from("__validation_only"), ConfigValue::Bool(true));
     config.remove(&RString::from(STAGED_FILES_KEY));
     if !staged.is_empty() {
         config.insert(
@@ -770,6 +771,21 @@ mod tests {
             m.insert(RString::from(*k), ConfigValue::String(RString::from(*v)));
         }
         m
+    }
+
+    #[test]
+    fn dedicated_validation_mode_overrides_operator_parameters() {
+        for params in [
+            "",
+            "__validation_only = false",
+            "__validation_only = 'false'",
+        ] {
+            let config = plugin_config_with_staged(&params.parse().unwrap(), &StagedFiles::new());
+            assert!(matches!(
+                config.get(&RString::from("__validation_only")),
+                Some(ConfigValue::Bool(true))
+            ));
+        }
     }
 
     #[test]
