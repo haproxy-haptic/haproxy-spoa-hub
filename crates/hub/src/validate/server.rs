@@ -33,8 +33,7 @@ use super::orchestrator::{PluginMap, validate_request};
 use super::protocol::{ValidateRequest, ValidateResponse};
 
 /// Default per-request timeout (FR-013). Covers parse + validate +
-/// write of one request-response cycle. Read-frame waits are bounded
-/// by `idle_timeout`, not this.
+/// write of one request-response cycle, and separately each frame body read.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default idle timeout — close the connection after this long with
@@ -92,7 +91,15 @@ pub async fn serve(
     );
     let connections = Arc::new(Semaphore::new(config.max_connections));
     let requests = Arc::new(Semaphore::new(config.max_concurrent_requests));
-    let frame_budget = Arc::new(Semaphore::new(config.max_frame_bytes as usize));
+    anyhow::ensure!(
+        config.max_frame_bytes > 0,
+        "max_frame_bytes must be positive"
+    );
+    let frame_capacity = (config.max_frame_bytes as usize)
+        .checked_mul(config.max_concurrent_requests)
+        .filter(|capacity| *capacity <= Semaphore::MAX_PERMITS)
+        .ok_or_else(|| anyhow::anyhow!("frame buffer capacity exceeds semaphore limit"))?;
+    let frame_budget = Arc::new(Semaphore::new(frame_capacity));
     // Remove any stale socket file from a prior crash.
     let _ = std::fs::remove_file(socket_path);
 
@@ -162,7 +169,7 @@ async fn handle_connection(
         let payload = tokio::select! {
             frame = tokio::time::timeout(
                 config.idle_timeout,
-                read_frame_bounded(&mut stream, config.max_frame_bytes, &frame_budget),
+                read_frame_bounded(&mut stream, config.max_frame_bytes, &frame_budget, config.request_timeout),
             ) => match frame {
                 Ok(Ok(payload)) => payload,
                 Ok(Err(FrameError::ConnectionClosed)) => {

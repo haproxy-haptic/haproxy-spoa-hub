@@ -19,6 +19,7 @@
 
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -66,6 +67,7 @@ pub(super) async fn read_frame_bounded<R>(
     reader: &mut R,
     max_bytes: u32,
     budget: &Arc<Semaphore>,
+    body_timeout: Duration,
 ) -> Result<(Vec<u8>, OwnedSemaphorePermit), FrameError>
 where
     R: AsyncReadExt + Unpin,
@@ -77,7 +79,9 @@ where
         .await
         .map_err(io::Error::other)?;
     let mut payload = vec![0u8; len as usize];
-    reader.read_exact(&mut payload).await?;
+    tokio::time::timeout(body_timeout, reader.read_exact(&mut payload))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "frame body read timed out"))??;
     Ok((payload, permit))
 }
 
@@ -143,11 +147,14 @@ mod tests {
         let (mut sender, mut receiver) = duplex(64);
         write_frame(&mut sender, b"first", 8).await.unwrap();
         let budget = Arc::new(Semaphore::new(8));
-        let (payload, permit) = read_frame_bounded(&mut receiver, 8, &budget).await.unwrap();
+        let (payload, permit) =
+            read_frame_bounded(&mut receiver, 8, &budget, Duration::from_secs(1))
+                .await
+                .unwrap();
         assert_eq!(payload, b"first");
         assert_eq!(budget.available_permits(), 3);
         write_frame(&mut sender, b"next", 8).await.unwrap();
-        let next = read_frame_bounded(&mut receiver, 8, &budget);
+        let next = read_frame_bounded(&mut receiver, 8, &budget, Duration::from_secs(1));
         tokio::pin!(next);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), &mut next)
@@ -163,6 +170,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stalled_body_deadline_releases_capacity() {
+        let (mut sender, mut receiver) = duplex(64);
+        sender.write_all(&8u32.to_be_bytes()).await.unwrap();
+        sender.write_all(b"{").await.unwrap();
+        let budget = Arc::new(Semaphore::new(8));
+        let error = read_frame_bounded(&mut receiver, 8, &budget, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, FrameError::Io(error) if error.kind() == io::ErrorKind::TimedOut));
+        assert_eq!(budget.available_permits(), 8);
+    }
+
+    #[tokio::test]
     async fn cancelled_partial_frame_releases_capacity() {
         let (mut sender, mut receiver) = duplex(64);
         sender.write_all(&8u32.to_be_bytes()).await.unwrap();
@@ -170,7 +190,7 @@ mod tests {
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(10),
-                read_frame_bounded(&mut receiver, 8, &budget),
+                read_frame_bounded(&mut receiver, 8, &budget, Duration::from_secs(1)),
             )
             .await
             .is_err()
