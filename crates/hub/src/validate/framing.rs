@@ -18,7 +18,9 @@
 //! flag and applies to both request and response frames.
 
 use std::io;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Default maximum frame size — 8 MiB. Overridable at startup.
 ///
@@ -54,6 +56,35 @@ pub async fn read_frame<R>(reader: &mut R, max_bytes: u32) -> Result<Vec<u8>, Fr
 where
     R: AsyncReadExt + Unpin,
 {
+    let len = read_length(reader, max_bytes).await?;
+    let mut payload = vec![0u8; len as usize];
+    reader.read_exact(&mut payload).await?;
+    Ok(payload)
+}
+
+pub(super) async fn read_frame_bounded<R>(
+    reader: &mut R,
+    max_bytes: u32,
+    budget: &Arc<Semaphore>,
+) -> Result<(Vec<u8>, OwnedSemaphorePermit), FrameError>
+where
+    R: AsyncReadExt + Unpin,
+{
+    let len = read_length(reader, max_bytes).await?;
+    let permit = budget
+        .clone()
+        .acquire_many_owned(len)
+        .await
+        .map_err(io::Error::other)?;
+    let mut payload = vec![0u8; len as usize];
+    reader.read_exact(&mut payload).await?;
+    Ok((payload, permit))
+}
+
+async fn read_length<R>(reader: &mut R, max_bytes: u32) -> Result<u32, FrameError>
+where
+    R: AsyncReadExt + Unpin,
+{
     let mut len_buf = [0u8; LENGTH_PREFIX];
     let n = reader.read_exact(&mut len_buf).await.map_err(|e| {
         if e.kind() == io::ErrorKind::UnexpectedEof {
@@ -72,9 +103,7 @@ where
         });
     }
 
-    let mut payload = vec![0u8; len as usize];
-    reader.read_exact(&mut payload).await?;
-    Ok(payload)
+    Ok(len)
 }
 
 /// Write one length-prefixed frame to `writer`. Returns an error if
@@ -108,6 +137,46 @@ where
 mod tests {
     use super::*;
     use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn bounded_frame_holds_capacity_until_released() {
+        let (mut sender, mut receiver) = duplex(64);
+        write_frame(&mut sender, b"first", 8).await.unwrap();
+        let budget = Arc::new(Semaphore::new(8));
+        let (payload, permit) = read_frame_bounded(&mut receiver, 8, &budget).await.unwrap();
+        assert_eq!(payload, b"first");
+        assert_eq!(budget.available_permits(), 3);
+        write_frame(&mut sender, b"next", 8).await.unwrap();
+        let next = read_frame_bounded(&mut receiver, 8, &budget);
+        tokio::pin!(next);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut next)
+                .await
+                .is_err()
+        );
+        drop(permit);
+        let (payload, permit) = next.await.unwrap();
+        assert_eq!(payload, b"next");
+        assert_eq!(budget.available_permits(), 4);
+        drop(permit);
+        assert_eq!(budget.available_permits(), 8);
+    }
+
+    #[tokio::test]
+    async fn cancelled_partial_frame_releases_capacity() {
+        let (mut sender, mut receiver) = duplex(64);
+        sender.write_all(&8u32.to_be_bytes()).await.unwrap();
+        let budget = Arc::new(Semaphore::new(8));
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                read_frame_bounded(&mut receiver, 8, &budget),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(budget.available_permits(), 8);
+    }
 
     #[tokio::test]
     async fn round_trips_small_payload() {

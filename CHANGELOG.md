@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bound validator connections, buffered request bytes, concurrent requests, and plugin fan-out; timed-out compilations retain their capacity until they finish.
+
 ### Changed
 
 - The connection is held to the `max-frame-size` the handshake settled on (`spop` 0.12). Both directions previously ran at the 1 MiB backstop for the whole connection, so a peer could send frames far above what it announced, and an oversized ACK left the hub as an opaque teardown by HAProxy instead of a local error.

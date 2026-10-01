@@ -199,38 +199,7 @@ struct DispatchTask<'a> {
     params: &'a toml::Table,
 }
 
-/// Walk the `[[plugins]]` array. Each entry must be a table with a
-/// `name` field; its `params` sub-table (default-empty when absent)
-/// is dispatched to the plugin instance registered under `name`.
-/// Entries missing `name`, carrying a non-string `name`, or naming a
-/// plugin not loaded by this validator emit error diagnostics; non-
-/// table array entries and non-table `params` values are flagged
-/// with their actual type so operators can debug malformed configs.
-///
-/// Dispatch runs in two phases:
-///
-///   1. **Structural pass (sync, in input order):** validate the
-///      shape of each `[[plugins]]` entry. Push any structural error
-///      diagnostics into `errors` immediately and skip dispatch for
-///      that entry. Surviving entries are collected as
-///      [`DispatchTask`]s.
-///   2. **Dispatch pass (parallel via `std::thread::scope`):** spawn
-///      one scoped thread per task; each thread calls
-///      [`dispatch_to_plugin`] and returns its `(warnings, errors)`
-///      pair. After join, results are merged in input order.
-///
-/// Parallelising the dispatch pass matters because plugins'
-/// `validate()` overrides can be heavy — e.g. coraza compiles the
-/// operator's `SecLang` via FFI into Coraza's Go-side parser — and
-/// hub v0.5.2's central schema-check via [`collect_schema_errors`]
-/// runs on every plugin regardless of whether it overrides
-/// `validate()`. Total wall-clock per request is now `max` of
-/// per-plugin times rather than `sum`.
-///
-/// Diagnostic ordering matches the serial implementation: per-plugin
-/// diagnostics are emitted in the same order as the input
-/// `[[plugins]]` entries. Tests and operator output stay
-/// deterministic.
+/// Validate plugin entries with bounded parallelism and deterministic diagnostic order.
 fn walk_plugins_array(
     path: &str,
     entries: &[toml::Value],
@@ -322,49 +291,40 @@ fn walk_plugins_array(
         return;
     }
 
-    // Phase 2: parallel dispatch. `std::thread::scope` lets each
-    // thread borrow `&Plugin` / `&toml::Table` references directly
-    // without cloning into Arcs. `Plugin: Send + Sync` is asserted in
-    // `crates/hub/src/plugin.rs`; concurrent calls to a plugin's
-    // `validate()` from one request's threads are no different from
-    // the existing concurrent-connection case (different connection
-    // tasks share the same plugin Arc and call validate in parallel
-    // today).
-    let mut results: Vec<(Vec<WireDiagnostic>, Vec<WireDiagnostic>)> =
-        (0..tasks.len()).map(|_| (Vec::new(), Vec::new())).collect();
+    dispatch_batches(&tasks, staged, warnings, errors);
+}
 
-    std::thread::scope(|s| {
-        let handles: Vec<_> = tasks
-            .iter()
-            .map(|task| {
-                s.spawn(move || {
-                    dispatch_to_plugin(
-                        task.path,
-                        task.plugin_name,
-                        task.instance,
-                        task.params,
-                        staged,
-                    )
+fn dispatch_batches(
+    tasks: &[DispatchTask<'_>],
+    staged: &StagedFiles,
+    warnings: &mut Vec<WireDiagnostic>,
+    errors: &mut Vec<WireDiagnostic>,
+) {
+    for batch in tasks.chunks(2) {
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|task| {
+                    scope.spawn(move || {
+                        dispatch_to_plugin(
+                            task.path,
+                            task.plugin_name,
+                            task.instance,
+                            task.params,
+                            staged,
+                        )
+                    })
                 })
-            })
-            .collect();
-        for (i, h) in handles.into_iter().enumerate() {
-            // `dispatch_to_plugin` already absorbs panics inside the
-            // plugin's `validate()` body via `catch_unwind`, so a
-            // join failure here would indicate something panicked
-            // outside that boundary (e.g. an allocation failure in
-            // diagnostic construction). That's fatal-by-design — the
-            // panic propagates up and the per-request blocking task
-            // returns an error, which `run_cycle` translates into
-            // closing the connection. Same blast radius as the
-            // pre-parallel serial implementation.
-            results[i] = h.join().expect("scoped dispatch thread panicked");
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("scoped dispatch thread panicked"))
+                .collect::<Vec<_>>()
+        });
+        for (mut batch_warnings, mut batch_errors) in results {
+            warnings.append(&mut batch_warnings);
+            errors.append(&mut batch_errors);
         }
-    });
-
-    for (mut w, mut e) in results {
-        warnings.append(&mut w);
-        errors.append(&mut e);
     }
 }
 
