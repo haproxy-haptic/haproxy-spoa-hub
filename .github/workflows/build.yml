@@ -1,0 +1,81 @@
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      rust-version:
+        required: true
+        type: string
+      cargo-auditable-version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  binaries:
+    name: build-${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    # Cross-compiling in the bookworm image keeps every artifact on glibc 2.36.
+    container: rust:${{ inputs.rust-version }}-bookworm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: ""
+            cross-packages: ""
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            cross-packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          - arch: armv7
+            target: armv7-unknown-linux-gnueabihf
+            cross-packages: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+    env:
+      ARCH: ${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+      CROSS_PACKAGES: ${{ matrix.cross-packages }}
+      GLIBC_VERSION: "2.36"
+      CARGO_INCREMENTAL: "0"
+      CARGO_AUDITABLE_VERSION: ${{ inputs.cargo-auditable-version }}
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # cargo-auditable embeds the dependency list so syft/grype can scan the published .so files.
+      - run: cargo install --locked "cargo-auditable@${CARGO_AUDITABLE_VERSION}"
+      - name: Install cross toolchain
+        if: matrix.target != ''
+        run: |
+          apt-get update
+          # shellcheck disable=SC2086
+          apt-get install -y --no-install-recommends ${CROSS_PACKAGES}
+          rustup target add "${TARGET}"
+      - name: Build
+        run: |
+          if [ -n "${TARGET}" ]; then
+            cargo auditable build --release --workspace --target "${TARGET}"
+            out="target/${TARGET}/release"
+          else
+            cargo auditable build --release --workspace
+            out="target/release"
+          fi
+          mkdir -p "binaries/${ARCH}"
+          for f in haproxy-spoa-hub libnoop_plugin.so libecho_plugin.so libdelay_plugin.so; do
+            cp "${out}/${f}" "binaries/${ARCH}/"
+          done
+      - run: scripts/stage-release-artifacts.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-${{ matrix.arch }}
+          path: |
+            binaries/
+            artifacts/
+          if-no-files-found: error

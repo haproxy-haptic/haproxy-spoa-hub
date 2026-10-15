@@ -17,7 +17,7 @@
 //! cargo test --workspace --test abi_matrix -- --nocapture
 //! ```
 //!
-//! Run in CI on every MR (catches the regression before merge) and
+//! Run in CI on every PR (catches the regression before merge) and
 //! nightly (catches drift introduced by upstream dependency updates).
 //!
 //! # Bootstrap state
@@ -53,14 +53,11 @@ struct MatrixSpec {
 
 #[derive(Debug, Deserialize)]
 struct PluginEntry {
-    /// GitLab project path for this plugin's repository, e.g.
+    /// GitHub repository path for this plugin, e.g.
     /// `haproxy-haptic/haproxy-spoa-hub-plugin-coraza`. Used to build
-    /// the package-registry URL.
+    /// the release-download URL.
     project: String,
-    /// Generic-package name as published by the plugin's CI. Usually
-    /// matches the plugin's short name (`coraza`, `external-auth`, ...).
-    package: String,
-    /// `.so` filename inside the package (e.g. `libcoraza_plugin.so`).
+    /// `.so` release asset name (e.g. `libcoraza_plugin-amd64-glibc2.36.so`).
     /// May vary per release if the upstream Cargo crate name changes.
     so_filename: String,
     versions: Vec<PluginVersionSpec>,
@@ -68,8 +65,8 @@ struct PluginEntry {
 
 #[derive(Debug, Deserialize)]
 struct PluginVersionSpec {
-    /// Plugin's own `SemVer` tag (`0.4.0`, `0.5.0`, …). Drives the
-    /// package-registry URL path.
+    /// Plugin's own git tag (`v0.4.0`, `v0.5.0`, …). Drives the
+    /// release-download URL path.
     version: String,
     /// `api_version` value the plugin reports. v1-baseline plugins
     /// report `1`. Matrix expects `Plugin::api_version()` to match.
@@ -122,12 +119,12 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Download a plugin `.so` from the GitLab Generic Package Registry,
+/// Download a plugin `.so` from the plugin's GitHub Release,
 /// caching it locally under `target/abi-matrix-cache/`. If a sha256
 /// is provided and the cached file matches, the download is skipped.
 ///
 /// URL shape:
-/// `https://gitlab.com/api/v4/projects/<url-encoded-project>/packages/generic/<package>/<version>/<filename>`
+/// `https://github.com/<project>/releases/download/<version>/<filename>`
 fn download_plugin_so(
     plugin_name: &str,
     entry: &PluginEntry,
@@ -158,11 +155,9 @@ fn download_plugin_so(
         }
     }
 
-    let project_enc = urlencoding_minimal(&entry.project);
     let url = format!(
-        "https://gitlab.com/api/v4/projects/{project}/packages/generic/{pkg}/{ver}/{so}",
-        project = project_enc,
-        pkg = entry.package,
+        "https://github.com/{project}/releases/download/{ver}/{so}",
+        project = entry.project,
         ver = spec.version,
         so = entry.so_filename,
     );
@@ -203,13 +198,6 @@ fn download_plugin_so(
     Ok(cache_path)
 }
 
-/// Minimal RFC-3986-ish URL-encoder for the project path. We only
-/// need to encode `/` because GitLab requires URL-encoded project
-/// paths for the API. Avoids pulling in another crate.
-fn urlencoding_minimal(s: &str) -> String {
-    s.replace('/', "%2F")
-}
-
 /// Run one matrix cell: load the plugin `.so`, drive it through the
 /// expected scenario, assert the outcome. Returns `Ok(())` on
 /// success or `Err(reason)` describing the assertion failure.
@@ -229,8 +217,8 @@ fn run_matrix_cell(
         ver = spec.version,
         p = so_path.display()
     );
-    // SAFETY: dlopen of a downloaded .so. We trust the GitLab Package
-    // Registry as the source of authoritative plugin builds.
+    // SAFETY: dlopen of a downloaded .so. We trust the plugin's GitHub
+    // Releases as the source of authoritative plugin builds.
     let load_result = unsafe { Plugin::load(so_path) };
 
     match (&spec.expected_load, load_result) {

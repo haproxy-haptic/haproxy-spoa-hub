@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Development and releases moved to GitHub (`https://github.com/haproxy-haptic/haproxy-spoa-hub`); GitLab is a read-only mirror. Release assets are published on GitHub Releases and the container image at `ghcr.io/haproxy-haptic/haproxy-spoa-hub`.
 - The connection is held to the `max-frame-size` the handshake settled on (`spop` 0.12). Both directions previously ran at the 1 MiB backstop for the whole connection, so a peer could send frames far above what it announced, and an oversized ACK left the hub as an opaque teardown by HAProxy instead of a local error.
 
 ## [0.13.0] - 2026-08-16

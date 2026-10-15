@@ -1,6 +1,6 @@
 # Validator Sidecar Wire Protocol
 
-**Authoritative spec:** [haproxy-template-ic `docs/development/validator-protocol.md`](https://gitlab.com/haproxy-haptic/haptic/-/blob/main/docs/development/validator-protocol.md)
+**Authoritative spec:** [haproxy-template-ic `docs/development/validator-protocol.md`](https://github.com/haproxy-haptic/haptic/blob/main/docs/development/validator-protocol.md)
 
 The wire protocol spoken over the unix socket bound by `--validate-socket <path>` is owned by HAProxy Template Ingress Controller (HAPTIC). Any change to framing, request/response shape, connection-lifecycle semantics, or error-class enumeration is decided in the HAPTIC repo; this hub implementation conforms.
 

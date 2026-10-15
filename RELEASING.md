@@ -5,21 +5,22 @@ This project produces three artifacts on every version tag:
 - A multi-arch Docker image for the hub binary (cosign-signed, with a
   CycloneDX SBOM attestation).
 - The hub binary and example plugin `.so` files for amd64, arm64, and armv7,
-  uploaded to the GitLab Generic Package Registry alongside per-file
-  `.sha256` sidecars and `.cosign.bundle` signatures.
+  attached to the GitHub Release alongside per-file `.sha256` sidecars,
+  `.cosign.bundle` signatures, and a combined `SHA256SUMS`.
 - A Rust crate (`haproxy-spoa-hub-plugin-api`) on crates.io.
 
-All three are published automatically by CI when you push a version tag.
+All three are published automatically by the `release` workflow
+(`.github/workflows/release.yml`) when you push a version tag.
 
 ## Prerequisites
 
-- A crates.io API token stored as the `CARGO_REGISTRY_TOKEN` CI/CD variable
-  (Settings > CI/CD > Variables, masked and protected).
+- A crates.io API token stored as the `CARGO_REGISTRY_TOKEN` repository
+  secret (Settings > Secrets and variables > Actions).
 - Permission to push tags to the repository.
-- **Generic packages "Reject duplicates" enabled** under
-  Settings > Packages and Registries > Generic packages. Without this, a
-  re-run of the release pipeline on the same tag silently overwrites the
-  bytes uploaded earlier.
+
+`gh release create` refuses to create a release for a tag that already has
+one, so re-running the workflow on the same tag never overwrites published
+assets.
 
 ## Release process
 
@@ -72,15 +73,19 @@ All three are published automatically by CI when you push a version tag.
      (binaries embed a compressed `Cargo.lock`-equivalent so SBOM tools can
      enumerate Rust deps without source access)
    - Generates per-file `.sha256` sidecars and a combined `SHA256SUMS`
-   - Cosign keyless-signs every blob (binary + `.so`) using the GitLab OIDC
-     id token, producing `.cosign.bundle` files
-   - Uploads everything to the Generic Package Registry under
-     `packages/generic/spoa-hub/<tag>/`
-   - Builds and pushes a multiarch Docker image to the GitLab container
-     registry (`registry.gitlab.com/haproxy-haptic/haproxy-spoa-hub`),
-     cosign-signs it by digest, and attaches a CycloneDX SBOM attestation
+   - Cosign keyless-signs every blob (binary + `.so`) using the GitHub
+     Actions OIDC token, producing `.cosign.bundle` files, and verifies each
+     signature against the release workflow's identity
+   - Builds and pushes a multiarch Docker image to
+     `ghcr.io/haproxy-haptic/haproxy-spoa-hub` (tags `<version>` without the
+     leading `v`, and `latest` for non-prereleases), cosign-signs it by
+     digest, and attaches a CycloneDX SBOM attestation
+   - Creates the GitHub Release with every artifact attached
    - Publishes the plugin API crate to crates.io (if the version changed)
-   - Creates a GitLab release with all artifacts linked as release assets
+
+To exercise build, signing, and verification without publishing, run the
+`release` workflow manually (Actions > release > Run workflow) with
+`dry_run` checked.
 
 ## Verifying a release
 
@@ -91,8 +96,11 @@ make verify-release VERSION=v0.2.1
 ```
 
 This downloads `SHA256SUMS`, every artifact named in it, and every artifact's
-cosign bundle from the package registry, then runs `sha256sum -c` and
-`cosign verify-blob` against the project's tag identity.
+cosign bundle from the GitHub Release, then runs `sha256sum -c` and
+`cosign verify-blob` against the release workflow's identity for that tag
+(`https://github.com/haproxy-haptic/haproxy-spoa-hub/.github/workflows/release.yml@refs/tags/<tag>`).
+Releases cut before the move to GitHub carry their original GitLab CI
+signatures and verify against that identity instead.
 
 ## Version coordination
 

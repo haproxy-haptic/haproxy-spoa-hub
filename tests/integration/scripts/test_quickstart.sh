@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="t057-$$"
 export HAPROXY_PORT=${HAPROXY_PORT:-$(shuf -i 20000-50000 -n 1)}
-# In GitLab DinD, containers run on the 'docker' host, not localhost
+# With a remote tcp:// DOCKER_HOST (DinD), published ports live on that host, not localhost
 DOCKER_HOST_ADDR=$(echo "${DOCKER_HOST:-}" | sed -n 's|tcp://\([^:]*\):.*|\1|p')
 DOCKER_HOST_ADDR=${DOCKER_HOST_ADDR:-localhost}
 

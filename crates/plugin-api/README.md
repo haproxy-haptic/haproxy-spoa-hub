@@ -1,6 +1,6 @@
 # haproxy-spoa-hub-plugin-api
 
-Plugin API for [haproxy-spoa-hub](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub) —
+Plugin API for [haproxy-spoa-hub](https://github.com/haproxy-haptic/haproxy-spoa-hub) —
 define HAProxy SPOE agent plugins as independently compiled shared libraries.
 
 ## Quick start
@@ -47,7 +47,7 @@ Your plugin crate must set `crate-type = ["cdylib", "rlib"]` in `Cargo.toml`.
 
 For the full guide on writing plugins — including configuration, dependencies,
 variable scoping, and JSON Schema validation — see
-[Writing a Plugin](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub#writing-a-plugin)
+[Writing a Plugin](https://github.com/haproxy-haptic/haproxy-spoa-hub#writing-a-plugin)
 in the main repository.
 
 ## License
