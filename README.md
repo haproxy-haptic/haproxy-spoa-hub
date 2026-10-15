@@ -1,8 +1,7 @@
 # HAProxy SPOA Hub
 
-[![License](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub/-/badges/custom.svg?key_text=License&key_width=60&value_text=Apache%202.0&value_width=80&key_color=555&value_color=007ec6)](https://opensource.org/licenses/Apache-2.0)
-[![Build Status](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub/badges/main/pipeline.svg)](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub/-/pipelines)
-[![Coverage](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub/badges/main/coverage.svg)](https://gitlab.com/haproxy-haptic/haproxy-spoa-hub/-/graphs/main/charts)
+[![License](https://img.shields.io/badge/License-Apache%202.0-007ec6.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Build Status](https://github.com/haproxy-haptic/haproxy-spoa-hub/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/haproxy-haptic/haproxy-spoa-hub/actions/workflows/ci.yml)
 
 A dynamic plugin hub for [HAProxy](https://www.haproxy.org/) SPOE agents. Loads Rust plugins as shared libraries at runtime, dispatches SPOE messages (running independent plugins in parallel), and returns aggregated variables to HAProxy.
 
@@ -30,7 +29,7 @@ HAProxy's [Stream Processing Offload Engine (SPOE)](https://www.haproxy.com/docu
 ### Build
 
 ```bash
-git clone https://gitlab.com/haproxy-haptic/haproxy-spoa-hub.git
+git clone https://github.com/haproxy-haptic/haproxy-spoa-hub.git
 cd haproxy-spoa-hub
 cargo build --release
 ```

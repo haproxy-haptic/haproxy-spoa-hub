@@ -13,13 +13,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="t049-$$"
 export HAPROXY_PORT=${HAPROXY_PORT:-$(shuf -i 20000-50000 -n 1)}
-# In GitLab DinD, containers run on the 'docker' host, not localhost
+# With a remote tcp:// DOCKER_HOST (DinD), published ports live on that host, not localhost
 DOCKER_HOST_ADDR=$(echo "${DOCKER_HOST:-}" | sed -n 's|tcp://\([^:]*\):.*|\1|p')
 DOCKER_HOST_ADDR=${DOCKER_HOST_ADDR:-localhost}
 
 # The reload rewrites config.toml through the bind mount; work on a copy
 # so the tracked fixture stays untouched. Under the project tree, not
-# /tmp: in GitLab DinD only the build dir is visible to the docker daemon.
+# /tmp: with a remote daemon (DinD) only the build dir is visible to it.
 export HUB_CONFIG_DIR
 HUB_CONFIG_DIR=$(mktemp -d "$COMPOSE_DIR/hub-config.t049.XXXXXX")
 cp "$COMPOSE_DIR"/hub-config/config.toml "$COMPOSE_DIR"/hub-config/config-with-echo.toml "$HUB_CONFIG_DIR"/

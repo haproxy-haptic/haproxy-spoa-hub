@@ -2,7 +2,7 @@
 #
 # Lists every published plugin version we want to keep loadable on the
 # current hub binary. The matrix test (`tests/abi_matrix.rs`)
-# downloads each .so from the GitLab Generic Package Registry and
+# downloads each .so from the plugin's GitHub Release and
 # asserts the expected behaviour:
 #
 #   - "compatible":      plugin loads, api_version matches, v1
@@ -19,14 +19,13 @@
 #
 #   [plugins.<short-name>]
 #   project = "haproxy-haptic/haproxy-spoa-hub-plugin-<short-name>"
-#   package = "<generic-package-name>"
 #   so_filename = "lib<crate>_plugin-<arch>-glibc<ver>.so"
 #
 #     [[plugins.<short-name>.versions]]
 #     version = "v0.4.0"              # plugin's own SemVer git tag,
 #                                     #   verbatim — leading "v" is
-#                                     #   load-bearing (the package
-#                                     #   registry path uses it).
+#                                     #   load-bearing (the release
+#                                     #   download path uses it).
 #     plugin_api_version = 1          # what the .so reports as api_version
 #     expected_load = "compatible"    # see above
 #     # Optional sha256 hex of the .so for cache-validation.
@@ -35,7 +34,7 @@
 # Published filename convention:
 #
 # Each plugin's release CI publishes one `.so` per (arch, glibc) pair
-# to the Generic Package Registry. The matrix test runs on Linux
+# as a GitHub Release asset. The matrix test runs on Linux
 # amd64 only, so `so_filename` is the amd64 + glibc-2.36 variant
 # (`-amd64-glibc2.36.so`), e.g. `libcoraza_plugin-amd64-glibc2.36.so`.
 # When the upstream build base bumps glibc (tracked by
@@ -81,7 +80,6 @@
 #
 # [plugins.coraza]
 # project = "haproxy-haptic/haproxy-spoa-hub-plugin-coraza"
-# package = "coraza"
 # so_filename = "libcoraza_plugin-amd64-glibc2.36.so"
 #
 #   [[plugins.coraza.versions]]
@@ -99,7 +97,6 @@
 # ----------------------------------------------------------------------
 [plugins.external-auth]
 project = "haproxy-haptic/haproxy-spoa-hub-plugin-external-auth"
-package = "external-auth"
 so_filename = "libexternal_auth_plugin-amd64-glibc2.36.so"
 
   [[plugins.external-auth.versions]]
@@ -117,7 +114,6 @@ so_filename = "libexternal_auth_plugin-amd64-glibc2.36.so"
 # ----------------------------------------------------------------------
 [plugins.fingerprinting]
 project = "haproxy-haptic/haproxy-spoa-hub-plugin-fingerprinting"
-package = "fingerprinting"
 so_filename = "libfingerprinting_plugin-amd64-glibc2.36.so"
 
   [[plugins.fingerprinting.versions]]
@@ -135,7 +131,6 @@ so_filename = "libfingerprinting_plugin-amd64-glibc2.36.so"
 # ----------------------------------------------------------------------
 [plugins.maxmind]
 project = "haproxy-haptic/haproxy-spoa-hub-plugin-maxmind"
-package = "maxmind"
 so_filename = "libmaxmind_plugin-amd64-glibc2.36.so"
 
   [[plugins.maxmind.versions]]
@@ -153,7 +148,6 @@ so_filename = "libmaxmind_plugin-amd64-glibc2.36.so"
 # ----------------------------------------------------------------------
 [plugins.mirror]
 project = "haproxy-haptic/haproxy-spoa-hub-plugin-mirror"
-package = "mirror"
 so_filename = "libmirror_plugin-amd64-glibc2.36.so"
 
   # v0.1.0 was the first plugin to ship against plugin-api 0.5.0 (the
@@ -190,7 +184,6 @@ so_filename = "libmirror_plugin-amd64-glibc2.36.so"
 # ----------------------------------------------------------------------
 [plugins.otel]
 project = "haproxy-haptic/haproxy-spoa-hub-plugin-otel"
-package = "otel"
 so_filename = "libotel_plugin-amd64-glibc2.36.so"
 
   [[plugins.otel.versions]]
@@ -223,7 +216,6 @@ so_filename = "libotel_plugin-amd64-glibc2.36.so"
 #
 # [plugins.sso-auth]
 # project = "haproxy-haptic/haproxy-spoa-hub-plugin-sso-auth"
-# package = "sso-auth"
 # so_filename = "libhaproxy_spoa_hub_plugin_sso_auth-amd64-glibc2.36.so"
 #
 #   [[plugins.sso-auth.versions]]
