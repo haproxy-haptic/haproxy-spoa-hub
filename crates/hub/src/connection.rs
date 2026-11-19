@@ -4,12 +4,13 @@ use std::time::Instant;
 use futures::{SinkExt, StreamExt, stream::SplitStream};
 use spop::{
     MAX_FRAME_SIZE_LIMIT, SpopFrame,
+    actions::Action,
     codec::SpopCodec,
     frame::{FramePayload, FrameType},
     frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities, HaproxyHello},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::codec::Framed;
 use tracing::Instrument;
 
@@ -91,14 +92,13 @@ where
     // this connection. SPOP pipelining explicitly permits ACKs in any order
     // *on the same connection*, and every ACK carries its STREAM-ID/FRAME-ID,
     // so HAProxy matches out-of-order replies to the right stream.
-    let (sink, mut reader) = framed.split();
+    let (sink, mut reader) = futures::StreamExt::split::<AckFrame>(framed);
 
     // Completed ACKs flow to one writer task that owns the write half and hands
     // the sink back once drained, so a final AGENT-DISCONNECT can follow the
     // last in-flight ACK (SPOP forbids frames after it). The bounded channel
     // doubles as backpressure.
-    let (ack_tx, ack_rx) = mpsc::channel::<Box<dyn SpopFrame>>(ACK_CHANNEL_CAP);
-    let writer = spawn_ack_writer(sink, ack_rx);
+    let (ack_tx, writer) = spawn_ack_writer(sink);
 
     let mut disconnecting = false;
     // One-frame look-ahead. While backpressured on the in-flight gate we still
@@ -145,13 +145,11 @@ where
                 };
                 let registry = registry.clone();
                 let ack_tx = ack_tx.clone();
-                tokio::spawn(async move {
-                    let _permit = permit; // released when this frame completes
-                    let _inflight = InflightGuard::new(); // gauge +1 / -1 on drop
+                tokio::spawn(crate::frame_execution::run(async move {
+                    let inflight = (permit, InflightGuard::new());
                     let ack = handle_notify_frame(frame, &registry).await;
-                    // The writer is gone only if the connection already failed.
-                    let _ = ack_tx.send(Box::new(ack)).await;
-                });
+                    ack_tx.send(Box::new(ack), inflight).await;
+                }));
             }
             other => {
                 tracing::warn!(frame_type = ?other, "unexpected frame type, ignoring");
@@ -311,44 +309,86 @@ where
     Some(haproxy_hello.healthcheck.unwrap_or_default())
 }
 
-/// Spawn the per-connection ACK writer.
-///
-/// It owns the write half, batch-flushes completed ACKs (draining any that
-/// arrived mid-write so a burst of concurrent replies costs one syscall), and
-/// hands the sink back once the channel closes — letting the caller send a
-/// trailing AGENT-DISCONNECT after the last in-flight ACK. Returns `None` if a
-/// write failed (the connection is already broken).
-fn spawn_ack_writer<W>(
-    mut sink: W,
-    mut ack_rx: mpsc::Receiver<Box<dyn SpopFrame>>,
-) -> tokio::task::JoinHandle<Option<W>>
+type AckFrame = Box<dyn SpopFrame>;
+
+type WriteHalf<S> = futures::stream::SplitSink<Framed<S, SpopCodec>, AckFrame>;
+
+struct AckWriter<S> {
+    sink: Arc<Mutex<Option<WriteHalf<S>>>>,
+    queue: mpsc::Sender<AckFrame>,
+}
+
+impl<S> AckWriter<S>
 where
-    W: futures::Sink<Box<dyn SpopFrame>> + Unpin + Send + 'static,
-    W::Error: std::fmt::Display,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
-        while let Some(frame) = ack_rx.recv().await {
-            let mut batch_size = 1usize;
-            if let Err(e) = sink.feed(frame).await {
-                tracing::error!(error = %e, "failed to queue ACK");
-                return None;
-            }
-            while let Ok(frame) = ack_rx.try_recv() {
-                if let Err(e) = sink.feed(frame).await {
-                    tracing::error!(error = %e, "failed to queue ACK");
-                    return None;
+    async fn send(self: Arc<Self>, ack: AckFrame, inflight: (OwnedSemaphorePermit, InflightGuard)) {
+        // Only the reader and this frame own the writer on an idle connection.
+        // Backlogged and pipelined ACKs use the batching queue.
+        if Arc::strong_count(&self) <= 2 && self.queue.capacity() == ACK_CHANNEL_CAP {
+            if let Ok(mut sink) = self.sink.try_lock() {
+                // A slow peer may delay flush. It owns only this connection's
+                // sink; other connections can use the process-wide frame slot.
+                drop(inflight);
+                if let Some(writer) = sink.as_mut() {
+                    if let Err(e) = write_ack_batch(writer, ack, None).await {
+                        tracing::error!(error = %e, "failed to write ACK");
+                        *sink = None;
+                    }
                 }
-                batch_size += 1;
+                return;
             }
-            let flush_start = Instant::now();
-            if let Err(e) = sink.flush().await {
-                tracing::error!(error = %e, "failed to flush ACK");
+        }
+        let _ = self.queue.send(ack).await;
+    }
+}
+
+fn spawn_ack_writer<S>(
+    sink: WriteHalf<S>,
+) -> (
+    Arc<AckWriter<S>>,
+    tokio::task::JoinHandle<Option<WriteHalf<S>>>,
+)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (queue, mut rx) = mpsc::channel(ACK_CHANNEL_CAP);
+    let sink = Arc::new(Mutex::new(Some(sink)));
+    let sender = Arc::new(AckWriter {
+        sink: Arc::clone(&sink),
+        queue,
+    });
+    let worker = tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            let mut guard = sink.lock().await;
+            if let Err(e) = write_ack_batch(guard.as_mut()?, frame, Some(&mut rx)).await {
+                tracing::error!(error = %e, "failed to write ACK");
+                *guard = None;
                 return None;
             }
-            metrics::record_ack_flush(batch_size, flush_start.elapsed());
         }
-        Some(sink)
-    })
+        sink.lock().await.take()
+    });
+    (sender, worker)
+}
+
+async fn write_ack_batch<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    sink: &mut WriteHalf<S>,
+    frame: AckFrame,
+    queued: Option<&mut mpsc::Receiver<AckFrame>>,
+) -> std::io::Result<()> {
+    sink.feed(frame).await?;
+    let mut batch_size = 1;
+    if let Some(rx) = queued {
+        while let Ok(frame) = rx.try_recv() {
+            sink.feed(frame).await?;
+            batch_size += 1;
+        }
+    }
+    let start = Instant::now();
+    sink.flush().await?;
+    metrics::record_ack_flush(batch_size, start.elapsed());
+    Ok(())
 }
 
 /// Process a single NOTIFY frame: dispatch each message to its plugins
@@ -422,13 +462,17 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
                 .await;
 
             // Add all variables to the ACK response
-            for (scope, name, value) in result.variables {
-                ack = ack.set_var(
-                    var_scope_to_spop(scope),
-                    &name,
-                    spoe_value_into_typed_data(value),
+            ack.actions
+                .extend(
+                    result
+                        .variables
+                        .into_iter()
+                        .map(|(scope, name, value)| Action::SetVar {
+                            scope: var_scope_to_spop(scope),
+                            name,
+                            value: spoe_value_into_typed_data(value),
+                        }),
                 );
-            }
         } else {
             // A NOTIFY for a message no plugin in the CURRENT
             // configuration handles. Reachable two ways: haproxy's
