@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1-rc.1] - 2026-11-19
+
 ### Fixed
 
+- Keep the only plugin worker available for requests on one-CPU deployments while watching configuration or rendering metrics.
 - Bound validator connections, buffered request bytes, concurrent requests weighted by input size, and plugin fan-out; timed-out compilations retain their capacity until they finish.
 
 ### Changed
 
+- A standalone plugin can send its reply directly from the worker that completes its call, reducing the time HAProxy waits for the ACK.
 - Development and releases moved to GitHub (`https://github.com/haproxy-haptic/haproxy-spoa-hub`); GitLab is a read-only mirror. Release assets are published on GitHub Releases and the container image at `ghcr.io/haproxy-haptic/haproxy-spoa-hub`.
 - The connection is held to the `max-frame-size` the handshake settled on (`spop` 0.12). Both directions previously ran at the 1 MiB backstop for the whole connection, so a peer could send frames far above what it announced, and an oversized ACK left the hub as an opaque teardown by HAProxy instead of a local error.
 

@@ -231,7 +231,9 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" --verify-tag \
+          set --
+          case "${GITHUB_REF_NAME}" in *-*) set -- --prerelease --latest=false ;; esac
+          gh release create "${GITHUB_REF_NAME}" "$@" --verify-tag \
             --title "${GITHUB_REF_NAME}" --notes-file release-notes.md artifacts/*
 
   publish-crate:
