@@ -562,7 +562,7 @@ tests/integration/          Docker-based e2e tests
 
 - **Protocol**: The `spop` crate handles SPOE wire protocol encoding/decoding (HAPROXY-HELLO, NOTIFY/ACK, DISCONNECT)
 - **Plugin loading**: `abi_stable` provides type-safe FFI with load-time ABI verification via `load_from_file()`
-- **Dispatch**: Every plugin has a bounded admission gate before `spawn_blocking`. Independent plugins run concurrently via `join_all`; a timeout detaches the caller but deliberately keeps the plugin's concurrency permit until the blocking call returns
+- **Dispatch**: Every plugin has a bounded admission gate before `spawn_blocking`. Independent plugins run concurrently. A standalone plugin can send its ACK from the completing worker when its connection is idle. The caller can return a timeout while the plugin retains its concurrency permit until it finishes. A queued call that expires before it starts releases its permit without executing the plugin
 - **Registry**: `Arc<ArcSwap<PluginRegistry>>` enables lock-free reload — each connection loads the current registry snapshot when processing a NOTIFY frame. A reload builds the new registry against the old one, carrying over every plugin instance whose `library` and `params` are unchanged, swaps it in atomically, then retires the old one in phases (`registry::swap_and_retire`): wait for in-flight dispatches still holding the pre-swap snapshot (quiesce), wait for the replaced plugins' fire-and-forget background work (drain), then shut the replaced plugins down
 - **Execution plans**: Topological sort of plugin dependency graphs per SPOE message. Independent plugins form parallel groups, dependent plugins run sequentially
 

@@ -4,6 +4,7 @@ pub mod config_watcher;
 pub mod connection;
 pub mod crash_handler;
 pub mod dispatch;
+mod frame_execution;
 pub mod listener;
 pub mod metrics;
 pub mod plugin;

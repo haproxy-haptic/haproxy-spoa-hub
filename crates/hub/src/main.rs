@@ -1,5 +1,6 @@
 use std::{
     io::stderr,
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -67,6 +68,7 @@ fn main() -> anyhow::Result<()> {
 
     // Load and validate configuration
     let hub_config = config::HubConfig::load(&cli.config)?;
+    init_logging(&hub_config.log_level);
 
     // Build tokio runtime with configurable worker threads.
     // thread_keep_alive is configurable to avoid cold-start thread creation
@@ -84,12 +86,35 @@ fn main() -> anyhow::Result<()> {
     }
     let rt = rt_builder.build()?;
 
+    let _exporter = if cli.check || cli.validate_socket.is_some() {
+        None
+    } else {
+        start_metrics(hub_config.metrics_addr)?
+    };
     rt.block_on(async_main(cli, hub_config))
 }
 
+/// Prometheus renders each scrape with `spawn_blocking`. Give it one separate
+/// rendering slot so a slow plugin cannot starve scrapes (or vice versa).
+fn start_metrics(addr: Option<SocketAddr>) -> anyhow::Result<Option<runtime::Runtime>> {
+    let exporter = addr
+        .map(|_| {
+            runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .max_blocking_threads(1)
+                .thread_name("spoa-metrics")
+                .enable_all()
+                .build()
+        })
+        .transpose()?;
+    {
+        let _context = exporter.as_ref().map(runtime::Runtime::enter);
+        metrics::init_metrics(addr)?;
+    }
+    Ok(exporter)
+}
+
 async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<()> {
-    // Initialize logging
-    init_logging(&hub_config.log_level);
     tracing::info!(config = %cli.config.display(), "configuration loaded");
 
     if let Some(threads) = hub_config.worker_threads {
@@ -112,9 +137,6 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     if let Some(socket_path) = cli.validate_socket {
         return run_validator_mode(&hub_config, &socket_path).await;
     }
-
-    // Initialize metrics
-    metrics::init_metrics(hub_config.metrics_addr)?;
 
     // Load plugins
     let loaded = plugin_loader::load_all_plugins(
@@ -163,11 +185,7 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
     )
     .await;
 
-    // Drop the watcher BEFORE shutting down plugins so the bridging
-    // task observes the cancellation token and exits cleanly. Otherwise
-    // the watcher's internal thread keeps holding the inotify fd open
-    // for the (short) tail end of teardown — harmless but tidier this
-    // way.
+    // Release the filesystem watch before plugin shutdown.
     drop(watcher);
 
     // Always shutdown plugins, whether we're exiting cleanly or due to error

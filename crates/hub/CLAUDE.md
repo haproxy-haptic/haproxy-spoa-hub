@@ -78,17 +78,13 @@ cargo bench -p haproxy-spoa-hub --bench dispatch_bench    # Dispatch latency
 
 ## Dispatch
 
-`dispatch.rs` uses a single execution path for all group sizes. Each plugin
-first passes a bounded per-plugin admission gate, then admitted calls are
-launched with `spawn_blocking` and independent calls are joined with
-`futures::future::join_all`. This gives true thread-level parallelism without
-an unbounded blocking queue.
-
-`spawn_blocking` (not direct inline calls) is used so that
-`tokio::time::timeout` works even if a plugin blocks (e.g.,
-`thread::sleep`). Tokio cannot cancel a blocking call: after an async timeout,
-the call retains its admission permit and in-flight metric until the blocking
-closure actually exits.
+Each plugin passes a bounded admission gate before execution on Tokio's
+blocking pool. Groups with multiple active plugins use `join_all`. For a
+standalone plugin the completing worker polls the frame once, so an immediately
+writable ACK can go straight to its connection. A pending frame resumes on
+Tokio. The frame task still enforces the deadline while the plugin is running.
+A timed-out plugin retains its admission permit until it returns. A queued job
+that missed the deadline before starting releases its permit without calling FFI.
 
 ## spop Crate Notes
 

@@ -11,23 +11,15 @@
 //! module only fires the trigger; the reload mechanics are reused as-is
 //! from `main.rs`.
 
-use std::{path::Path, sync::mpsc, time::Duration};
+use std::path::Path;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// Spawn a background task that watches `config_path`'s parent directory
-/// and emits one `()` on `tx` for every change touching the file. The
-/// task exits when `shutdown` is cancelled.
-///
-/// Returns the `notify::RecommendedWatcher` handle alongside an error
-/// receiver. The watcher is kept alive by the caller (dropping it stops
-/// the underlying inotify watch); the error receiver is best-effort
-/// observability — most production deployments will never see an event
-/// on it, but if the watcher's internal channel gets clogged we want
-/// somewhere to log it from.
-///
+/// Watch the config file's parent directory. Matching notifications coalesce
+/// while a reload is pending. Dropping the watcher stops the filesystem watch;
+/// cancelling `shutdown` closes the trigger channel.
 /// # Errors
 ///
 /// - The parent directory of `config_path` cannot be determined (path is
@@ -49,51 +41,31 @@ pub fn spawn(
             "config path {} has no parent directory; file-watch needs one to survive atomic renames",
             config_path.display()
         )
-    })?;
+    })?.to_owned();
 
-    // notify hands us events on a private thread it owns. We bridge to
-    // tokio via a sync channel + a tokio task that reads from it. The
-    // sync channel is bounded to avoid unbounded memory growth if the
-    // tokio runtime stalls; we drain to the latest event (one reload
-    // covers any number of pending changes).
-    let (sync_tx, sync_rx) = mpsc::channel::<notify::Result<Event>>();
-    let mut watcher = notify::recommended_watcher(move |res| {
-        // Best-effort: if the channel is closed (tokio task gone) the
-        // send fails silently — that's fine, it means we're shutting
-        // down.
-        let _ = sync_tx.send(res);
+    // notify already invokes the callback on its own thread. Filter there and
+    // keep at most one pending change, including under a burst of inotify events.
+    let (notify_tx, mut changes) = tokio_mpsc::channel(1);
+    let mut watcher = notify::recommended_watcher(move |event| match event {
+        Ok(event) if event_targets_path(&event, &target) => {
+            let _ = notify_tx.try_send(());
+        }
+        Err(e) => tracing::warn!(error = %e, "config-watch event stream error"),
+        Ok(_) => {}
     })?;
-    watcher.watch(parent, RecursiveMode::NonRecursive)?;
+    watcher.watch(&parent, RecursiveMode::NonRecursive)?;
 
-    // Bridging task: drain notify events, filter to our target filename,
-    // forward a single tick to the tokio side.
-    let target_for_task = target.clone();
-    tokio::task::spawn_blocking(move || {
-        while !shutdown.is_cancelled() {
-            // Block with a short timeout so we periodically observe the
-            // shutdown flag; otherwise a quiescent filesystem keeps us
-            // parked forever.
-            match sync_rx.recv_timeout(Duration::from_millis(500)) {
-                Ok(Ok(event)) => {
-                    if !event_targets_path(&event, &target_for_task) {
-                        continue;
-                    }
-                    // Best-effort send. Channel is bounded; the receiver
-                    // (main task) deduplicates by simply running the
-                    // reload on the next event — falling behind by one
-                    // reload is harmless because the reload picks up
-                    // whatever's currently on disk.
-                    if tx.try_send(()).is_err() {
-                        // Either the receiver is gone (shutdown) or the
-                        // channel is full (a reload is already pending).
-                        // Both are fine — drop the event.
-                    }
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, "config-watch event stream error");
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+    // Leave the blocking pool available for plugin calls, including on hosts
+    // where the single plugin and the pool both have a concurrency limit of one.
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                () = shutdown.cancelled() => break,
+                event = changes.recv() => match event {
+                    Some(()) => { let _ = tx.try_send(()); }
+                    None => break,
+                },
             }
         }
     });
