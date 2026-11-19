@@ -87,17 +87,13 @@ where
     // concurrency collapses to the connection count and requests queue
     // head-of-line behind the frame ahead of them on the wire.
     //
-    // Instead, split the connection: the read loop spawns a task per NOTIFY
-    // and keeps reading, while one writer task drains completed ACKs back onto
-    // this connection. SPOP pipelining explicitly permits ACKs in any order
-    // *on the same connection*, and every ACK carries its STREAM-ID/FRAME-ID,
-    // so HAProxy matches out-of-order replies to the right stream.
+    // The reader dispatches each NOTIFY independently. HAProxy uses the
+    // STREAM-ID and FRAME-ID to match replies that finish out of order.
     let (sink, mut reader) = futures::StreamExt::split::<AckFrame>(framed);
 
-    // Completed ACKs flow to one writer task that owns the write half and hands
-    // the sink back once drained, so a final AGENT-DISCONNECT can follow the
-    // last in-flight ACK (SPOP forbids frames after it). The bounded channel
-    // doubles as backpressure.
+    // A lone ACK can write directly to the idle sink. Concurrent replies use
+    // the bounded queue and flush in batches. The writer returns the sink once
+    // all senders finish so AGENT-DISCONNECT follows the last ACK.
     let (ack_tx, writer) = spawn_ack_writer(sink);
 
     let mut disconnecting = false;
