@@ -25,6 +25,7 @@ env:
   CARGO_AUDITABLE_VERSION: "0.7.4"
   # renovate: datasource=docker depName=anchore/syft
   SYFT_VERSION: "v1.52.0"
+  PRERELEASE: ${{ contains(github.ref_name, '-') }}
   IMAGE: ghcr.io/haproxy-haptic/haproxy-spoa-hub
   CERT_IDENTITY: https://github.com/haproxy-haptic/haproxy-spoa-hub/.github/workflows/release.yml@${{ github.ref }}
   CERT_ISSUER: https://token.actions.githubusercontent.com
@@ -121,7 +122,7 @@ jobs:
             if [ "${GITHUB_REF_TYPE}" = tag ]; then
               version="${GITHUB_REF_NAME#v}"
               echo "${IMAGE}:${version}"
-              if ! echo "${GITHUB_REF_NAME}" | grep -qE -- '-(alpha|beta|rc)'; then
+              if [ "${PRERELEASE}" != true ]; then
                 echo "${IMAGE}:latest"
               fi
             fi
@@ -232,7 +233,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set --
-          case "${GITHUB_REF_NAME}" in *-*) set -- --prerelease --latest=false ;; esac
+          if [ "${PRERELEASE}" = true ]; then set -- --prerelease --latest=false; fi
           gh release create "${GITHUB_REF_NAME}" "$@" --verify-tag \
             --title "${GITHUB_REF_NAME}" --notes-file release-notes.md artifacts/*
 
