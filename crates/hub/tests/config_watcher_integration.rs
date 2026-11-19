@@ -56,10 +56,10 @@ async fn watcher_observes_atomic_rename() {
     );
     assert!(received.unwrap().is_some(), "channel closed unexpectedly");
 
-    // Verify shutdown cancels the bridging task. We can't easily
-    // observe the task exiting (it's spawn_blocking), but cancelling
-    // is part of the contract — at minimum it shouldn't deadlock.
     shutdown.cancel();
+    tokio::time::timeout(deadline, async { while rx.recv().await.is_some() {} })
+        .await
+        .expect("cancellation closes the trigger channel while the watcher is alive");
 }
 
 /// A modify on an unrelated sibling file in the watched directory must
@@ -91,4 +91,28 @@ async fn watcher_ignores_sibling_changes() {
     );
 
     shutdown.cancel();
+}
+
+#[test]
+fn watcher_leaves_the_only_blocking_slot_available() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"").unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let shutdown = CancellationToken::new();
+        let _watcher = config_watcher::spawn(&path, tx, shutdown.clone()).unwrap();
+        let work = tokio::task::spawn_blocking(|| ());
+        let completed = tokio::time::timeout(Duration::from_secs(2), work).await;
+        shutdown.cancel();
+        completed
+            .expect("plugin pool was occupied by the watcher")
+            .unwrap();
+    });
 }
