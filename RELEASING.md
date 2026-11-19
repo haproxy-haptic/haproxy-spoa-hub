@@ -139,8 +139,9 @@ cargo publish -p haproxy-spoa-hub-plugin-api
 
 ## Prerelease tags
 
-Tags containing `-alpha`, `-beta`, or `-rc` (e.g., `v0.2.0-rc1`) will
-build and push Docker images but will not tag them as `latest`.
+Tags with a prerelease suffix such as `v0.13.1-rc.1` publish a GitHub
+prerelease and a versioned Docker image. The latest GitHub release and the
+container's `latest` tag stay on the stable version.
 
 ## Yanking a crate version
 
