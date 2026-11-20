@@ -152,13 +152,8 @@ async fn async_main(cli: Cli, hub_config: config::HubConfig) -> anyhow::Result<(
 
     tracing::info!(count = loaded.len(), "all plugins loaded");
 
-    // Pre-warm every configured blocking-pool thread so first traffic does not
-    // pay thread creation latency.
-    let prewarm_count = config::resolve_max_blocking_threads(&hub_config);
-    let handles: Vec<_> = (0..prewarm_count)
-        .map(|_| tokio::task::spawn_blocking(|| {}))
-        .collect();
-    futures::future::join_all(handles).await;
+    // Warm the first dispatch thread. Tokio adds workers as simultaneous calls arrive.
+    tokio::task::spawn_blocking(|| {}).await?;
 
     // Build plugin registry with execution plans, wrapped in ArcSwap
     // so SIGHUP can swap in a new registry without interrupting connections

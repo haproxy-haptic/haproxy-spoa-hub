@@ -4,8 +4,10 @@ ARG TARGETARCH
 ARG TARGETVARIANT
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgcc-s1 \
+    && apt-get install -y --no-install-recommends libgcc-s1 libjemalloc2 \
     && rm -rf /var/lib/apt/lists/*
+
+ENV LD_PRELOAD=libjemalloc.so.2
 
 COPY binaries/${TARGETARCH}${TARGETVARIANT}/haproxy-spoa-hub /usr/local/bin/
 

@@ -5,6 +5,8 @@
 
 A dynamic plugin hub for [HAProxy](https://www.haproxy.org/) SPOE agents. Loads Rust plugins as shared libraries at runtime, dispatches SPOE messages (running independent plugins in parallel), and returns aggregated variables to HAProxy.
 
+The published Linux image preloads jemalloc for the hub and its shared-library plugins. Set `LD_PRELOAD=` to use the system allocator.
+
 ## Overview
 
 HAProxy's [Stream Processing Offload Engine (SPOE)](https://www.haproxy.com/documentation/haproxy-configuration-manual/latest/#9.3) allows offloading request processing to external agents via the SPOP protocol. This hub acts as a single SPOE agent that multiplexes work across dynamically loaded plugins, so you can add, update, or remove processing logic without modifying or recompiling the hub itself.
