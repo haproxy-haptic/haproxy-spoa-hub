@@ -26,7 +26,7 @@ pub struct HubConfig {
     #[serde(default = "default_blocking_keep_alive")]
     pub blocking_thread_keep_alive_secs: u64,
     /// Maximum number of Tokio blocking-pool threads. When omitted, the hub
-    /// bounds a single plugin by the frame gate and sums ceilings for multiple plugins.
+    /// derives a finite bound by summing every plugin's resolved concurrency.
     /// This is defense in depth; per-plugin admission gates remain the primary
     /// overload control.
     pub max_blocking_threads: Option<usize>,
@@ -194,26 +194,21 @@ pub fn resolve_plugin_ceiling(plugin: &PluginConfig) -> usize {
     }
 }
 
-/// A single plugin can run at most once per admitted frame. Keep one worker
-/// per usable CPU in this case so sequential requests reuse its thread-local
-/// caches. Parallel plugin groups retain their independent concurrency budgets.
+/// Resolve the process-wide blocking-pool cap. The derived value permits every
+/// plugin's admitted calls to execute without entering Tokio's internal,
+/// unmetered blocking queue. Operators should assign per-plugin concurrency as
+/// resource budgets; the explicit override is primarily restart-time defense
+/// in depth and must not be lower than the sum if queue-free dispatch matters.
 #[must_use]
 pub fn resolve_max_blocking_threads(config: &HubConfig) -> usize {
-    let frame_limit = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    blocking_pool_size(config, frame_limit)
-}
-
-fn blocking_pool_size(config: &HubConfig, frame_limit: usize) -> usize {
-    config
-        .max_blocking_threads
-        .unwrap_or_else(|| match config.plugins.as_slice() {
-            [plugin] => resolve_plugin_ceiling(plugin).min(frame_limit),
-            plugins => plugins
-                .iter()
-                .map(resolve_plugin_ceiling)
-                .fold(0usize, usize::saturating_add)
-                .max(1),
-        })
+    config.max_blocking_threads.unwrap_or_else(|| {
+        config
+            .plugins
+            .iter()
+            .map(resolve_plugin_ceiling)
+            .fold(0usize, usize::saturating_add)
+            .max(1)
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -627,11 +622,7 @@ mod tests {
         assert_eq!(resolve_plugin_concurrency(&config.plugins[0]), 3);
         assert_eq!(config.plugins[0].max_queue, 4);
         assert_eq!(config.plugins[0].queue_timeout_ms, Some(2));
-        assert_eq!(blocking_pool_size(&config, 1), 7);
-        let mut config = config;
-        config.max_blocking_threads = None;
-        assert_eq!(blocking_pool_size(&config, 1), 1);
-        assert_eq!(blocking_pool_size(&config, 8), 3);
+        assert_eq!(resolve_max_blocking_threads(&config), 7);
     }
 
     #[test]
