@@ -7,7 +7,7 @@ use spop::{
     actions::Action,
     codec::SpopCodec,
     frame::{FramePayload, FrameType},
-    frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities, HaproxyHello},
+    frames::{Ack, AgentDisconnect, AgentHello, FrameCapabilities},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
@@ -268,12 +268,9 @@ where
         }
     };
 
-    let haproxy_hello = match HaproxyHello::try_from(hello_frame.payload()) {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to parse HAPROXY-HELLO");
-            return None;
-        }
+    let Some(haproxy_hello) = hello_frame.as_haproxy_hello() else {
+        tracing::error!("missing parsed HAPROXY-HELLO");
+        return None;
     };
 
     // Until this point the codec accepts anything up to MAX_FRAME_SIZE_LIMIT,
@@ -405,13 +402,12 @@ async fn handle_notify_frame(frame: Box<dyn SpopFrame>, registry: &SharedRegistr
 
     for msg in messages {
         let start = Instant::now();
-        let msg_name = msg.name.as_str();
+        let msg_name = msg.name();
 
         // Convert spop message args to our SpoeMessage type
         let mut args = msg
-            .args
-            .iter()
-            .map(|(key, value)| (key.as_str().into(), typed_data_to_spoe_value(value)))
+            .args()
+            .map(|(key, value)| (key.into(), typed_data_to_spoe_value(value)))
             .collect();
 
         // Adopt HAProxy's own request id when it sent one, so this hub's log lines

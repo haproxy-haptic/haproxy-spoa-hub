@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "haproxy-spoa-hub"
-version = "0.13.1-rc.4"
+version = "0.13.1-rc.5"
 dependencies = [
  "abi_stable",
  "anyhow",
@@ -2529,9 +2529,9 @@ dependencies = [
 
 [[package]]
 name = "spop"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95c4d808bea3babfe46c31e12924868312811a7a067b56dd4356963d901fb110"
+checksum = "1cef436c68751d5cf05312dc7face742b202813a121b521ade5776504428700e"
 dependencies = [
  "bytes",
  "nom",

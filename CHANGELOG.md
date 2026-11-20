@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1-rc.5] - 2026-11-20
+
+- Update SPOP to 0.14.0. The hub reads NOTIFY names and values from the decoded frame and borrows the parsed HELLO during negotiation.
+
 ## [0.13.1-rc.4] - 2026-11-20
 
 - Repeated plugin metrics reuse registered Prometheus counters, gauges, and histograms on each worker.

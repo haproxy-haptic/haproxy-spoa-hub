@@ -8,7 +8,10 @@ use std::{
 use abi_stable::std_types::{RHashMap, RString, Tuple2};
 use haproxy_spoa_hub_plugin_api::{ProcessingResult, SpoeMessage, SpoeValue, VarScope};
 use smallvec::SmallVec;
-use spop::{actions::VarScope as SpopVarScope, types::TypedData};
+use spop::{
+    actions::VarScope as SpopVarScope,
+    types::{TypedData, TypedDataRef},
+};
 
 use crate::{
     metrics::PluginMetrics,
@@ -61,18 +64,18 @@ const HUB_ARG_PREFIX: &str = "hub.";
 
 /// Convert a spop `TypedData` value to our FFI-safe `SpoeValue`.
 #[must_use]
-pub fn typed_data_to_spoe_value(td: &TypedData) -> SpoeValue {
-    match td {
-        TypedData::Null => SpoeValue::Null,
-        TypedData::Bool(b) => SpoeValue::Bool(*b),
-        TypedData::Int32(v) => SpoeValue::Int32(*v),
-        TypedData::UInt32(v) => SpoeValue::Uint32(*v),
-        TypedData::Int64(v) => SpoeValue::Int64(*v),
-        TypedData::UInt64(v) => SpoeValue::Uint64(*v),
-        TypedData::IPv4(addr) => SpoeValue::Ipv4(addr.octets()),
-        TypedData::IPv6(addr) => SpoeValue::Ipv6(addr.octets()),
-        TypedData::String(s) => SpoeValue::String(s.as_str().into()),
-        TypedData::Binary(b) => SpoeValue::Binary(b.as_slice().into()),
+pub fn typed_data_to_spoe_value<'a>(td: impl Into<TypedDataRef<'a>>) -> SpoeValue {
+    match td.into() {
+        TypedDataRef::Null => SpoeValue::Null,
+        TypedDataRef::Bool(b) => SpoeValue::Bool(b),
+        TypedDataRef::Int32(v) => SpoeValue::Int32(v),
+        TypedDataRef::UInt32(v) => SpoeValue::Uint32(v),
+        TypedDataRef::Int64(v) => SpoeValue::Int64(v),
+        TypedDataRef::UInt64(v) => SpoeValue::Uint64(v),
+        TypedDataRef::IPv4(addr) => SpoeValue::Ipv4(addr.octets()),
+        TypedDataRef::IPv6(addr) => SpoeValue::Ipv6(addr.octets()),
+        TypedDataRef::String(s) => SpoeValue::String(s.into()),
+        TypedDataRef::Binary(b) => SpoeValue::Binary(b.into()),
     }
 }
 

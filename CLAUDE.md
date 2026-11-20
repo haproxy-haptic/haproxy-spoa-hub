@@ -40,7 +40,7 @@ cd tests/integration && make test    # Docker integration tests (SIGTERM, SIGHUP
 
 - **Plugin loading**: `abi_stable` 0.11 with `load_from_file()` — type-safe
   FFI with load-time ABI verification. Plugins are `cdylib` crates.
-- **Protocol**: `spop` 0.11 codec for SPOE wire protocol (HAPROXY-HELLO,
+- **Protocol**: `spop` 0.14 codec for SPOE wire protocol (HAPROXY-HELLO,
   NOTIFY/ACK, DISCONNECT).
 - **Dispatch**: Single-plugin path uses `spawn_blocking` directly. Multi-plugin
   parallel groups use `spawn_blocking` per plugin + `join_all` with per-plugin
@@ -65,7 +65,7 @@ cd tests/integration && make test    # Docker integration tests (SIGTERM, SIGHUP
 
 | Crate | Role |
 |-------|------|
-| `spop` 0.11 | SPOE wire protocol codec |
+| `spop` 0.14 | SPOE wire protocol codec |
 | `abi_stable` 0.11 | FFI-safe dynamic plugin loading |
 | `tokio` 1 | Async runtime |
 | `arc-swap` 1 | Lock-free registry swap for SIGHUP |
