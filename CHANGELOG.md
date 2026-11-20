@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1-rc.4] - 2026-11-20
+
+- Repeated plugin metrics reuse registered Prometheus counters, gauges, and histograms on each worker.
+
 ## [0.13.1-rc.3] - 2026-11-20
 
 - Single-CPU hubs reuse one blocking worker for serial plugin calls under sustained load. Concurrent and timed-out work retains access to the remaining configured slots.

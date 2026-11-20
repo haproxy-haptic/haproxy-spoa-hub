@@ -40,6 +40,7 @@ pub fn init_metrics(addr: Option<SocketAddr>) -> anyhow::Result<()> {
             .add_global_label("service", "haproxy-spoa-hub");
 
         builder.install()?;
+        crate::plugin_metrics::remember_installed_exporter();
         tracing::info!(%addr, "prometheus metrics endpoint started");
     }
 

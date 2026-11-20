@@ -26,15 +26,16 @@
 //! #4). The vtable's weaker contract — "ctx valid until `destroy`
 //! returns" — is trivially upheld.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::os::raw::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use haproxy_spoa_hub_plugin_api::{MetricKind, MetricLabel, RSlice, RStr};
-use metrics::{Key, Label};
+use metrics::{Counter, Gauge, Histogram, Key, Label, Recorder};
 
 /// Per-plugin context handed to plugins via `set_metric_recorder`.
 /// Holds the plugin's name prefix in pre-formatted form (e.g.
@@ -135,33 +136,63 @@ pub fn intern_metric_ctx(plugin_name: &str) -> &'static MetricCtx {
 static META: metrics::Metadata<'static> =
     metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
 
+// Only the installed process-lifetime exporter may retain handles between calls.
+static EXPORTER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+
+pub(crate) fn remember_installed_exporter() {
+    // with_recorder resolves thread-local overrides first. A fresh thread sees
+    // the globally installed exporter even if initialization was called in a scope.
+    let _ = std::thread::Builder::new()
+        .spawn(|| {
+            metrics::with_recorder(|r| EXPORTER.store(recorder_address(r), Ordering::Relaxed));
+        })
+        .map(std::thread::JoinHandle::join);
+}
+
+fn recorder_address(recorder: &dyn Recorder) -> *mut () {
+    std::ptr::from_ref(recorder).cast::<()>().cast_mut()
+}
+
+struct Series {
+    key: Key,
+    counter: OnceCell<Counter>,
+    gauge: OnceCell<Gauge>,
+    histogram: OnceCell<Histogram>,
+}
+
 thread_local! {
-    static RECENT_KEYS: RefCell<VecDeque<Rc<Key>>> = const { RefCell::new(VecDeque::new()) };
+    static RECENT_KEYS: RefCell<VecDeque<Rc<Series>>> = const { RefCell::new(VecDeque::new()) };
 }
 
 /// Keep plugin-owned FFI strings only as owned metric keys. Borrowed lookups
 /// avoid allocating or rehashing repeated series. Resolve the recorder on each
 /// event so scoped recorders and late global installation still work.
-fn metric_key(prefix: &str, short: &str, labels: &[MetricLabel<'_>]) -> Rc<Key> {
+fn metric_key(prefix: &str, short: &str, labels: &[MetricLabel<'_>]) -> Rc<Series> {
     RECENT_KEYS.with_borrow_mut(|cache| {
-        if let Some(key) = cache.iter().rev().find(|key| {
+        if let Some(series) = cache.iter().rev().find(|series| {
+            let key = &series.key;
             key.name().strip_prefix(prefix) == Some(short)
                 && key.labels().len() == labels.len()
                 && key.labels().zip(labels).all(|(cached, (k, v))| {
                     cached.key() == k.as_str() && cached.value() == v.as_str()
                 })
         }) {
-            return Rc::clone(key);
+            return Rc::clone(series);
         }
         let name = format!("{prefix}{short}");
         let bytes = name.len() + labels.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
-        let key = Rc::new(Key::from_parts(
-            name,
-            labels
-                .iter()
-                .map(|(k, v)| Label::new(k.as_str().to_owned(), v.as_str().to_owned()))
-                .collect::<Vec<_>>(),
-        ));
+        let key = Rc::new(Series {
+            key: Key::from_parts(
+                name,
+                labels
+                    .iter()
+                    .map(|(k, v)| Label::new(k.as_str().to_owned(), v.as_str().to_owned()))
+                    .collect::<Vec<_>>(),
+            ),
+            counter: OnceCell::new(),
+            gauge: OnceCell::new(),
+            histogram: OnceCell::new(),
+        });
         if bytes <= 4096 && labels.len() <= 16 {
             if cache.len() == 8 {
                 cache.pop_front();
@@ -215,26 +246,44 @@ pub extern "C" fn record_metric(
         // received destroy yet).
         let ctx = unsafe { &*ctx.cast::<MetricCtx>() };
 
-        let key = metric_key(ctx.name_prefix(), name.as_str(), labels.as_slice());
+        let series = metric_key(ctx.name_prefix(), name.as_str(), labels.as_slice());
 
-        metrics::with_recorder(|recorder| match kind {
-            MetricKind::Counter => {
-                // Counters in the `metrics` crate take u64 increments.
-                // Truncate fractional values rather than refuse them;
-                // the plugin-API doc spells out this rounding.
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    clippy::cast_precision_loss
-                )]
-                let inc = if value < 0.0 { 0 } else { value as u64 };
-                recorder.register_counter(&key, &META).increment(inc);
-            }
-            MetricKind::Gauge => {
-                recorder.register_gauge(&key, &META).set(value);
-            }
-            MetricKind::Histogram => {
-                recorder.register_histogram(&key, &META).record(value);
+        metrics::with_recorder(|recorder| {
+            let cache = EXPORTER.load(Ordering::Relaxed) == recorder_address(recorder);
+            match kind {
+                MetricKind::Counter => {
+                    // Counters in the `metrics` crate take u64 increments.
+                    // Truncate fractional values rather than refuse them;
+                    // the plugin-API doc spells out this rounding.
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        clippy::cast_precision_loss
+                    )]
+                    let inc = if value < 0.0 { 0 } else { value as u64 };
+                    let register = || recorder.register_counter(&series.key, &META);
+                    if cache {
+                        series.counter.get_or_init(register).increment(inc);
+                    } else {
+                        register().increment(inc);
+                    }
+                }
+                MetricKind::Gauge => {
+                    let register = || recorder.register_gauge(&series.key, &META);
+                    if cache {
+                        series.gauge.get_or_init(register).set(value);
+                    } else {
+                        register().set(value);
+                    }
+                }
+                MetricKind::Histogram => {
+                    let register = || recorder.register_histogram(&series.key, &META);
+                    if cache {
+                        series.histogram.get_or_init(register).record(value);
+                    } else {
+                        register().record(value);
+                    }
+                }
             }
         });
     }));
@@ -267,6 +316,66 @@ mod tests {
             &first,
             &get("plugin_waf_", "duration", "request")
         ));
+    }
+
+    #[test]
+    fn cached_handles_follow_global_and_scoped_recorders() {
+        use metrics::{KeyName, Metadata, SharedString, Unit};
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        struct CountingRecorder(Arc<AtomicUsize>);
+        impl CountingRecorder {
+            fn registered(&self, key: &Key) {
+                if key.name() == "plugin_registration_test_series" {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        impl Recorder for CountingRecorder {
+            fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
+                self.registered(key);
+                Counter::noop()
+            }
+            fn register_gauge(&self, key: &Key, _: &Metadata<'_>) -> Gauge {
+                self.registered(key);
+                Gauge::noop()
+            }
+            fn register_histogram(&self, key: &Key, _: &Metadata<'_>) -> Histogram {
+                self.registered(key);
+                Histogram::noop()
+            }
+        }
+        let ctx = MetricCtx::boxed("registration_test");
+        let emit = || {
+            for kind in [
+                MetricKind::Counter,
+                MetricKind::Gauge,
+                MetricKind::Histogram,
+            ] {
+                record_metric(
+                    ctx.as_ptr(),
+                    RStr::from("series"),
+                    RSlice::from_slice(&[]),
+                    1.0,
+                    kind,
+                );
+            }
+        };
+        emit();
+        let global = Arc::new(AtomicUsize::new(0));
+        let local = CountingRecorder(Arc::default());
+        assert!(metrics::set_global_recorder(CountingRecorder(global.clone())).is_ok());
+        metrics::with_local_recorder(&local, remember_installed_exporter);
+        for _ in 0..100 {
+            emit();
+            metrics::with_local_recorder(&local, emit);
+        }
+        assert_eq!(global.load(Ordering::Relaxed), 3);
+        assert_eq!(local.0.load(Ordering::Relaxed), 300);
     }
 
     #[test]
