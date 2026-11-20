@@ -26,13 +26,15 @@
 //! #4). The vtable's weaker contract — "ctx valid until `destroy`
 //! returns" — is trivially upheld.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::os::raw::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 
 use haproxy_spoa_hub_plugin_api::{MetricKind, MetricLabel, RSlice, RStr};
-use metrics::Label;
+use metrics::{Key, Label};
 
 /// Per-plugin context handed to plugins via `set_metric_recorder`.
 /// Holds the plugin's name prefix in pre-formatted form (e.g.
@@ -130,6 +132,46 @@ pub fn intern_metric_ctx(plugin_name: &str) -> &'static MetricCtx {
     leaked
 }
 
+static META: metrics::Metadata<'static> =
+    metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
+
+thread_local! {
+    static RECENT_KEYS: RefCell<VecDeque<Rc<Key>>> = const { RefCell::new(VecDeque::new()) };
+}
+
+/// Keep plugin-owned FFI strings only as owned metric keys. Borrowed lookups
+/// avoid allocating or rehashing repeated series. Resolve the recorder on each
+/// event so scoped recorders and late global installation still work.
+fn metric_key(prefix: &str, short: &str, labels: &[MetricLabel<'_>]) -> Rc<Key> {
+    RECENT_KEYS.with_borrow_mut(|cache| {
+        if let Some(key) = cache.iter().rev().find(|key| {
+            key.name().strip_prefix(prefix) == Some(short)
+                && key.labels().len() == labels.len()
+                && key.labels().zip(labels).all(|(cached, (k, v))| {
+                    cached.key() == k.as_str() && cached.value() == v.as_str()
+                })
+        }) {
+            return Rc::clone(key);
+        }
+        let name = format!("{prefix}{short}");
+        let bytes = name.len() + labels.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
+        let key = Rc::new(Key::from_parts(
+            name,
+            labels
+                .iter()
+                .map(|(k, v)| Label::new(k.as_str().to_owned(), v.as_str().to_owned()))
+                .collect::<Vec<_>>(),
+        ));
+        if bytes <= 4096 && labels.len() <= 16 {
+            if cache.len() == 8 {
+                cache.pop_front();
+            }
+            cache.push_back(Rc::clone(&key));
+        }
+        key
+    })
+}
+
 /// FFI entry-point a plugin invokes for every metric event. Matches
 /// `haproxy_spoa_hub_plugin_api::RecordMetricFn`.
 ///
@@ -173,34 +215,9 @@ pub extern "C" fn record_metric(
         // received destroy yet).
         let ctx = unsafe { &*ctx.cast::<MetricCtx>() };
 
-        // Prefix the metric name so all plugin metrics appear under a
-        // consistent namespace. The prefix is pre-formatted at plugin
-        // load (see MetricCtx::boxed) so the hot path is a single
-        // String::with_capacity + two push_str calls — cheaper than
-        // format!'s argument-formatting machinery for the same output.
-        // Empty / oversize names fall through to the registry which
-        // already filters bad names; we don't second-line validate
-        // here.
-        let prefix = ctx.name_prefix();
-        let short = name.as_str();
-        let mut metric_name = String::with_capacity(prefix.len() + short.len());
-        metric_name.push_str(prefix);
-        metric_name.push_str(short);
+        let key = metric_key(ctx.name_prefix(), name.as_str(), labels.as_slice());
 
-        // Translate the FFI label slice into the `metrics` crate's
-        // owned Label vec. The macros take a Vec/IntoIterator of Label
-        // and construct registry keys internally. Per-call heap alloc
-        // here is intentional: SmallVec<[Label; 4]> would avoid it for
-        // ≤4 labels but adds a dependency the rest of the crate
-        // doesn't pull in. The `metrics` crate's internal interning
-        // amortises most of the cost; revisit if a profile shows it
-        // dominates.
-        let metric_labels: Vec<Label> = labels
-            .iter()
-            .map(|(k, v)| Label::new(k.as_str().to_owned(), v.as_str().to_owned()))
-            .collect();
-
-        match kind {
+        metrics::with_recorder(|recorder| match kind {
             MetricKind::Counter => {
                 // Counters in the `metrics` crate take u64 increments.
                 // Truncate fractional values rather than refuse them;
@@ -211,15 +228,15 @@ pub extern "C" fn record_metric(
                     clippy::cast_precision_loss
                 )]
                 let inc = if value < 0.0 { 0 } else { value as u64 };
-                metrics::counter!(metric_name, metric_labels).increment(inc);
+                recorder.register_counter(&key, &META).increment(inc);
             }
             MetricKind::Gauge => {
-                metrics::gauge!(metric_name, metric_labels).set(value);
+                recorder.register_gauge(&key, &META).set(value);
             }
             MetricKind::Histogram => {
-                metrics::histogram!(metric_name, metric_labels).record(value);
+                recorder.register_histogram(&key, &META).record(value);
             }
-        }
+        });
     }));
 }
 
@@ -227,6 +244,30 @@ pub extern "C" fn record_metric(
 mod tests {
     use super::*;
     use abi_stable::std_types::RVec;
+
+    #[test]
+    fn key_cache_owns_labels_and_compares_names_and_values() {
+        let get = |prefix, name, value: &str| {
+            metric_key(prefix, name, &[(RStr::from("phase"), RStr::from(value))])
+        };
+        let first = get("plugin_waf_", "evaluations", &String::from("request"));
+        assert!(Rc::ptr_eq(
+            &first,
+            &get("plugin_waf_", "evaluations", "request")
+        ));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &get("plugin_waf_", "evaluations", "response")
+        ));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &get("plugin_other_", "evaluations", "request")
+        ));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &get("plugin_waf_", "duration", "request")
+        ));
+    }
 
     #[test]
     fn ctx_ptr_roundtrips_to_plugin_name() {

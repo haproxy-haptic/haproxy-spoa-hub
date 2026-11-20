@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1-rc.3] - 2026-11-20
+
+- Single-CPU hubs reuse one blocking worker for serial plugin calls under sustained load. Concurrent and timed-out work retains access to the remaining configured slots.
+- Plugin metrics reuse recent owned metric keys and their precomputed hashes on each worker.
+
 ## [0.13.1-rc.2] - 2026-11-20
 
 - The hub warms one blocking worker at startup. Serial plugin traffic can reuse its engine caches, and Tokio starts additional workers on demand up to the configured ceiling.

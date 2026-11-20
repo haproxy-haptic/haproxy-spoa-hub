@@ -78,8 +78,10 @@ pub(crate) async fn run(frame: impl Future<Output = ()> + Send + 'static) {
     let suspended = Arc::new(Mutex::new(Some(frame)));
     let ready = Arc::clone(&suspended);
     let deadline = call.deadline;
-    let mut worker = tokio::task::spawn_blocking(move || {
+    let mut worker = crate::plugin_workers::spawn(move |lease| {
         (call.call)();
+        // Release the FFI slot before the ACK admits the next frame.
+        drop(lease);
         let mut frame = ready.lock().unwrap().take()?;
         // Usually all that remains is building and sending the ACK. Return any
         // pending socket I/O or later plugin to Tokio without holding this slot.

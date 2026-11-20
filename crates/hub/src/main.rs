@@ -74,10 +74,19 @@ fn main() -> anyhow::Result<()> {
     // thread_keep_alive is configurable to avoid cold-start thread creation
     // overhead (~10-50µs) when blocking pool threads are reaped between
     // traffic bursts. Default: 300s (tokio default is 10s).
+    let capacity = config::resolve_max_blocking_threads(&hub_config);
+    let (_primary, shared_capacity) = if cli.check || cli.validate_socket.is_some() {
+        (None, capacity)
+    } else {
+        haproxy_spoa_hub::plugin_workers::configure(
+            capacity,
+            std::time::Duration::from_secs(hub_config.blocking_thread_keep_alive_secs),
+        )?
+    };
     let mut rt_builder = runtime::Builder::new_multi_thread();
     rt_builder
         .enable_all()
-        .max_blocking_threads(config::resolve_max_blocking_threads(&hub_config))
+        .max_blocking_threads(shared_capacity)
         .thread_keep_alive(std::time::Duration::from_secs(
             hub_config.blocking_thread_keep_alive_secs,
         ));

@@ -11,6 +11,7 @@ pub mod plugin;
 pub mod plugin_loader;
 pub mod plugin_log;
 pub mod plugin_metrics;
+pub mod plugin_workers;
 pub mod registry;
 pub mod request_id;
 pub mod validate;

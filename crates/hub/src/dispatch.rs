@@ -542,7 +542,10 @@ async fn run_admitted(
     if standalone && crate::frame_execution::can_defer() {
         classify(crate::frame_execution::defer(deadline, call).await)
     } else {
-        classify(tokio::time::timeout_at(deadline, tokio::task::spawn_blocking(call)).await)
+        classify(
+            tokio::time::timeout_at(deadline, crate::plugin_workers::spawn(move |_lease| call()))
+                .await,
+        )
     }
 }
 
