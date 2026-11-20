@@ -5,6 +5,8 @@
 
 A dynamic plugin hub for [HAProxy](https://www.haproxy.org/) SPOE agents. Loads Rust plugins as shared libraries at runtime, dispatches SPOE messages (running independent plugins in parallel), and returns aggregated variables to HAProxy.
 
+The published Linux image preloads jemalloc for the hub and its shared-library plugins. Set `LD_PRELOAD=` to use the system allocator.
+
 ## Overview
 
 HAProxy's [Stream Processing Offload Engine (SPOE)](https://www.haproxy.com/documentation/haproxy-configuration-manual/latest/#9.3) allows offloading request processing to external agents via the SPOP protocol. This hub acts as a single SPOE agent that multiplexes work across dynamically loaded plugins, so you can add, update, or remove processing logic without modifying or recompiling the hub itself.
@@ -153,7 +155,7 @@ message's execution plan still publishes a host-owned status: `ok`, `error`,
 | `worker_threads` | integer | no | num CPUs | Tokio runtime worker threads |
 | `max_connections` | integer | no | unlimited | Maximum concurrent SPOP connections |
 | `blocking_thread_keep_alive_secs` | integer | no | 300 | How long idle blocking pool threads stay alive before being reaped. Higher values avoid thread re-creation overhead (~10-50µs) on bursty traffic. Tokio's built-in default is 10 seconds. |
-| `max_blocking_threads` | integer | no | sum of plugin concurrency limits | Process-wide blocking-pool cap. When set, it must be at least the sum of resolved plugin concurrency limits so admitted work cannot enter Tokio's unmetered internal queue. |
+| `max_blocking_threads` | integer | no | single plugin: smaller of its ceiling and usable CPUs; multiple plugins: sum of ceilings | Process-wide blocking-pool cap. When set, it must be at least the sum of resolved plugin concurrency limits so admitted work cannot enter Tokio's unmetered internal queue. |
 
 ### `[[listeners]]`
 

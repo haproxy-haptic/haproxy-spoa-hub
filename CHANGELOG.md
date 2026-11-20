@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1-rc.2] - 2026-11-20
+
+- A single-plugin daemon sizes its default blocking pool to the smaller of the plugin ceiling and the in-flight frame limit. On one CPU, successive requests reuse one worker and its engine caches. Additional workers start on demand.
+- The hub image uses jemalloc for the daemon and its dynamically loaded plugins.
+
 ## [0.13.1-rc.1] - 2026-11-19
 
 ### Fixed
