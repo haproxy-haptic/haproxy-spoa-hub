@@ -42,7 +42,7 @@ thiserror = "2"
 # File-watch on the --config argument so HAPTIC pushing a new config
 # triggers reload without needing SIGHUP. See `config_watcher` module
 # for why we watch the *parent directory* rather than the file path.
-notify = "8"
+notify = "9"
 # Fatal-signal backtrace capture (SIGSEGV / SIGABRT / SIGBUS / SIGILL /
 # SIGFPE). Uses libc::backtrace + backtrace_symbols_fd from a signal-
 # safe sigaction handler; pulled in for the raw FFI bindings.
