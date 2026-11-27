@@ -1,0 +1,14 @@
+[[plugins]]
+name = "echo"
+library = "libecho_plugin.so"
+messages = ["dispatch"]
+
+[[plugins]]
+name = "delay"
+library = "libdelay_plugin.so"
+messages = ["dispatch"]
+
+[[plugins]]
+name = "noop"
+library = "libnoop_plugin.so"
+messages = ["dispatch"]

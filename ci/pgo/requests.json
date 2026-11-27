@@ -1,0 +1,14 @@
+[
+  {
+    "message": "dispatch",
+    "args": {
+      "path": "/catalog",
+      "delay_ms": 0
+    },
+    "expect": {
+      "echo.path": "/catalog",
+      "noop.result": "ok",
+      "delay.done": true
+    }
+  }
+]

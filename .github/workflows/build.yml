@@ -56,17 +56,14 @@ jobs:
         run: |
           apt-get update
           # shellcheck disable=SC2086
-          apt-get install -y --no-install-recommends ${CROSS_PACKAGES}
+          apt-get install -y --no-install-recommends qemu-user ${CROSS_PACKAGES}
           rustup target add "${TARGET}"
+      - run: rustup component add llvm-tools-preview
       - name: Build
         run: |
-          if [ -n "${TARGET}" ]; then
-            cargo auditable build --release --workspace --target "${TARGET}"
-            out="target/${TARGET}/release"
-          else
-            cargo auditable build --release --workspace
-            out="target/release"
-          fi
+          target=${TARGET:-x86_64-unknown-linux-gnu}
+          scripts/pgo/build.sh "$target" --workspace
+          out="target/$target/release"
           mkdir -p "binaries/${ARCH}"
           for f in haproxy-spoa-hub libnoop_plugin.so libecho_plugin.so libdelay_plugin.so; do
             cp "${out}/${f}" "binaries/${ARCH}/"
