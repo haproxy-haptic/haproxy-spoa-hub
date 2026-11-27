@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1-rc.7] - 2026-11-27
+
 ### Fixed
 
 - Adaptive concurrency keeps a plugin's limit while it is application-limited (fewer than half its permits in use), as Netflix's Gradient2 does. Before, a slow call shrank the limit even then, so under light load it fell to about 4 and the next burst got `overloaded` (#20).
