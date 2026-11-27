@@ -81,15 +81,16 @@ impl AdaptiveConfig {
     #[must_use]
     pub fn resolve(max_concurrency: Option<usize>, t: &AdaptiveTunables) -> Self {
         let max_limit = max_concurrency.unwrap_or(DEFAULT_MAX_LIMIT).max(1);
+        let min_limit = t.min_limit.unwrap_or(1).clamp(1, max_limit);
         Self {
-            min_limit: t.min_limit.unwrap_or(1).clamp(1, max_limit),
+            min_limit,
             max_limit,
             // Default start = min(16, ceiling): a proven-safe concurrency, so
             // startup and every config-reload cold-start (which rebuilds the
             // admission state) begin at a level that absorbs a burst instead of
             // fail-closing it before the controller grows — never worse than the
             // old fixed default, and still clamped to a tiny ceiling.
-            initial: t.initial.unwrap_or(max_limit.min(16)).clamp(1, max_limit),
+            initial: t.initial.unwrap_or(16).clamp(min_limit, max_limit),
             tolerance: t.tolerance.unwrap_or(1.5).max(1.0),
             smoothing: t.smoothing.unwrap_or(0.2).clamp(0.01, 1.0),
             long_window: t.long_window.unwrap_or(600.0).max(1.0),
@@ -120,9 +121,9 @@ impl Gradient2 {
     }
 
     /// Fold one completed call's service time into the estimate and return the
-    /// new integer limit. `in_flight` is the concurrency observed at completion,
-    /// used to suppress growth when the plugin is application-limited (not
-    /// actually using the concurrency it already has).
+    /// new integer limit. `in_flight` is the concurrency observed at completion:
+    /// while the plugin is application-limited (using less than half the
+    /// concurrency it already has), the limit stays where it is.
     #[allow(clippy::cast_precision_loss)]
     fn update(&mut self, short_ns: f64, in_flight: usize) -> usize {
         if self.long_rtt_ns <= 0.0 {
@@ -137,16 +138,22 @@ impl Gradient2 {
             self.long_rtt_ns += (short_ns - self.long_rtt_ns) / self.cfg.long_window;
         }
 
+        // Application-limited: neither grow nor shrink, as Netflix's
+        // Gradient2Limit does. A slow call with spare permits is weak evidence
+        // of contention at this plugin's admission limit. Shrinking
+        // here while growth is blocked ratchets a lightly loaded plugin down to
+        // the gradient's fixed point (limit * 0.5 + sqrt(limit) = limit, i.e. 4),
+        // so the next burst finds only a few permits.
+        if (in_flight as f64) < self.limit / 2.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            return self.limit.round() as usize;
+        }
+
         let gradient = (self.cfg.tolerance * self.long_rtt_ns / short_ns).clamp(0.5, 1.0);
         // Headroom = sqrt(limit): the term that lets the limit grow while the
         // gradient is ~1, self-scaling so growth slows as the limit rises.
         let headroom = self.limit.max(1.0).sqrt();
-        let mut target = self.limit * gradient + headroom;
-
-        // Application-limited: don't grow past what's actually being used.
-        if target > self.limit && (in_flight as f64) < self.limit / 2.0 {
-            target = self.limit;
-        }
+        let target = self.limit * gradient + headroom;
 
         // Smooth the transition (damps oscillation).
         self.limit = self
@@ -347,6 +354,23 @@ mod tests {
         assert_eq!(clamped.min_limit, 8);
     }
 
+    #[test]
+    fn initial_capacity_respects_the_floor_under_light_load() {
+        for initial in [Some(4), None] {
+            let config = AdaptiveConfig::resolve(
+                Some(64),
+                &AdaptiveTunables {
+                    initial,
+                    min_limit: Some(24),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(config.initial, 24);
+            let mut g = Gradient2::new(config);
+            assert_eq!(g.update(1_000_000.0, 1), 24);
+        }
+    }
+
     fn cfg(min: usize, max: usize, initial: usize) -> AdaptiveConfig {
         AdaptiveConfig {
             min_limit: min,
@@ -375,6 +399,36 @@ mod tests {
             g.limit
         );
         assert!(g.limit <= 100.0, "must respect the ceiling");
+    }
+
+    #[test]
+    fn light_load_with_latency_outliers_keeps_the_limit() {
+        // A lightly loaded plugin (one call at a time) whose service time is mostly
+        // stable, with an occasional slower call, as a WAF sees when some requests
+        // match rules. Gradient2 treats this as application-limited and leaves the
+        // limit alone, so a later burst still finds the configured concurrency.
+        let mut g = Gradient2::new(cfg(1, 16, 16));
+        for i in 0..2_000 {
+            let service_ns = if i % 20 == 19 {
+                3_000_000.0
+            } else {
+                1_000_000.0
+            };
+            g.update(service_ns, 1);
+        }
+        assert!(
+            g.limit >= 16.0,
+            "an application-limited plugin must keep its limit, got {}",
+            g.limit
+        );
+        assert!(
+            g.long_rtt_ns > 1_000_000.0,
+            "idle samples update the baseline"
+        );
+        assert!(
+            g.update(10_000_000.0, 8) < 16,
+            "at half capacity the limit can shrink"
+        );
     }
 
     #[test]
