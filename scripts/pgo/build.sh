@@ -15,7 +15,13 @@ case "$target" in
     aarch64-unknown-linux-gnu) arch=arm64; sha=6c76c5748e482f6790ebdf31057777fe88012507ee5edc24381c6d1e1164bfb7
         if [[ $target != "$host" ]]; then runner=(qemu-aarch64 -L /usr/aarch64-linux-gnu); fi ;;
     armv7-unknown-linux-gnueabihf) arch=armv7; sha=e321a152d3cd6836a14b2485cfafa8987bf5a96bbaa4a2913dc5a02171ee9bec
-        if [[ $target != "$host" ]]; then runner=(qemu-arm -L /usr/arm-linux-gnueabihf); fi ;;
+        if [[ $target != "$host" ]]; then
+            # Debian multiarch DSOs must use the matching multiarch glibc and
+            # loader. Cross-only images instead keep both in the GCC sysroot.
+            prefix=/usr/arm-linux-gnueabihf
+            if [[ -e /lib/ld-linux-armhf.so.3 ]]; then prefix=/; fi
+            runner=(qemu-arm -L "$prefix")
+        fi ;;
     *) echo "Unsupported release target: $target" >&2; exit 1 ;;
 esac
 
