@@ -67,8 +67,8 @@ new_limit = clamp(min_limit, max_limit, new_limit)
   self-limits — the original purpose of the cap, done adaptively.
 - While `in_flight < limit / 2` (application-limited) the limit neither grows nor
   shrinks, as in Netflix's `Gradient2Limit`; only the baseline keeps learning.
-  With spare permits nothing queues, so a slow call is that request's own cost,
-  not congestion. Shrinking on it while growth is blocked would ratchet a lightly
+  With spare permits, a slow call alone says little about contention at this
+  plugin's admission limit. Shrinking on it while growth is blocked would ratchet a lightly
   loaded plugin down to the gradient's fixed point (`0.5 × L + √L = L`, so 4)
   and leave the next burst only a few permits.
 

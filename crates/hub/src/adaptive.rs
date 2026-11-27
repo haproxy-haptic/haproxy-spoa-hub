@@ -81,15 +81,16 @@ impl AdaptiveConfig {
     #[must_use]
     pub fn resolve(max_concurrency: Option<usize>, t: &AdaptiveTunables) -> Self {
         let max_limit = max_concurrency.unwrap_or(DEFAULT_MAX_LIMIT).max(1);
+        let min_limit = t.min_limit.unwrap_or(1).clamp(1, max_limit);
         Self {
-            min_limit: t.min_limit.unwrap_or(1).clamp(1, max_limit),
+            min_limit,
             max_limit,
             // Default start = min(16, ceiling): a proven-safe concurrency, so
             // startup and every config-reload cold-start (which rebuilds the
             // admission state) begin at a level that absorbs a burst instead of
             // fail-closing it before the controller grows — never worse than the
             // old fixed default, and still clamped to a tiny ceiling.
-            initial: t.initial.unwrap_or(max_limit.min(16)).clamp(1, max_limit),
+            initial: t.initial.unwrap_or(16).clamp(min_limit, max_limit),
             tolerance: t.tolerance.unwrap_or(1.5).max(1.0),
             smoothing: t.smoothing.unwrap_or(0.2).clamp(0.01, 1.0),
             long_window: t.long_window.unwrap_or(600.0).max(1.0),
@@ -138,8 +139,8 @@ impl Gradient2 {
         }
 
         // Application-limited: neither grow nor shrink, as Netflix's
-        // Gradient2Limit does. With spare permits there is no queueing for the
-        // gradient to measure, and a slow call is the request's own cost. Shrinking
+        // Gradient2Limit does. A slow call with spare permits is weak evidence
+        // of contention at this plugin's admission limit. Shrinking
         // here while growth is blocked ratchets a lightly loaded plugin down to
         // the gradient's fixed point (limit * 0.5 + sqrt(limit) = limit, i.e. 4),
         // so the next burst finds only a few permits.
@@ -353,6 +354,23 @@ mod tests {
         assert_eq!(clamped.min_limit, 8);
     }
 
+    #[test]
+    fn initial_capacity_respects_the_floor_under_light_load() {
+        for initial in [Some(4), None] {
+            let config = AdaptiveConfig::resolve(
+                Some(64),
+                &AdaptiveTunables {
+                    initial,
+                    min_limit: Some(24),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(config.initial, 24);
+            let mut g = Gradient2::new(config);
+            assert_eq!(g.update(1_000_000.0, 1), 24);
+        }
+    }
+
     fn cfg(min: usize, max: usize, initial: usize) -> AdaptiveConfig {
         AdaptiveConfig {
             min_limit: min,
@@ -402,6 +420,14 @@ mod tests {
             g.limit >= 16.0,
             "an application-limited plugin must keep its limit, got {}",
             g.limit
+        );
+        assert!(
+            g.long_rtt_ns > 1_000_000.0,
+            "idle samples update the baseline"
+        );
+        assert!(
+            g.update(10_000_000.0, 8) < 16,
+            "at half capacity the limit can shrink"
         );
     }
 
