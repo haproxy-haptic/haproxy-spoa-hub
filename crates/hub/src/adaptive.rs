@@ -120,9 +120,9 @@ impl Gradient2 {
     }
 
     /// Fold one completed call's service time into the estimate and return the
-    /// new integer limit. `in_flight` is the concurrency observed at completion,
-    /// used to suppress growth when the plugin is application-limited (not
-    /// actually using the concurrency it already has).
+    /// new integer limit. `in_flight` is the concurrency observed at completion:
+    /// while the plugin is application-limited (using less than half the
+    /// concurrency it already has), the limit stays where it is.
     #[allow(clippy::cast_precision_loss)]
     fn update(&mut self, short_ns: f64, in_flight: usize) -> usize {
         if self.long_rtt_ns <= 0.0 {
@@ -137,16 +137,22 @@ impl Gradient2 {
             self.long_rtt_ns += (short_ns - self.long_rtt_ns) / self.cfg.long_window;
         }
 
+        // Application-limited: neither grow nor shrink, as Netflix's
+        // Gradient2Limit does. With spare permits there is no queueing for the
+        // gradient to measure, and a slow call is the request's own cost. Shrinking
+        // here while growth is blocked ratchets a lightly loaded plugin down to
+        // the gradient's fixed point (limit * 0.5 + sqrt(limit) = limit, i.e. 4),
+        // so the next burst finds only a few permits.
+        if (in_flight as f64) < self.limit / 2.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            return self.limit.round() as usize;
+        }
+
         let gradient = (self.cfg.tolerance * self.long_rtt_ns / short_ns).clamp(0.5, 1.0);
         // Headroom = sqrt(limit): the term that lets the limit grow while the
         // gradient is ~1, self-scaling so growth slows as the limit rises.
         let headroom = self.limit.max(1.0).sqrt();
-        let mut target = self.limit * gradient + headroom;
-
-        // Application-limited: don't grow past what's actually being used.
-        if target > self.limit && (in_flight as f64) < self.limit / 2.0 {
-            target = self.limit;
-        }
+        let target = self.limit * gradient + headroom;
 
         // Smooth the transition (damps oscillation).
         self.limit = self
@@ -375,6 +381,28 @@ mod tests {
             g.limit
         );
         assert!(g.limit <= 100.0, "must respect the ceiling");
+    }
+
+    #[test]
+    fn light_load_with_latency_outliers_keeps_the_limit() {
+        // A lightly loaded plugin (one call at a time) whose service time is mostly
+        // stable, with an occasional slower call, as a WAF sees when some requests
+        // match rules. Gradient2 treats this as application-limited and leaves the
+        // limit alone, so a later burst still finds the configured concurrency.
+        let mut g = Gradient2::new(cfg(1, 16, 16));
+        for i in 0..2_000 {
+            let service_ns = if i % 20 == 19 {
+                3_000_000.0
+            } else {
+                1_000_000.0
+            };
+            g.update(service_ns, 1);
+        }
+        assert!(
+            g.limit >= 16.0,
+            "an application-limited plugin must keep its limit, got {}",
+            g.limit
+        );
     }
 
     #[test]
