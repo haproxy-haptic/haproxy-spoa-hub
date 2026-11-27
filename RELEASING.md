@@ -153,3 +153,16 @@ cargo yank --vers x.y.z haproxy-spoa-hub-plugin-api
 
 This prevents new projects from depending on it but does not break existing
 lockfiles.
+
+### Profile-guided release builds
+
+Each Linux release job builds the workspace twice for its target. Between builds,
+the instrumented hub dispatches SPOP requests to its packaged plugins using
+the fixtures under `ci/pgo/`. The ARM cross builds run that same target binary
+under QEMU. The job checks replies, shuts down the hub to flush counters, merges
+them with the Rust toolchain's `llvm-profdata`, and packages the profile-use
+build. The profile is temporary and specific to this build. Keep the fixtures
+representative when dispatch behavior or plugin configuration changes.
+
+Plugin repositories can use the same driver with their own fixtures. The driver
+loads their instrumented shared library in a checksum-pinned release of the hub.
